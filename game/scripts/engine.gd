@@ -557,6 +557,10 @@ func setup_game(char_list: Array, identities: Array) -> void:
 			for bsid in ["mowei", "xingshi"]:
 				if not (p["skills"] as Array).has(bsid):
 					(p["skills"] as Array).append(bsid)
+		elif mode == "identity" and String(identities[i]) == "主公" and not (cd.get("char", {}) as Dictionary).is_empty():
+			if not (p["skills"] as Array).has("xingying_lord"):
+				(p["skills"] as Array).append("xingying_lord")
+		p["shield"] = 1 if (p["skills"] as Array).has("shengdun") else 0
 		p["alive"] = true
 		p["used_attack"] = false
 		p["attack_count"] = 0
@@ -626,6 +630,17 @@ func first_player() -> Dictionary:
 
 
 # ================= 体力与伤害 =================
+func gain_shield(p: Dictionary, n: int) -> void:
+	if not bool(p.get("alive", false)) or n <= 0:
+		return
+	var old_s := int(p.get("shield", 0))
+	var new_s := mini(5, old_s + n)
+	p["shield"] = new_s
+	if new_s > old_s:
+		fx("shield", {"seat": int(p["seat"]), "delta": new_s - old_s, "shield": new_s})
+		changed()
+
+
 func heal(p: Dictionary, n: int, src: Dictionary = {}) -> void:
 	if not p["alive"]:
 		return
@@ -681,6 +696,16 @@ func damage(src: Dictionary, tgt: Dictionary, num: int, cause: String, nature: S
 				fx("dodge", {"seat": int(tgt["seat"])})
 				changed()
 				return
+	var sh_now := int(tgt.get("shield", 0))
+	if sh_now > 0 and num > 0:
+		var absorbed := mini(num, sh_now)
+		tgt["shield"] = sh_now - absorbed
+		num -= absorbed
+		log_msg("🛡「护甲」：%s 的护甲抵消了 %d 点伤害（剩余护甲 %d）。" % [pname(tgt), absorbed, int(tgt["shield"])])
+		fx("shield", {"seat": int(tgt["seat"]), "delta": -absorbed, "shield": int(tgt["shield"])})
+		changed()
+		if num <= 0:
+			return
 	var hp_before_d := int(tgt["hp"])
 	tgt["hp"] = hp_before_d - num
 	var lost := mini(num, hp_before_d)
@@ -1554,6 +1579,9 @@ func use_supply(p: Dictionary, card: Dictionary, tgt: Dictionary) -> void:
 	discard_from_hand(p, card)
 	log_msg("%s 对 %s 使用「补给」。" % [pname(p), pname(tgt)])
 	heal(tgt, 1, p)
+	if p != tgt and has_skill(tgt, "xingying_lord") and p["alive"]:
+		draw_cards(p, 1)
+		log_msg("👑「星樱号令」：%s 救援主公 %s，摸 1 张牌。" % [pname(p), pname(tgt)])
 
 
 func use_drink(p: Dictionary, card: Dictionary) -> void:

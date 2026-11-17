@@ -37,6 +37,9 @@ func register_all(eng) -> void:
 	eng.register_skill("linshuang", {"name": "凛霜", "timings": {"damageAfter": {"who": "player", "filter": Callable(self, "_linshuang_filter"), "ai_decide": Callable(self, "_linshuang_ai"), "content": Callable(self, "_linshuang_content")}}})
 	eng.register_skill("mowei", {"name": "魔威", "text": "魔王技，锁定技。准备阶段摸 1 张牌；摸牌阶段多摸 1 张牌；出牌阶段可使用 2 张「突击」。", "timings": {"phaseZhunbeiStart": {"who": "player", "forced": true, "content": Callable(self, "_mowei_content")}}})
 	eng.register_skill("xingshi", {"name": "星蚀", "text": "魔王技，锁定技。结束阶段开始时，若你已受伤，对一名敌方角色造成 1 点雷电伤害。", "timings": {"phaseJieshuStart": {"who": "player", "forced": true, "filter": Callable(self, "_xingshi_filter"), "content": Callable(self, "_xingshi_content")}}})
+	eng.register_skill("shengdun", {"name": "圣盾", "timings": {"phaseZhunbeiStart": {"who": "player", "forced": true, "filter": Callable(self, "_shengdun_filter"), "content": Callable(self, "_shengdun_content")}}})
+	eng.register_skill("yuanhu", {"name": "援护", "active": {"filter": Callable(self, "_hand_ge1"), "ai_use": Callable(self, "_yuanhu_aiuse"), "content": Callable(self, "_yuanhu_content")}})
+	eng.register_skill("xingying_lord", {"name": "星樱号令", "text": "主公技，锁定技。你的首个准备阶段开始时，若你没有「护甲」，你获得 1 点「护甲」；其他同阵营角色在濒死时对你使用「补给」后摸 1 张牌。", "timings": {"phaseZhunbeiStart": {"who": "player", "forced": true, "filter": Callable(self, "_xingying_lord_filter"), "content": Callable(self, "_xingying_lord_content")}}})
 
 
 # ---------- 通用小工具 ----------
@@ -975,3 +978,45 @@ func _xingshi_content(eng, ctx, p) -> void:
 		tgt = foes[0]
 	eng.log_msg("「星蚀」：魔王 %s 降下星蚀雷罚，攻击 %s！" % [eng.pname(p), eng.pname(tgt)])
 	await eng.damage(p, tgt, 1, "星蚀", "雷")
+
+
+# ---------- 圣护院莉莉娅（圣盾 + 援护） & 主公技（星樱号令） ----------
+func _shengdun_filter(eng, ctx, p) -> bool:
+	return int(p.get("shield", 0)) <= 0 and int(eng.round_no) <= 25
+
+
+func _shengdun_content(eng, ctx, p) -> void:
+	eng.gain_shield(p, 1)
+	eng.log_msg("🛡「圣盾」：%s 凝聚圣纹护盾，获得 1 点「护甲」（当前护甲 %d）。" % [eng.pname(p), int(p.get("shield", 0))])
+
+
+func _yuanhu_aiuse(eng, p) -> bool:
+	if int(eng.round_no) >= 25:
+		return false
+	return (p["hand"] as Array).size() >= 2
+
+
+func _yuanhu_content(eng, p) -> void:
+	var c: Dictionary = await eng.pick_card(p, {"prompt": "「援护」：弃置 1 张手牌，令一名角色获得 1 点「护甲」（若其已受伤你摸 1 张牌）", "ai": Callable(self, "_worst_card")})
+	if c.is_empty():
+		return
+	var cands: Array = eng.alive_players()
+	var tgt: Dictionary = await eng.pick_target(p, cands, "「援护」：选择获得 1 点「护甲」的角色", Callable(self, "_yingyuan_target"))
+	if tgt.is_empty():
+		return
+	eng.discard_from_hand(p, c)
+	eng.gain_shield(tgt, 1)
+	var drew_extra := false
+	if int(tgt["hp"]) < int(tgt["max_hp"]):
+		eng.draw_cards(p, 1)
+		drew_extra = true
+	eng.log_msg("🛡「援护」：%s 弃置 %s，令 %s 获得 1 点「护甲」%s。" % [eng.pname(p), eng.card_text(c), eng.pname(tgt), "，并因目标已受伤摸 1 张牌" if drew_extra else ""])
+
+
+func _xingying_lord_filter(eng, ctx, p) -> bool:
+	return int(eng.round_no) <= 1 and int(p.get("shield", 0)) <= 0
+
+
+func _xingying_lord_content(eng, ctx, p) -> void:
+	eng.gain_shield(p, 1)
+	eng.log_msg("👑主公技「星樱号令」：%s 号令学园，获得 1 点「护甲」！" % eng.pname(p))

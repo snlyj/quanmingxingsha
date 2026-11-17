@@ -363,6 +363,7 @@ func _run_reg_test() -> void:
 	await _reg_v33()
 	await _reg_v34()
 	await _reg_v35()
+	await _reg_v36()
 	_reg_lines.append("REGTEST_DONE tests=%d fails=%d" % [_reg_n, _reg_fails])
 	_write("/tmp/ask_regtest.txt", _reg_lines)
 	print(_reg_lines[_reg_lines.size() - 1])
@@ -1992,6 +1993,9 @@ func _reg_v27() -> void:
 		spb.pressed.emit()
 		await _frames(1)
 		var st10: int = int(bs.target_candidates[0])
+		bs.players[st10]["hp"] = 4
+		(bs.players[st10]["hand"] as Array).clear()
+		bs.players[st10]["skills"] = []
 		if bs.sel_target != st10:
 			_tap_seat(bs, st10)
 		await _frames(1)
@@ -2718,4 +2722,53 @@ func _reg_v35() -> void:
 	_ok(eboss.game_over and eboss.winner_text == "联军获胜！", "V35-3 击败魔王后判定联军获胜")
 
 	# V35-4 全部 14 名角色及 CG 资源校验
-	_ok(Characters.LIST.size() == 14 and ResourceLoader.exists("res://assets/cg/rin.webp") and ResourceLoader.exists("res://assets/cg/yukine.webp"), "V35-4 角色池扩充至 14 人且全部 CG 资源齐全")
+	_ok(Characters.LIST.size() >= 14 and ResourceLoader.exists("res://assets/cg/rin.webp") and ResourceLoader.exists("res://assets/cg/yukine.webp"), "V35-4 第二弹全 7 人 CG 资源齐全")
+
+
+# ---------------- V0.36：护甲（shield）机制 / 圣护院莉莉娅 / 主公技星樱号令 / 卡牌图鉴 ----------------
+func _reg_v36() -> void:
+	# V36-1 护甲抵消伤害：1点护甲完全抵消1点伤害；2点伤害先扣1点护甲再扣1点体力
+	var e = _clean_eng("duel", ["先手", "后手"], 3)
+	var p0: Dictionary = e.players[0]
+	var p1: Dictionary = e.players[1]
+	p0["char_name"] = "圣护院莉莉娅"
+	e.add_skill(p0, "shengdun")
+	e.add_skill(p0, "yuanhu")
+	p0["shield"] = 0
+	await e.fire("phaseZhunbeiStart", {"name": "phase", "player": p0, "target": p0})
+	_ok(int(p0.get("shield", 0)) == 1, "V36-1 「圣盾」在准备阶段无护甲时获得 1 点护甲")
+	await e.damage(p1, p0, 1, "突击")
+	_ok(int(p0.get("shield", 0)) == 0 and int(p0["hp"]) == 3, "V36-1 1 点护甲完全抵消 1 点伤害，体力不减")
+	e.gain_shield(p0, 1)
+	await e.damage(p1, p0, 2, "重击")
+	_ok(int(p0.get("shield", 0)) == 0 and int(p0["hp"]) == 2, "V36-1 1 点护甲抵消 2 点伤害中的 1 点，仅损失 1 点体力")
+
+	# V36-2 「援护」：弃 1 张手牌令目标获得 1 点护甲，若目标已受伤自己摸 1 张牌
+	_give(e, p0, "闪避", "方块", 3)
+	await e.use_active_skill(p0, "yuanhu")
+	_ok(int(p0.get("shield", 0)) == 1 and (p0["hand"] as Array).size() == 1, "V36-2 「援护」对已受伤角色赋予 1 点护甲并摸 1 张牌")
+
+	# V36-3 主公技「星樱号令」：首轮准备阶段获得1点护甲；队友对主公使用「补给」摸1张牌
+	e = _clean_eng("identity", ["主公", "忠臣", "反贼", "反贼", "内奸"], 4)
+	var lord: Dictionary = e.players[0]
+	var loyal: Dictionary = e.players[1]
+	e.add_skill(lord, "xingying_lord")
+	e.round_no = 1
+	await e.fire("phaseZhunbeiStart", {"name": "phase", "player": lord, "target": lord})
+	_ok(int(lord.get("shield", 0)) == 1, "V36-3 主公技「星樱号令」首轮准备阶段获得 1 点护甲")
+	lord["hp"] = 2
+	var tao := _give(e, loyal, "补给", "红桃", 6)
+	e.use_supply(loyal, tao, lord)
+	_ok(int(lord["hp"]) == 3 and (loyal["hand"] as Array).size() == 1, "V36-3 主公技「星樱号令」：其他角色对主公使用「补给」后摸 1 张牌")
+
+	# V36-4 卡牌图鉴页与 15 名角色校验
+	main_ref.show_card_gallery()
+	await get_tree().process_frame
+	var card_btns := 0
+	for n in main_ref.screen_root.find_children("*", "Button", true, false):
+		if (n as Control).has_meta("intro"):
+			card_btns += 1
+	_ok(card_btns == 55, "V36-4 卡牌图鉴展示全部 %d 种卡牌且均可查看详情" % card_btns)
+	main_ref.show_home()
+	await get_tree().process_frame
+	_ok(Characters.LIST.size() == 15 and ResourceLoader.exists("res://assets/cg/lilia.webp"), "V36-4 角色池扩充至 15 人且莉莉娅 CG 资源齐全")

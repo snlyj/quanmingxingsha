@@ -1578,7 +1578,8 @@ func refresh() -> void:
 		var gem_text: Label = panel.get_node("Gem/GemText")
 		gem_text.text = "?" if idt.begins_with("？") else idt.substr(0, 1)
 		var chip_text: Label = panel.get_node("Chip/ChipText")
-		chip_text.text = "✋ %d" % p["hand"].size()
+		var p_sh := int(p.get("shield", 0))
+		chip_text.text = ("🛡%d ✋%d" % [p_sh, p["hand"].size()]) if p_sh > 0 else ("✋ %d" % p["hand"].size())
 		(panel.get_node("Guess") as Control).visible = false
 		var gm := String(guess_marks.get(seat_idx, ""))
 		var gbtn := panel.get_node("GuessBtn") as Button
@@ -1665,7 +1666,9 @@ func refresh() -> void:
 	var h_cnt: int = (me["hand"] as Array).size()
 	var h_lim: int = maxi(int(me["hp"]), 0)
 	var over_txt: String = ("（需弃%d）" % (h_cnt - h_lim)) if (h_cnt > h_lim and turn_seat == 0) else ""
-	me_hp_label.text = "%s %d/%d · 手牌 %d/%d%s" % [hearts2, int(me["hp"]), int(me["max_hp"]), h_cnt, h_lim, over_txt]
+	var me_sh: int = int(me.get("shield", 0))
+	var sh_txt: String = ("🛡%d " % me_sh) if me_sh > 0 else ""
+	me_hp_label.text = "%s%s %d/%d · 手牌 %d/%d%s" % [sh_txt, hearts2, int(me["hp"]), int(me["max_hp"]), h_cnt, h_lim, over_txt]
 	# 自己的体力变化：数值条闪红/闪绿（座位体力槽同理）
 	var me_hp := int(me["hp"])
 	if me_hp_label.has_meta("hp_shown") and int(me_hp_label.get_meta("hp_shown")) != me_hp and not fast and not auto_all:
@@ -3695,7 +3698,17 @@ func build_settlement(winner_text: String, your_result: String) -> void:
 		var st := lbl("存活" if p["alive"] else "阵亡", 22, Color(0.3, 0.65, 0.4) if p["alive"] else Color(0.6, 0.6, 0.65))
 		st.custom_minimum_size = Vector2(70, 0)
 		hb2.add_child(st)
-		var stat := lbl("输出 %d · 击杀 %d · 承伤 %d · 治疗 %d" % [int(p.get("stat_damage", 0)), int(p.get("stat_kills", 0)), int(p.get("stat_taken", 0)), int(p.get("stat_heal", 0))], 22, Color(0.45, 0.38, 0.42))
+		var medals: Array = []
+		if int(p.get("stat_kills", 0)) >= 2:
+			medals.append("⚔破敌")
+		if int(p.get("stat_damage", 0)) >= 4:
+			medals.append("💥猛攻")
+		if int(p.get("stat_taken", 0)) >= 4:
+			medals.append("🛡铁壁")
+		if int(p.get("stat_heal", 0)) >= 3:
+			medals.append("💚仁心")
+		var medal_s := ("  [" + "·".join(PackedStringArray(medals)) + "]") if not medals.is_empty() else ""
+		var stat := lbl("输出 %d · 击杀 %d · 承伤 %d · 治疗 %d%s" % [int(p.get("stat_damage", 0)), int(p.get("stat_kills", 0)), int(p.get("stat_taken", 0)), int(p.get("stat_heal", 0)), medal_s], 22, Color(0.45, 0.38, 0.42))
 		stat.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		hb2.add_child(stat)
 		vb.add_child(row)
@@ -3721,6 +3734,12 @@ func build_settlement(winner_text: String, your_result: String) -> void:
 	again.custom_minimum_size = Vector2(240, 66)
 	again.pressed.connect(func() -> void: start_match(false))
 	btn_row.add_child(again)
+	var log_b := plain_btn("📜 完整战报", Color(1, 0.97, 0.92), Color(0.35, 0.22, 0.10), 28)
+	log_b.custom_minimum_size = Vector2(220, 66)
+	log_b.pressed.connect(func() -> void:
+		open_info_overlay("本局完整战报", "\n".join(eng.log_lines) if eng != null else "")
+		move_child(info_overlay, get_child_count() - 1))
+	btn_row.add_child(log_b)
 	var home := plain_btn("返回主页", C_WHITE, C_PINK_DEEP, 30)
 	home.custom_minimum_size = Vector2(240, 66)
 	home.pressed.connect(func() -> void: go_home.call())
@@ -4509,6 +4528,7 @@ const CHAR_LINES := {
 	"nana": {"attack": ["尝尝特制星光试剂！", "小心爆炸哦——砰！"], "hurt": ["哇啊！烧杯差点碎了！", "呜…配方算错了吗…"], "dying": "实验…还没写完报告…", "death": "实验室…要先关门啦…", "skill": "催化剂投入，连锁反应开始！", "heal": "喝口营养液，满血复活！"},
 	"rin": {"attack": ["这一手，将军（王手）！", "棋路早已算定，无处可逃！"], "hurt": ["嗯…弃子争先罢了", "这一步，还在计算之内"], "dying": "终盘…还没分出胜负…", "death": "是我输了这局棋…", "skill": "妙算入神，一子定乾坤！", "heal": "复盘重整，再弈一局"},
 	"yukine": {"attack": ["违规预算，予以冻结！", "凝结吧，冰霜之刃！"], "hurt": ["账目…不容许任何差池！", "寒霜会记住这次冒犯"], "dying": "决算报告…还没交接…", "death": "冰雪…终究会融化吗…", "skill": "精算无遗，凛霜反噬！", "heal": "账目核销，状态恢复"},
+	"lilia": {"attack": ["以骑士团之名，突进！", "荣耀之剑，绝不偏斜！"], "hurt": ["圣盾尚在，无妨！", "休想越过我的防线！"], "dying": "骑士的誓言…永不磨灭…", "death": "请大家…继续前进吧…", "skill": "展开吧，圣纹护盾！", "heal": "荣光庇佑，重振旗鼓！"},
 }
 
 
@@ -5067,6 +5087,11 @@ func _eng_fx(kind: String, data: Dictionary) -> void:
 				_pz_add(tc, "%s 拼点(%d点)%s" % [_short_name(pname(players[t_seat])), tpt, "★胜" if not pwin else ""], seat_center(t_seat))
 			fx_float(s_seat, "⚡拼点胜！" if pwin else "拼点未赢", Color(1.0, 0.80, 0.22) if pwin else Color(0.70, 0.72, 0.82), 46, 68.0)
 			play_sfx("skill" if pwin else "card")
+		"shield":
+			var sh_d := int(data.get("delta", 1))
+			var sh_col := Color(0.35, 0.78, 1.0) if sh_d > 0 else Color(0.75, 0.85, 0.95)
+			fx_float(seat, ("🛡护甲+%d" % sh_d) if sh_d > 0 else ("🛡抵消%d" % (-sh_d)), sh_col, 44, 62.0)
+			play_sfx("equip" if sh_d > 0 else "dodge")
 
 
 # ---------------- 濒死救援特写 ----------------
@@ -5512,7 +5537,9 @@ func _intro_seat(seat: int) -> Dictionary:
 	var p: Dictionary = players[seat]
 	var me: Dictionary = players[0]
 	var rt := {}
-	rt["hp_line"] = "体力 %d/%d" % [maxi(int(p["hp"]), 0), int(p["max_hp"])] if bool(p["alive"]) else "已阵亡"
+	var p_sh2 := int(p.get("shield", 0))
+	var sh_part := (" · 护甲 🛡%d" % p_sh2) if p_sh2 > 0 else ""
+	rt["hp_line"] = ("体力 %d/%d%s" % [maxi(int(p["hp"]), 0), int(p["max_hp"]), sh_part]) if bool(p["alive"]) else "已阵亡"
 	var idv := identity_visible(p)
 	if idv == "？？":
 		var gm := String(guess_marks.get(seat, ""))
@@ -5941,6 +5968,8 @@ func _skill_ui_spec(sid: String) -> Dictionary:
 			return {"card": "none", "targets": others_alive.filter(func(s: int) -> bool: return not (players[s]["hand"] as Array).is_empty())}
 		"jingsuan":
 			return {"card": "any", "card_role": "精算置换（弃1摸2，黑色牌且受伤则回1血）", "targets": null}
+		"yuanhu":
+			return {"card": "any", "card_role": "作为代价弃置（令目标获得1点护甲）", "targets": all_alive}
 	return {"card": "none", "targets": null}
 
 

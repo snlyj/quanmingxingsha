@@ -585,7 +585,7 @@ func show_home() -> void:
 	var b_duel := cute_button("单挑对决", "1 对 1 · 先手3张 / 后手4张", Color(0.45, 0.55, 0.95), Vector2(372, 134))
 	b_duel.pressed.connect(func() -> void: show_battle_mode("duel"))
 	btn_row2.add_child(b_duel)
-	var b_chars := cute_button("人物图鉴", "全 14 名登场角色 · 系列分类", C_SKY, Vector2(372, 134))
+	var b_chars := cute_button("人物·卡牌图鉴", "15 名角色 & 55 种卡牌百科", C_SKY, Vector2(372, 134))
 	b_chars.pressed.connect(show_gallery)
 	btn_row2.add_child(b_chars)
 	vb.add_child(btn_row2)
@@ -608,7 +608,7 @@ func show_home() -> void:
 	theme_row.add_child(b_theme)
 	vb.add_child(theme_row)
 
-	var foot := lbl("单机版 · 身份场 / 斗地主 / 欢乐2v2 / 魔王挑战 / 单挑 · 全量 197 张牌（斗地主 203 张）· 角色池：第一、二弹共 14 人 · V%s" % String(ProjectSettings.get_setting("application/config/version", "")), 26, C_WHITE, false, HORIZONTAL_ALIGNMENT_CENTER)
+	var foot := lbl("单机版 · 五大模式 · 全量 197/203 张牌（55种）· 角色池：第一至三弹共 15 人 · V%s" % String(ProjectSettings.get_setting("application/config/version", "")), 26, C_WHITE, false, HORIZONTAL_ALIGNMENT_CENTER)
 	# V0.24：页脚原为浅灰字直接压在背景图上，看不清；改白字加深色描边
 	foot.add_theme_color_override("font_outline_color", Color(0.30, 0.10, 0.22, 0.85))
 	foot.add_theme_constant_override("outline_size", 8)
@@ -656,7 +656,19 @@ func show_gallery() -> void:
 	var vb := VBoxContainer.new()
 	vb.add_theme_constant_override("separation", 20)
 	m.add_child(vb)
-	vb.add_child(back_bar("人物图鉴", show_home))
+	var bbar := back_bar("人物图鉴（共 %d 名角色）" % Characters.LIST.size(), show_home)
+	var to_cards := Button.new()
+	to_cards.text = "🃏 切换至卡牌图鉴（55种）"
+	to_cards.custom_minimum_size = Vector2(340, 68)
+	to_cards.focus_mode = Control.FOCUS_NONE
+	to_cards.add_theme_font_override("font", font_bold)
+	to_cards.add_theme_font_size_override("font_size", 26)
+	to_cards.add_theme_color_override("font_color", C_WHITE)
+	to_cards.add_theme_stylebox_override("normal", style(C_PLATE, 20, C_GOLD, 2, true))
+	to_cards.add_theme_stylebox_override("hover", style(C_PLATE.lightened(0.08), 20, C_GOLD, 2, true))
+	to_cards.pressed.connect(show_card_gallery)
+	bbar.add_child(to_cards)
+	vb.add_child(bbar)
 
 	var scroll := ScrollContainer.new()
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -1902,3 +1914,98 @@ func _on_home_showcase_clicked(slot_idx: int) -> void:
 	if not cands.is_empty():
 		home_showcase_ids[slot_idx] = cands[randi() % cands.size()]
 	show_home()
+
+
+func show_card_gallery() -> void:
+	clear_screen()
+	var m := page_margin()
+	var vb := VBoxContainer.new()
+	vb.add_theme_constant_override("separation", 20)
+	m.add_child(vb)
+	var bbar := back_bar("卡牌图鉴（全 55 种 · 常规 197 张 / 斗地主 203 张）", show_home)
+	var to_chars := Button.new()
+	to_chars.text = "👤 切换至人物图鉴（%d人）" % Characters.LIST.size()
+	to_chars.custom_minimum_size = Vector2(340, 68)
+	to_chars.focus_mode = Control.FOCUS_NONE
+	to_chars.add_theme_font_override("font", font_bold)
+	to_chars.add_theme_font_size_override("font_size", 26)
+	to_chars.add_theme_color_override("font_color", C_WHITE)
+	to_chars.add_theme_stylebox_override("normal", style(C_SKY, 20, C_GOLD, 2, true))
+	to_chars.add_theme_stylebox_override("hover", style(C_SKY.lightened(0.08), 20, C_GOLD, 2, true))
+	to_chars.pressed.connect(show_gallery)
+	bbar.add_child(to_chars)
+	vb.add_child(bbar)
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	vb.add_child(scroll)
+	var inner := VBoxContainer.new()
+	inner.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	inner.add_theme_constant_override("separation", 24)
+	scroll.add_child(inner)
+	var CardDefsG = load("res://data/cards.gd")
+	var groups := [
+		["基本牌", ["基本牌"], "共 4 种 · 90 张（含普通/火/雷/冰突击、闪避、补给、特饮）"],
+		["普通锦囊牌", ["锦囊牌"], "即时生效锦囊（含斗地主专属牌攻守兼备/进退自如/继往开来与应变新牌）"],
+		["延时锦囊牌", ["延时锦囊"], "置入判定区，于判定阶段判定生效"],
+		["装备牌（武器 / 防具 / 坐骑 / 宝物）", ["武器", "防具", "饰品", "宝物"], "装备入对应栏位持续生效"],
+	]
+	for g in groups:
+		var head := PanelContainer.new()
+		head.add_theme_stylebox_override("panel", style(Color(1, 1, 1, 0.85), 22, C_GOLD, 2, true))
+		var hv := VBoxContainer.new()
+		hv.add_child(lbl("分类 · %s" % String(g[0]), 36, C_PINK_DEEP, true))
+		hv.add_child(lbl(String(g[2]), 24, C_INK_SOFT))
+		head.add_child(hv)
+		inner.add_child(head)
+		var grid := GridContainer.new()
+		grid.columns = 5
+		grid.add_theme_constant_override("h_separation", 20)
+		grid.add_theme_constant_override("v_separation", 20)
+		inner.add_child(grid)
+		var kinds: Array = g[1]
+		for nm in CardDefsG.DEFS.keys():
+			var d: Dictionary = CardDefsG.DEFS[nm]
+			if not kinds.has(String(d.get("kind", ""))):
+				continue
+			var cb := Button.new()
+			cb.focus_mode = Control.FOCUS_NONE
+			cb.custom_minimum_size = Vector2(340, 220)
+			var fcol := Art.frame_color(String(nm))
+			cb.add_theme_stylebox_override("normal", style(Color(1, 1, 1, 0.94), 20, fcol, 3, true))
+			cb.add_theme_stylebox_override("hover", style(Color(1, 0.97, 0.99, 1.0), 20, C_GOLD, 3, true))
+			var hb := HBoxContainer.new()
+			hb.mouse_filter = MOUSE_FILTER_IGNORE
+			hb.set_anchors_preset(Control.PRESET_FULL_RECT)
+			hb.offset_left = 12
+			hb.offset_right = -12
+			hb.offset_top = 10
+			hb.offset_bottom = -10
+			hb.add_theme_constant_override("separation", 12)
+			var tr := TextureRect.new()
+			tr.texture = Art.card_tex(String(nm))
+			tr.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+			tr.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
+			tr.custom_minimum_size = Vector2(124, 176)
+			tr.mouse_filter = MOUSE_FILTER_IGNORE
+			hb.add_child(tr)
+			var tv := VBoxContainer.new()
+			tv.mouse_filter = MOUSE_FILTER_IGNORE
+			tv.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			tv.add_theme_constant_override("separation", 4)
+			tv.add_child(lbl("%s（×%d）" % [String(nm), int(d.get("n", 1))], 26, C_INK, true))
+			tv.add_child(lbl(String(d.get("kind", "")), 19, fcol, true))
+			var desc := String(d.get("effect", ""))
+			if desc.length() > 46:
+				desc = desc.substr(0, 46) + "…"
+			var dl := lbl(desc, 18, C_INK_SOFT)
+			dl.autowrap_mode = TextServer.AUTOWRAP_ARBITRARY
+			tv.add_child(dl)
+			hb.add_child(tv)
+			cb.add_child(hb)
+			var spec := IntroPop.card_spec({"name": String(nm), "suit": "", "point": 0})
+			cb.set_meta("intro", spec)
+			cb.pressed.connect(func() -> void:
+				if IntroPop.inst != null and not IntroPop.inst.swallowing():
+					IntroPop.inst.show_spec(spec, cb.get_global_rect().get_center(), "sticky"))
+			grid.add_child(cb)
