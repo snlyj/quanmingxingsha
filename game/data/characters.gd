@@ -1,0 +1,149 @@
+class_name Characters
+extends RefCounted
+
+# 角色数据：按「系列」分组，图鉴页据此分类展示。全部为原创角色（V0.31 起）。
+# 技能文本与《全明星杀_V1设计稿.md》v1.1 定稿一致（完整规则句）。
+
+const SERIES := "星樱坂学园"
+
+const WORKS: Array = [
+	{
+		"work": SERIES,
+		"note": "第一弹角色包 · 全 7 人",
+	},
+]
+
+# focus：CG（768×1024）里脸部中心的归一化坐标，座位/选将等小框按它裁切，保证脸不被切掉。
+# rarity：卡框徽标（SSR 金 / SR 紫）；hp_marks 由 hp 决定。
+const LIST: Array = [
+	{
+		"id": "hina",
+		"name": "花宫雏",
+		"title": "樱下的见习魔法使",
+		"work": SERIES,
+		"hp": 3,
+		"rarity": "SSR",
+		"portrait": "res://assets/cg/hina.webp",
+		"focus": Vector2(0.53, 0.22),
+		"intro": "在学园后山的大樱树下长大的见习魔法使，总穿着宽大的薰衣草色连帽衫。会把写着心愿的花签化作花瓣祝福，身边的人受了伤，她也总能让伤口开出新芽。",
+		"skills": [
+			{"name": "花愈", "sid": "huayu", "text": "每轮限发动一次。当你受到伤害并完成这次伤害的结算后，如果你已经损失了体力，你可以进行一次判定。如果判定牌为红色，你回复 1 点体力。"},
+			{"name": "樱愿", "sid": "yingyuan", "btn": "技能 · 樱愿", "text": "出牌阶段限发动一次。你可以弃置 1 张手牌，并选择任意一名角色作为目标。该角色选择执行下面的一项：从牌堆摸 2 张牌；或者回复 1 点体力。只有已经损失了体力的角色，才能选择回复体力这一项。"},
+		],
+	},
+	{
+		"id": "rena",
+		"name": "柚木铃奈",
+		"title": "铃音风纪委员",
+		"work": SERIES,
+		"hp": 3,
+		"rarity": "SR",
+		"portrait": "res://assets/cg/rena.webp",
+		"focus": Vector2(0.51, 0.27),
+		"intro": "星樱坂学园的风纪委员，每天清晨守在校门口检查仪容。发夹上挂着一枚银铃，铃声一响就会展开守护的光壁。做事一板一眼，其实很怕别人讨厌自己。",
+		"skills": [
+			{"name": "风纪", "sid": "fengji", "btn": "技能 · 风纪", "text": "出牌阶段限发动一次。你可以选择一名其他角色，观看该角色的全部手牌，然后从这些手牌中选择 1 张并将其弃置。"},
+			{"name": "铃护", "sid": "linghu", "text": "当你受到伤害时，在这次伤害生效之前，你可以弃置 1 张红色手牌。如果你这样做，防止这一次伤害，你不会因此损失体力。"},
+		],
+	},
+	{
+		"id": "kaori",
+		"name": "宫坂歌织",
+		"title": "合唱部的歌姬",
+		"work": SERIES,
+		"hp": 3,
+		"rarity": "SSR",
+		"portrait": "res://assets/cg/kaori.webp",
+		"focus": Vector2(0.48, 0.25),
+		"intro": "合唱部的王牌歌姬，戴着白色贝雷帽登台。耳朵灵得出奇，能从一个人的呼吸和脚步声里听出对方心底的旋律，所以总能唱出大家最想听的那首歌。",
+		"skills": [
+			{"name": "心曲", "sid": "xinqu", "text": "在你的准备阶段开始时，你可以选择一名其他角色，观看该角色的全部手牌。如果这些手牌中至少有 1 张「突击」，你从牌堆摸 1 张牌。"},
+			{"name": "歌声", "sid": "gesheng", "btn": "技能 · 歌声", "text": "出牌阶段限发动一次。你可以选择一名其他角色。你和该角色各从牌堆摸 1 张牌。"},
+		],
+	},
+	{
+		"id": "chinatsu",
+		"name": "森崎千夏",
+		"title": "田径部的元气王牌",
+		"work": SERIES,
+		"hp": 4,
+		"rarity": "SR",
+		"portrait": "res://assets/cg/chinatsu.webp",
+		"focus": Vector2(0.46, 0.30),
+		"intro": "田径部的短跑王牌，橙色短发配白色发带，永远精力过剩。越是摔倒越要爬起来再冲一次；书包里总塞着运动饮料和点心，跑完一圈就给自己补满元气。",
+		"skills": [
+			{"name": "不屈", "sid": "buqu", "text": "每当你受到伤害并完成这次伤害的结算后，你从牌堆摸 1 张牌。每次受到伤害最多摸 1 张牌。"},
+			{"name": "元气补给", "sid": "yuanqi", "btn": "技能 · 元气补给", "text": "出牌阶段限发动一次。你可以将 1 张黑色手牌当作一张「补给」使用，目标只能是你自己，效果为回复 1 点体力。如果你的体力没有损失，你不能发动此技能。"},
+		],
+	},
+	{
+		"id": "shizuha",
+		"name": "夜宫静羽",
+		"title": "天文部的星眠少女",
+		"work": SERIES,
+		"hp": 3,
+		"rarity": "SSR",
+		"portrait": "res://assets/cg/shizuha.webp",
+		"focus": Vector2(0.55, 0.25),
+		"intro": "天文部唯一的部员，抱着枕头在哪里都能睡着。说是在梦里观测星星，醒来就能讲出第二天的天气。最喜欢在天台给晚归的同学泡一壶热茶。",
+		"skills": [
+			{"name": "星眠", "sid": "xingmian", "text": "在你的准备阶段开始时，你可以选择跳过你本回合的出牌阶段。如果你这样做，从现在起到本回合结束，你不能成为「突击」的目标；并且在本回合的结束阶段，你从牌堆摸 3 张牌，同时回复 1 点体力。"},
+			{"name": "茶会", "sid": "chahui", "btn": "技能 · 茶会", "text": "出牌阶段限发动一次。你可以弃置 1 张手牌，并选择一名已经损失了体力的其他角色作为目标。该角色回复 1 点体力。"},
+		],
+	},
+	{
+		"id": "hibiki",
+		"name": "绯山响",
+		"title": "管弦乐部首席",
+		"work": SERIES,
+		"hp": 3,
+		"rarity": "SR",
+		"portrait": "res://assets/cg/hibiki.webp",
+		"focus": Vector2(0.51, 0.26),
+		"intro": "管弦乐部的首席小提琴手，一头蓝色短发，脾气和琴声一样火爆。是班上说一不二的女生领袖，排练时谁走音就会被她当场训到哭。",
+		"skills": [
+			{"name": "琴音", "sid": "qinyin", "btn": "技能 · 琴音（红牌当突击）", "text": "出牌阶段限发动一次。你可以将 1 张红色手牌当作一张「突击」使用。这张「突击」不计入你每回合只能使用一张「突击」的次数限制。"},
+			{"name": "怒喝", "sid": "nuhe", "text": "当你使用「突击」指定一名角色作为目标，并且该角色打出一张「闪避」使这张「突击」无效时，你可以从该角色的手牌或装备区中选择 1 张牌并将其弃置。"},
+		],
+	},
+	{
+		"id": "koume",
+		"name": "藤代小梅",
+		"title": "咖啡研究会的见习女仆",
+		"work": SERIES,
+		"hp": 3,
+		"rarity": "SR",
+		"portrait": "res://assets/cg/koume.webp",
+		"focus": Vector2(0.48, 0.23),
+		"intro": "咖啡研究会的见习女仆，戴着猫耳发箍招呼客人。胆子很小，一紧张就躲到柜台后面，可是泡茶、点单、端盘子，什么都是看一遍就学会。",
+		"skills": [
+			{"name": "侍奉", "sid": "shifeng", "btn": "技能 · 侍奉", "text": "出牌阶段限发动一次。你可以选择一名其他角色，将你的 1 张手牌交给该角色。在交出手牌之后，你从牌堆摸 2 张牌。"},
+			{"name": "猫步", "sid": "maobu", "text": "每轮限发动一次。当你成为一张「突击」的目标时，在这张「突击」结算之前，你可以弃置 1 张黑色手牌。如果你这样做，这张「突击」对你无效，不会对你造成伤害。"},
+		],
+	},
+]
+
+# 旧版（V0.30 及以前）角色名 / id → 新名，用于迁移 user:// 里的战绩与熟练度
+const LEGACY_NAME := {
+	"\u82b3\u4e43\u6a31": "花宫雏", "\u671d\u4ed3\u97f3\u68a6": "柚木铃奈", "\u767d\u6cb3\u5c0f\u9e1f": "宫坂歌织",
+	"\u5929\u67b7\u7f8e\u6625": "森崎千夏", "\u6c34\u8d8a\u840c": "夜宫静羽", "\u6c34\u8d8a\u771f\u5b50": "绯山响",
+	"\u9e6d\u6cfd\u8d56\u5b50": "藤代小梅",
+}
+
+static func by_id(cid: String) -> Dictionary:
+	for c in LIST:
+		if c["id"] == cid:
+			return c
+	return {}
+
+
+static func migrate_name(n: String) -> String:
+	return String(LEGACY_NAME.get(n, n))
+
+
+static func by_work(work_name: String) -> Array:
+	var out: Array = []
+	for c in LIST:
+		if c["work"] == work_name:
+			out.append(c)
+	return out
