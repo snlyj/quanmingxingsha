@@ -39,6 +39,8 @@ func register_all(eng) -> void:
 	eng.register_skill("xingshi", {"name": "星蚀", "text": "魔王技，锁定技。结束阶段开始时，若你已受伤，对一名敌方角色造成 1 点雷电伤害。", "timings": {"phaseJieshuStart": {"who": "player", "forced": true, "filter": Callable(self, "_xingshi_filter"), "content": Callable(self, "_xingshi_content")}}})
 	eng.register_skill("shengdun", {"name": "圣盾", "timings": {"phaseZhunbeiStart": {"who": "player", "forced": true, "filter": Callable(self, "_shengdun_filter"), "content": Callable(self, "_shengdun_content")}}})
 	eng.register_skill("yuanhu", {"name": "援护", "active": {"filter": Callable(self, "_hand_ge1"), "ai_use": Callable(self, "_yuanhu_aiuse"), "content": Callable(self, "_yuanhu_content")}})
+	eng.register_skill("shiji", {"name": "时计", "active": {"filter": Callable(self, "_shiji_filter"), "ai_use": Callable(self, "_shiji_aiuse"), "content": Callable(self, "_shiji_content")}})
+	eng.register_skill("xingwei", {"name": "星帷"})
 	eng.register_skill("xingying_lord", {"name": "星樱号令", "text": "主公技，锁定技。你的首个准备阶段开始时，若你没有「护甲」，你获得 1 点「护甲」；其他同阵营角色在濒死时对你使用「补给」后摸 1 张牌。", "timings": {"phaseZhunbeiStart": {"who": "player", "forced": true, "filter": Callable(self, "_xingying_lord_filter"), "content": Callable(self, "_xingying_lord_content")}}})
 
 
@@ -1020,3 +1022,73 @@ func _xingying_lord_filter(eng, ctx, p) -> bool:
 func _xingying_lord_content(eng, ctx, p) -> void:
 	eng.gain_shield(p, 1)
 	eng.log_msg("👑主公技「星樱号令」：%s 号令学园，获得 1 点「护甲」！" % eng.pname(p))
+
+
+# ---------- 星野咲夜（时计 + 星帷） ----------
+func _shiji_filter(eng, p) -> bool:
+	return not (eng.deck as Array).is_empty() or not (eng.discard_pile as Array).is_empty()
+
+
+func _shiji_aiuse(eng, p) -> bool:
+	return int(eng.round_no) < 30
+
+
+func _shiji_score(eng, p, c: Dictionary) -> float:
+	var nm := String(c.get("name", ""))
+	var sc := 1.0
+	if nm == "补给" and int(p["hp"]) < int(p["max_hp"]):
+		sc += 5.0
+	elif nm in ["特饮", "灵感爆发", "突然检查", "悄悄借走", "看破", "洞烛先机"]:
+		sc += 3.5
+	elif nm == "突击":
+		sc += 2.5 if not bool(p.get("used_attack", false)) else 1.2
+	elif nm == "闪避":
+		sc += 2.2
+	if eng.is_black(c) and eng.has_skill(p, "xingwei"):
+		sc += 0.6
+	return sc
+
+
+func _shiji_content(eng, p) -> void:
+	var revealed: Array = []
+	for _i in 2:
+		eng.reshuffle_if_needed()
+		if (eng.deck as Array).is_empty():
+			break
+		revealed.append((eng.deck as Array).pop_back())
+	if revealed.is_empty():
+		return
+	var rev_txt: Array = []
+	for rc in revealed:
+		rev_txt.append(eng.card_text(rc))
+	eng.log_msg("⌛「时计」：%s 亮出牌堆顶：%s。" % [eng.pname(p), "、".join(PackedStringArray(rev_txt))])
+	var pick_idx := 0
+	if revealed.size() >= 2:
+		var c0: Dictionary = revealed[0]
+		var c1: Dictionary = revealed[1]
+		var ai_idx := 0 if _shiji_score(eng, p, c0) >= _shiji_score(eng, p, c1) else 1
+		if eng.is_human(p):
+			var opts: Array = [
+				{"label": "收入手牌：" + eng.card_text(c0), "value": 0},
+				{"label": "收入手牌：" + eng.card_text(c1), "value": 1},
+			]
+			var v: Variant = await eng.pick_option(p, opts, "「时计」：选择 1 张加入手牌（另一张弃置）", ai_idx)
+			pick_idx = clampi(int(v), 0, 1)
+		else:
+			pick_idx = ai_idx
+	var chosen: Dictionary = revealed[pick_idx]
+	eng.gain_card(p, chosen)
+	for i in revealed.size():
+		if i != pick_idx:
+			(eng.discard_pile as Array).append(revealed[i])
+	if revealed.size() >= 2 and eng.is_red(revealed[0]) == eng.is_red(revealed[1]):
+		eng.gain_shield(p, 1)
+		eng.log_msg("⌛「时计」同色共鸣：%s 获得 1 点「护甲」（当前护甲 %d）！" % [eng.pname(p), int(p.get("shield", 0))])
+	if (p["hand"] as Array).size() > int(p["hp"]):
+		var dc: Dictionary = await eng.pick_card(p, {"prompt": "「时计」：手牌数大于体力值，须弃置 1 张手牌", "ai": Callable(self, "_worst_card")})
+		if dc.is_empty() and not (p["hand"] as Array).is_empty():
+			dc = eng.ai_pick_discard(p)
+		if not dc.is_empty():
+			eng.discard_from_hand(p, dc)
+			eng.log_msg("「时计」：%s 弃置了 %s。" % [eng.pname(p), eng.card_text(dc)])
+	eng.changed()

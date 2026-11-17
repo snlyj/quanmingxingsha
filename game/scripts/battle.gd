@@ -1,6 +1,7 @@
 class_name BattleScreen
 extends Control
 const CardDefs = preload("res://data/cards.gd")
+const Puzzles = preload("res://data/puzzles.gd")
 const EngineScript = preload("res://scripts/engine.gd")
 const HelpText = preload("res://data/help.gd")
 const Art = preload("res://scripts/art.gd")
@@ -44,6 +45,12 @@ var voice_player: AudioStreamPlayer = null
 var sfx_count := 0  # 播放请求计数（测试用）
 const AudioCfg = preload("res://scripts/audio.gd")
 const Meta = preload("res://scripts/meta.gd")
+var puzzle_id: String = ""  # V0.37 残局关卡 id
+var puzzle_panel: PanelContainer = null
+var puzzle_label: Label = null
+var puzzle_hint_shown: bool = false
+var puzzle_hint_btn: Button = null
+var open_puzzles_cb: Callable = Callable()
 var tutorial := false  # V0.30 教学关（脚本化单挑）
 var ask_bar_fill: ColorRect = null
 var ask_bar_bg_ref: Panel = null
@@ -69,6 +76,8 @@ var auto_mode := false
 var auto_takeover := false
 var concede_arm := false
 var auto_btn: Button
+var sort_btn: Button = null
+var hand_sort_by_suit: bool = false
 var concede_btn: Button
 var info_overlay: Panel
 var info_title: Label
@@ -440,11 +449,15 @@ func set_phase(text: String) -> void:
 
 
 func show_hint(text: String) -> void:
+	if prompt_panel == null or prompt_label == null:
+		return
 	prompt_panel.visible = true
 	prompt_label.text = text
 
 
 func hide_prompt() -> void:
+	if prompt_panel == null or prompt_label == null:
+		return
 	if ask_bar_tween and ask_bar_tween.is_valid():
 		ask_bar_tween.kill()
 	if ask_bar_bg_ref != null:
@@ -463,6 +476,12 @@ func build_table() -> void:
 	for ch in get_children():
 		ch.queue_free()
 	seat_panels.clear()
+	diff_btns.clear()
+	glow_frames.clear()
+	sort_btn = null
+	puzzle_panel = null
+	puzzle_hint_btn = null
+	puzzle_label = null
 	selected_card = {}
 	targeting = false
 	var bg_catch := Control.new()
@@ -546,6 +565,7 @@ func build_table() -> void:
 			"记录":
 				fb.pressed.connect(func() -> void: open_info_overlay("战况记录", "\n".join(eng.log_lines) if eng != null else ""))
 			"排序":
+				sort_btn = fb
 				fb.pressed.connect(func() -> void: sort_my_hand())
 			"托管":
 				auto_btn = fb
@@ -1604,7 +1624,9 @@ func refresh() -> void:
 				elif scn == "突击":
 					tag_ok = inr and not bool(p.get("dream_guard", false))
 					tag_txt = "星眠免疫" if bool(p.get("dream_guard", false)) else ("攻击可达" if inr else "距离不足")
-			var mate_prefix := "★队友 · " if ((game_mode == "twovtwo" or game_mode == "boss") and String(p["identity"]) == String(players[0]["identity"])) else ("👑BOSS · " if (game_mode == "boss" and String(p["identity"]) == "魔王") else "")
+			var ddz_ally := game_mode == "doudizhu" and not players.is_empty() and String(players[0]["identity"]) == "农民" and String(p["identity"]) == "农民"
+			var is_ally_seat := ((game_mode == "twovtwo" or game_mode == "boss") and String(p["identity"]) == String(players[0]["identity"])) or ddz_ally
+			var mate_prefix := "★队友 · " if is_ally_seat else ("👑BOSS · " if (game_mode == "boss" and String(p["identity"]) == "魔王") else ("👑地主 · " if (game_mode == "doudizhu" and String(p["identity"]) == "地主") else ("⚔守关 · " if (game_mode == "puzzle" and String(p["identity"]) == "守关") else "")))
 			info.text = "%s距 %d · %s" % [mate_prefix, dd, tag_txt]
 			info.modulate = Color(1, 0.96, 0.78, 1) if (not selected_card.is_empty() and tag_ok) else (Color(1, 1, 1, 1) if tag_ok else Color(0.72, 0.72, 0.78, 0.85))
 		else:
@@ -2309,7 +2331,7 @@ func _update_action_bar() -> void:
 		recast_btn.visible = rc_ok
 		recast_btn.disabled = not (rc_ok and interactive)
 	if luck_btn != null:
-		var lk_ok: bool = not tutorial and round_no <= 1 and luck_left > 0 and not players.is_empty() and not (players[0]["hand"] as Array).is_empty() and int(players[0].get("attack_count", 0)) == 0 and (players[0]["turn_used"] as Dictionary).is_empty()
+		var lk_ok: bool = not tutorial and game_mode != "puzzle" and round_no <= 1 and luck_left > 0 and not players.is_empty() and not (players[0]["hand"] as Array).is_empty() and int(players[0].get("attack_count", 0)) == 0 and (players[0]["turn_used"] as Dictionary).is_empty()
 		luck_btn.visible = lk_ok
 		luck_btn.disabled = not (lk_ok and interactive)
 		luck_btn.text = "手气卡×%d" % luck_left
@@ -2983,9 +3005,9 @@ func _skill_entries() -> Array:
 		for d in eng.active_options(me):
 			avail[String(d["sid"])] = true
 	var texts := {}
-	for sk in (me["char"].get("skills", []) as Array):
+	for sk in ((me.get("char", {}) as Dictionary).get("skills", []) as Array):
 		texts[String(sk.get("sid", ""))] = String(sk.get("text", ""))
-	for sid in (me["skills"] as Array):
+	for sid in (me.get("skills", []) as Array):
 		var def: Dictionary = eng.skill_lib.get(sid, {})
 		if def.is_empty():
 			continue
@@ -3132,12 +3154,20 @@ func ask_choose_target(prompt: String, candidates: Array, allow_cancel: bool = t
 func start_match(sim: bool) -> void:
 	auto_all = sim
 	fast = sim
+	var pspec: Dictionary = {}
 	if tutorial:
 		game_mode = "duel"
 		my_role = "先手"
 		difficulty = 0
 		tut_step = 0
-	match_players = 3 if game_mode == "doudizhu" else (2 if game_mode == "duel" else (4 if (game_mode == "twovtwo" or game_mode == "boss") else 5))
+	elif game_mode == "puzzle":
+		pspec = Puzzles.by_id(puzzle_id)
+		if pspec.is_empty():
+			pspec = Puzzles.LIST[0]
+		puzzle_id = String(pspec["id"])
+		difficulty = 2
+		puzzle_hint_shown = false
+	match_players = Puzzles.identities(pspec).size() if game_mode == "puzzle" else (3 if game_mode == "doudizhu" else (2 if game_mode == "duel" else (4 if (game_mode == "twovtwo" or game_mode == "boss") else 5)))
 	game_over = false
 	round_no = 1
 	log_lines.clear()
@@ -3146,7 +3176,11 @@ func start_match(sim: bool) -> void:
 		move_child(fx_root, get_child_count() - 1)
 	var identities: Array
 	var n := 5
-	if game_mode == "doudizhu":
+	if game_mode == "puzzle":
+		identities = Puzzles.identities(pspec)
+		n = identities.size()
+		match_players = n
+	elif game_mode == "doudizhu":
 		n = 3
 		match_players = 3
 		identities = ["农民", "农民", "农民"]  # 地主由开局叫分决定（引擎 run_ddz_bidding）
@@ -3166,7 +3200,7 @@ func start_match(sim: bool) -> void:
 		match_players = 5
 		identities = ["主公", "忠臣", "反贼", "反贼", "内奸"]
 		identities.shuffle()
-	luck_left = 2
+	luck_left = 0 if (tutorial or game_mode == "puzzle") else 2
 	lord_pre_char = {}
 	var pool: Array = Characters.LIST.duplicate()
 	pool.shuffle()
@@ -3178,27 +3212,36 @@ func start_match(sim: bool) -> void:
 			cand_pool.append(c)
 	var human_candidates: Array = cand_pool.slice(0, mini(3, cand_pool.size()))
 	var human_char: Dictionary
-	if tutorial:
-		human_char = _char_by_name("花宫雏")
-	elif sim:
-		human_char = human_candidates[0]
+	var seat_chars: Array = []
+	if game_mode == "puzzle":
+		for sd in Puzzles.seat_specs(pspec):
+			var cd0 := Characters.by_id(String((sd as Dictionary).get("char", "hina")))
+			seat_chars.append(cd0 if not cd0.is_empty() else Characters.LIST[0])
+		human_char = seat_chars[0]
 	else:
-		human_char = await ask_pick_character(human_candidates, String(identities[0]))
-	var rest: Array = []
-	for c in pool:
-		if String(c["id"]) != String(human_char["id"]) and (lord_pre_char.is_empty() or String(c["id"]) != String(lord_pre_char.get("id", ""))):
-			rest.append(c)
-	rest.shuffle()
-	var seat_chars: Array = [human_char]
-	var r_idx := 0
-	for i in range(1, n):
-		if game_mode == "identity" and String(identities[i]) == "主公" and not lord_pre_char.is_empty():
-			seat_chars.append(lord_pre_char)
+		if tutorial:
+			human_char = _char_by_name("花宫雏")
+		elif sim:
+			human_char = human_candidates[0]
 		else:
-			seat_chars.append(rest[r_idx % rest.size()])
-			r_idx += 1
-	if tutorial:
-		seat_chars = [human_char, _char_by_name("柚木铃奈")]
+			human_char = await ask_pick_character(human_candidates, String(identities[0]))
+			if not is_inside_tree() or human_char.is_empty():
+				return
+		var rest: Array = []
+		for c in pool:
+			if String(c["id"]) != String(human_char["id"]) and (lord_pre_char.is_empty() or String(c["id"]) != String(lord_pre_char.get("id", ""))):
+				rest.append(c)
+		rest.shuffle()
+		seat_chars = [human_char]
+		var r_idx := 0
+		for i in range(1, n):
+			if game_mode == "identity" and String(identities[i]) == "主公" and not lord_pre_char.is_empty():
+				seat_chars.append(lord_pre_char)
+			else:
+				seat_chars.append(rest[r_idx % rest.size()])
+				r_idx += 1
+		if tutorial:
+			seat_chars = [human_char, _char_by_name("柚木铃奈")]
 	var char_list: Array = []
 	for i in n:
 		var cd: Dictionary = seat_chars[i]
@@ -3231,11 +3274,15 @@ func start_match(sim: bool) -> void:
 	if game_mode == "duel":
 		eng.duel_first_seat = identities.find("先手")
 	eng.setup_game(char_list, identities)
+	if game_mode == "puzzle":
+		Puzzles.rig(eng, pspec)
 	players = eng.players
 	if tutorial:
 		_tut_rig()
+	elif game_mode == "puzzle":
+		_puzzle_show(pspec)
 	turn_seat = 0
-	var first_id := "主公" if game_mode == "identity" else ("地主" if game_mode == "doudizhu" else ("红方" if game_mode == "twovtwo" else ("联军" if game_mode == "boss" else "先手")))
+	var first_id := "主公" if game_mode == "identity" else ("地主" if game_mode == "doudizhu" else ("红方" if game_mode == "twovtwo" else ("联军" if game_mode == "boss" else ("挑战者" if game_mode == "puzzle" else "先手"))))
 	for p in players:
 		if p["identity"] == first_id:
 			turn_seat = int(p["seat"])
@@ -3246,6 +3293,8 @@ func start_match(sim: bool) -> void:
 		log_msg("对局开始！欢乐 2v2：你（1号位）与 4号位【%s】同属红方阵营。" % String(players[3]["char_name"]))
 	elif game_mode == "boss":
 		log_msg("对局开始！魔王挑战：你与 2号位【%s】、4号位【%s】组成联军，讨伐 3号位 8血魔王【%s】！" % [String(players[1]["char_name"]), String(players[3]["char_name"]), String(players[2]["char_name"])])
+	elif game_mode == "puzzle":
+		log_msg("残局挑战·【%s】：%s" % [String(pspec["name"]), String(pspec["goal"])])
 	elif game_mode == "doudizhu":
 		log_msg("对局开始！你的角色是【%s】，先叫分决定地主。" % human_char["name"])
 	else:
@@ -3289,6 +3338,8 @@ func ask_pick_character(candidates: Array, my_identity: String) -> Dictionary:
 	diff_layer.visible = true
 	_populate_draft_cards(candidates, my_identity)
 	var picked: Variant = await decided
+	if not is_inside_tree():
+		return {}
 	if free_pick_overlay != null and is_instance_valid(free_pick_overlay):
 		free_pick_overlay.visible = false
 	draft_layer.visible = false
@@ -3299,7 +3350,9 @@ func ask_pick_character(candidates: Array, my_identity: String) -> Dictionary:
 	for ch in draft_layer.get_children():
 		draft_layer.remove_child(ch)
 		ch.queue_free()
-	return picked
+	if picked is Dictionary and not (picked as Dictionary).is_empty():
+		return picked
+	return {}
 
 
 func _populate_draft_cards(candidates: Array, my_identity: String) -> void:
@@ -3418,6 +3471,10 @@ func end_game(text: String) -> void:
 				your_result = "你赢了！" if my_id == "联军" else "你输了。"
 			elif text.contains("魔王获胜"):
 				your_result = "你赢了！" if my_id == "魔王" else "你输了。"
+		elif game_mode == "puzzle":
+			your_result = "你赢了！" if text.contains("残局破解成功") else "你输了。"
+	if puzzle_panel != null and is_instance_valid(puzzle_panel):
+		puzzle_panel.visible = false
 	if text.contains("未分胜负"):
 		your_result = "平局"
 	log_msg("对局结束：%s %s" % [text, your_result])
@@ -3495,6 +3552,59 @@ func _tut_rig() -> void:
 	_tut_show(0)
 
 
+func _puzzle_show(pspec: Dictionary) -> void:
+	if puzzle_panel == null or not is_instance_valid(puzzle_panel):
+		puzzle_panel = PanelContainer.new()
+		puzzle_panel.add_theme_stylebox_override("panel", _tight(style(Color(1.0, 0.98, 0.93, 0.95), 16, Color(0.85, 0.52, 0.16), 3, true), 14, 10))
+		var tw := 440.0 if match_players == 4 else (390.0 if match_players == 3 else minf(660.0, vw / 2.0 - 200.0))
+		puzzle_panel.position = Vector2(360, 126) if match_players == 4 else (Vector2(36, 184) if match_players == 3 else Vector2(40, 184))
+		puzzle_panel.custom_minimum_size = Vector2(tw, 0)
+		puzzle_panel.size = Vector2(tw, 0)
+		var vb := VBoxContainer.new()
+		vb.add_theme_constant_override("separation", 6)
+		puzzle_panel.add_child(vb)
+		puzzle_label = lbl("", 19, C_INK, true, HORIZONTAL_ALIGNMENT_LEFT)
+		puzzle_label.custom_minimum_size = Vector2(tw - 28.0, 0)
+		vb.add_child(puzzle_label)
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 10)
+		puzzle_hint_btn = plain_btn("💡 看提示", Color(1.0, 0.94, 0.78), Color(0.45, 0.25, 0.05), 18)
+		puzzle_hint_btn.custom_minimum_size = Vector2(124, 34)
+		row.add_child(puzzle_hint_btn)
+		var rst := plain_btn("重开", Color(1, 1, 1, 0.95), C_PINK_DEEP, 18)
+		rst.custom_minimum_size = Vector2(96, 34)
+		rst.pressed.connect(_restart_puzzle)
+		row.add_child(rst)
+		vb.add_child(row)
+		add_child(puzzle_panel)
+	var idx_n := Puzzles.index_of(String(pspec.get("id", ""))) + 1
+	var update_txt := func() -> void:
+		var base_s := "【残局 %d/%d · %s】\n目标：%s" % [idx_n, Puzzles.count(), String(pspec["name"]), String(pspec["goal"])]
+		if puzzle_hint_shown:
+			base_s += "\n💡 提示：%s" % String(pspec["hint"])
+		puzzle_label.text = base_s
+		if puzzle_hint_btn != null:
+			puzzle_hint_btn.text = "收起提示" if puzzle_hint_shown else "💡 看提示"
+	puzzle_hint_btn.pressed.connect(func() -> void:
+		puzzle_hint_shown = not puzzle_hint_shown
+		update_txt.call())
+	update_txt.call()
+
+
+func _restart_puzzle() -> void:
+	if eng != null:
+		eng.game_over = true
+	in_play_phase = false
+	targeting = false
+	asking = false
+	hide_prompt()
+	decided.emit(null)
+	end_play_pressed.emit()
+	await get_tree().process_frame
+	if is_inside_tree():
+		start_match(false)
+
+
 func _tut_show(i: int) -> void:
 	tut_step = i
 	if tut_panel == null or not is_instance_valid(tut_panel):
@@ -3557,6 +3667,11 @@ func _record_meta(text: String, your_result: String) -> Dictionary:
 	if tutorial:
 		var got := Meta.mark_tutorial()
 		return {"new_ach": got}
+	if game_mode == "puzzle":
+		if your_result == "你赢了！" and puzzle_id != "":
+			var pgot := Meta.mark_puzzle(puzzle_id)
+			return {"new_ach": pgot, "puzzle_clear": true}
+		return {}
 	var me: Dictionary = players[0]
 	var res := "win" if your_result == "你赢了！" else ("lose" if your_result == "你输了。" else "draw")
 	var mvi := _mvp_info(text)
@@ -3593,6 +3708,8 @@ func _mvp_info(winner_text: String) -> Array:
 			in_win = idn == "联军"
 		elif winner_text.contains("魔王获胜"):
 			in_win = idn == "魔王"
+		elif winner_text.contains("残局破解成功"):
+			in_win = idn == "挑战者"
 		elif game_mode == "duel":
 			in_win = bool(p["alive"])
 		var sc := float(int(p.get("stat_damage", 0))) + 3.0 * float(int(p.get("stat_kills", 0))) + 0.8 * float(int(p.get("stat_heal", 0)))
@@ -3687,6 +3804,10 @@ func build_settlement(winner_text: String, your_result: String) -> void:
 				idc = Color(0.88, 0.45, 0.1)
 			"农民":
 				idc = Color(0.3, 0.65, 0.35)
+			"挑战者":
+				idc = Color(0.85, 0.45, 0.1)
+			"守关":
+				idc = Color(0.55, 0.30, 0.78)
 			"先手", "后手":
 				idc = Color(0.35, 0.5, 0.8)
 		var head := lbl("%d号 %s%s" % [int(p["seat"]) + 1, String(p["char"]["name"]), " ★MVP" if is_mvp else ""], 26, Color(0.3, 0.22, 0.3), true)
@@ -3729,19 +3850,44 @@ func build_settlement(winner_text: String, your_result: String) -> void:
 			var ml := lbl("　".join(PackedStringArray(mt_parts)), 22, C_GOLD.darkened(0.15), true)
 			ml.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 			vb.add_child(ml)
+	if game_mode == "puzzle" and not win:
+		var pspec_end := Puzzles.by_id(puzzle_id)
+		if not pspec_end.is_empty():
+			var hl := lbl("💡 通关思路：" + String(pspec_end.get("hint", "")), 22, Color(0.45, 0.26, 0.08), true, HORIZONTAL_ALIGNMENT_CENTER)
+			hl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+			vb.add_child(hl)
 	vb.add_child(btn_row)
-	var again := plain_btn("再来一局", C_PLATE, C_WHITE, 30)
-	again.custom_minimum_size = Vector2(240, 66)
-	again.pressed.connect(func() -> void: start_match(false))
-	btn_row.add_child(again)
-	var log_b := plain_btn("📜 完整战报", Color(1, 0.97, 0.92), Color(0.35, 0.22, 0.10), 28)
-	log_b.custom_minimum_size = Vector2(220, 66)
+	if game_mode == "puzzle":
+		var nid := Puzzles.next_id(puzzle_id)
+		if win and nid != "":
+			var next_b := plain_btn("下一关 ▶", C_PLATE, C_WHITE, 28)
+			next_b.custom_minimum_size = Vector2(200, 66)
+			next_b.pressed.connect(func() -> void:
+				puzzle_id = nid
+				start_match(false))
+			btn_row.add_child(next_b)
+		var retry_b := plain_btn("重玩本关", Color(0.98, 0.62, 0.25) if not win else Color(1, 0.97, 0.94), C_WHITE if not win else C_INK, 26)
+		retry_b.custom_minimum_size = Vector2(190, 66)
+		retry_b.pressed.connect(func() -> void: start_match(false))
+		btn_row.add_child(retry_b)
+		if open_puzzles_cb.is_valid():
+			var list_b := plain_btn("选关列表", Color(1, 1, 1, 0.95), C_INDIGO, 26)
+			list_b.custom_minimum_size = Vector2(170, 66)
+			list_b.pressed.connect(func() -> void: open_puzzles_cb.call())
+			btn_row.add_child(list_b)
+	else:
+		var again := plain_btn("再来一局", C_PLATE, C_WHITE, 30)
+		again.custom_minimum_size = Vector2(240, 66)
+		again.pressed.connect(func() -> void: start_match(false))
+		btn_row.add_child(again)
+	var log_b := plain_btn("📜 完整战报", Color(1, 0.97, 0.92), Color(0.35, 0.22, 0.10), 26)
+	log_b.custom_minimum_size = Vector2(200, 66)
 	log_b.pressed.connect(func() -> void:
 		open_info_overlay("本局完整战报", "\n".join(eng.log_lines) if eng != null else "")
 		move_child(info_overlay, get_child_count() - 1))
 	btn_row.add_child(log_b)
-	var home := plain_btn("返回主页", C_WHITE, C_PINK_DEEP, 30)
-	home.custom_minimum_size = Vector2(240, 66)
+	var home := plain_btn("返回主页", C_WHITE, C_PINK_DEEP, 28)
+	home.custom_minimum_size = Vector2(200, 66)
 	home.pressed.connect(func() -> void: go_home.call())
 	btn_row.add_child(home)
 	_extend_cover(dim, Color(0.16, 0.05, 0.12, 0.55))
@@ -4162,7 +4308,8 @@ func counter_text() -> String:
 	var lines: Array = [
 		"牌堆剩余 %d 张 · 弃牌堆 %d 张" % [eng.deck.size(), eng.discard_pile.size()],
 	]
-	if (game_mode == "twovtwo" or game_mode == "boss") and not players.is_empty():
+	var can_see_ally := (game_mode == "twovtwo" or game_mode == "boss" or (game_mode == "doudizhu" and not players.is_empty() and String(players[0]["identity"]) == "农民"))
+	if can_see_ally and not players.is_empty():
 		lines.append("")
 		lines.append("【同盟队友实时手牌与状态】")
 		for mp in players:
@@ -4201,7 +4348,7 @@ func counter_text() -> String:
 
 
 func hand_sort_cmp(a: Dictionary, b: Dictionary) -> bool:
-	var rank := {"基本牌": 0, "锦囊牌": 1, "延时锦囊": 2, "武器": 3, "防具": 4, "饰品": 5}
+	var rank := {"基本牌": 0, "锦囊牌": 1, "延时锦囊": 2, "武器": 3, "防具": 4, "饰品": 5, "宝物": 6}
 	var ra := int(rank.get(CardDefs.kind_of(String(a["name"])), 9))
 	var rb := int(rank.get(CardDefs.kind_of(String(b["name"])), 9))
 	if ra != rb:
@@ -4211,10 +4358,28 @@ func hand_sort_cmp(a: Dictionary, b: Dictionary) -> bool:
 	return int(a["point"]) < int(b["point"])
 
 
+func hand_sort_suit_cmp(a: Dictionary, b: Dictionary) -> bool:
+	var srank := {"黑桃": 0, "红桃": 1, "梅花": 2, "方块": 3}
+	var sa := int(srank.get(String(a.get("suit", "")), 9))
+	var sb := int(srank.get(String(b.get("suit", "")), 9))
+	if sa != sb:
+		return sa < sb
+	if int(a.get("point", 0)) != int(b.get("point", 0)):
+		return int(a.get("point", 0)) < int(b.get("point", 0))
+	return String(a["name"]) < String(b["name"])
+
+
 func sort_my_hand() -> void:
 	if players.is_empty():
 		return
-	(players[0]["hand"] as Array).sort_custom(hand_sort_cmp)
+	hand_sort_by_suit = not hand_sort_by_suit
+	if hand_sort_by_suit:
+		(players[0]["hand"] as Array).sort_custom(hand_sort_suit_cmp)
+	else:
+		(players[0]["hand"] as Array).sort_custom(hand_sort_cmp)
+	if sort_btn != null and is_instance_valid(sort_btn):
+		sort_btn.text = "花色" if hand_sort_by_suit else "排序"
+	show_hint("已按【花色点数】整理手牌（再点切回类型）" if hand_sort_by_suit else "已按【卡牌类型】整理手牌（再点切换花色）")
 	refresh()
 
 
@@ -5554,7 +5719,8 @@ func _intro_seat(seat: int) -> Dictionary:
 		st.append("你能突击到TA" if attack_reachable(me, {"name": "突击"}, p) else "不在你的攻击范围内")
 	if bool(p.get("chained", false)):
 		st.append("连环状态")
-	if (game_mode == "twovtwo" or game_mode == "boss") and seat != 0 and String(p["identity"]) == String(me["identity"]):
+	var ddz_ally2 := game_mode == "doudizhu" and String(me["identity"]) == "农民" and String(p["identity"]) == "农民"
+	if ((game_mode == "twovtwo" or game_mode == "boss") or ddz_ally2) and seat != 0 and String(p["identity"]) == String(me["identity"]):
 		var mcards: Array = []
 		for mc in p["hand"]:
 			mcards.append(card_text(mc))
@@ -5970,6 +6136,8 @@ func _skill_ui_spec(sid: String) -> Dictionary:
 			return {"card": "any", "card_role": "精算置换（弃1摸2，黑色牌且受伤则回1血）", "targets": null}
 		"yuanhu":
 			return {"card": "any", "card_role": "作为代价弃置（令目标获得1点护甲）", "targets": all_alive}
+		"shiji":
+			return {"card": "none", "targets": null}
 	return {"card": "none", "targets": null}
 
 

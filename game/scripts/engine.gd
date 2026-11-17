@@ -279,6 +279,8 @@ func concede(p: Dictionary) -> void:
 		winner_text = "蓝方获胜！" if String(p["identity"]) == "红方" else "红方获胜！"
 	elif mode == "boss":
 		winner_text = "魔王获胜！" if String(p["identity"]) == "联军" else "联军获胜！"
+	elif mode == "puzzle":
+		winner_text = "残局挑战失败！"
 	elif mode == "duel":
 		var other: Dictionary = players[0] if p == players[1] else players[1]
 		winner_text = "%s 在单挑中获胜！" % pname(other)
@@ -573,6 +575,7 @@ func setup_game(char_list: Array, identities: Array) -> void:
 		p["dream_guard"] = false
 		p["dream_pending"] = false
 		p["chained"] = false
+		p["xingwei_turn_used"] = false
 		p["stat_damage"] = 0
 		p["stat_taken"] = 0
 		p["stat_kills"] = 0
@@ -601,6 +604,8 @@ func setup_game(char_list: Array, identities: Array) -> void:
 		log_msg("对局开始：欢乐 2v2（1·4号位红方 vs 2·3号位蓝方；1号位首轮少摸1张，4号位起手5张，队友阵亡摸1张）。")
 	elif mode == "boss":
 		log_msg("对局开始：魔王挑战（3人联军 vs 8体力大魔王；魔王拥有「魔威」「星蚀」，联军阵亡时存活队友各摸1张牌）。")
+	elif mode == "puzzle":
+		log_msg("对局开始：残局闯关（须在你的回合内击破全部守关者）。")
 	elif mode == "duel":
 		log_msg("对局开始：单挑对决（先手起手 3 张，后手 4 张）。")
 	else:
@@ -624,7 +629,7 @@ func first_player() -> Dictionary:
 		return {}
 	if mode == "duel":
 		return players[duel_first_seat] if players.size() > duel_first_seat else {}
-	if mode == "twovtwo" or mode == "boss":
+	if mode == "twovtwo" or mode == "boss" or mode == "puzzle":
 		return players[0] if not players.is_empty() else {}
 	return lord_player()
 
@@ -772,6 +777,7 @@ func respond_with(p: Dictionary, card_name: String, reason: String, responded_ca
 	# 请求 p 打出一张 card_name 作为响应；成功返回 true
 	var c := find_in_hand(p, card_name)
 	var converted := false
+	var convert_src := "烂银铠甲"
 	if c.is_empty() and card_name == "闪避" and not (p["hand"] as Array).is_empty():
 		# 烂银铠甲：可将任意一张手牌当作「闪避」打出
 		var arm2: Dictionary = p["equip"]["armor"]
@@ -784,6 +790,30 @@ func respond_with(p: Dictionary, card_name: String, reason: String, responded_ca
 				if bool(yv):
 					c = await (ui["choose_discard"] as Callable).call(p)
 					converted = not c.is_empty()
+		# 星帷（星野咲夜）：每回合限一次，可将黑色手牌当作「闪避」打出
+		if c.is_empty() and has_skill(p, "xingwei") and not bool(p.get("xingwei_turn_used", false)):
+			var blk_cands: Array = []
+			for hc in p["hand"]:
+				if is_black(hc):
+					blk_cands.append(hc)
+			if not blk_cands.is_empty():
+				if is_ai(p):
+					c = blk_cands[0]
+					for bc in blk_cands:
+						if String(bc.get("name", "")) in ["突击", "羁绊锁链", "沉迷游戏", "断粮封锁", "草木疑兵"]:
+							c = bc
+							break
+					converted = true
+					convert_src = "星帷"
+					p["xingwei_turn_used"] = true
+				elif ui.has("pick_option"):
+					var xv: Variant = await (ui["pick_option"] as Callable).call(p, [{"label": "发动「星帷」：黑色手牌当闪避", "value": true}, {"label": "不用", "value": false}], "「星帷」：是否将 1 张黑色手牌当作「闪避」打出？（每回合限一次）")
+					if bool(xv):
+						c = await pick_card(p, {"black_only": true, "prompt": "「星帷」：选择 1 张黑色手牌当作「闪避」"})
+						if not c.is_empty():
+							converted = true
+							convert_src = "星帷"
+							p["xingwei_turn_used"] = true
 	if c.is_empty():
 		return false
 	var use := true
@@ -807,7 +837,9 @@ func respond_with(p: Dictionary, card_name: String, reason: String, responded_ca
 		(ui["played"] as Callable).call(c, pname(p))
 	discard_from_hand(p, c)
 	if converted:
-		log_msg("%s 以「烂银铠甲」将 %s 当作「闪避」打出（%s）。" % [pname(p), card_text(c), reason])
+		if convert_src == "星帷":
+			fx("skill", {"seat": int(p["seat"]), "name": "星帷", "sid": "xingwei", "big": true})
+		log_msg("%s 以「%s」将 %s 当作「闪避」打出（%s）。" % [pname(p), convert_src, card_text(c), reason])
 	else:
 		log_msg("%s 打出 %s（%s）。" % [pname(p), card_text(c), reason])
 	if card_name == "闪避" and not converted:
@@ -928,38 +960,74 @@ func nullify_window(trick: String, user: Dictionary, victim: Dictionary, trick_c
 	while guard < 12:
 		guard += 1
 		var actor: Dictionary = {}
+		var actor_card: Dictionary = {}
+		var actor_xw := false
 		for p in seat_order_from(int(user["seat"])):
 			if not p["alive"]:
 				continue
 			if p == user and not negated:
 				continue
-			if find_in_hand(p, "看破").is_empty():
+			var nc := find_in_hand(p, "看破")
+			var xw_blks: Array = []
+			if nc.is_empty() and has_skill(p, "xingwei") and not bool(p.get("xingwei_turn_used", false)):
+				for hc in p["hand"]:
+					if is_black(hc):
+						xw_blks.append(hc)
+			if nc.is_empty() and xw_blks.is_empty():
 				continue
 			var go := false
-			if is_ai(p):
-				go = ai_wants_nullify(p, user, victim, negated, trick)
-			elif ui.has("ask_respond"):
-				var vname := pname(victim) if not victim.is_empty() else "全场"
-				var state := "已被看破" if negated else "即将生效"
-				go = bool(await (ui["ask_respond"] as Callable).call(p, "看破", "%s 对 %s 使用「%s」（当前：%s）" % [pname(user), vname, trick, state]))
-			if go:
-				actor = p
-				break
+			if not nc.is_empty():
+				if is_ai(p):
+					go = ai_wants_nullify(p, user, victim, negated, trick)
+				elif ui.has("ask_respond"):
+					var vname := pname(victim) if not victim.is_empty() else "全场"
+					var state := "已被看破" if negated else "即将生效"
+					go = bool(await (ui["ask_respond"] as Callable).call(p, "看破", "%s 对 %s 使用「%s」（当前：%s）" % [pname(user), vname, trick, state]))
+				if go:
+					actor = p
+					actor_card = nc
+					break
+			else:
+				if is_ai(p):
+					var high_value: bool = (trick in ["单挑", "突然检查", "悄悄借走", "火焰试炼", "沉迷游戏", "断粮封锁", "水淹七军", "全场乱斗", "弹幕齐射"]) or (not victim.is_empty() and p == victim) or negated
+					if high_value and ai_wants_nullify(p, user, victim, negated, trick):
+						actor = p
+						actor_card = xw_blks[0]
+						actor_xw = true
+						break
+				elif ui.has("pick_option"):
+					var vname2 := pname(victim) if not victim.is_empty() else "全场"
+					var state2 := "已被看破" if negated else "即将生效"
+					var xv2: Variant = await (ui["pick_option"] as Callable).call(p, [{"label": "发动「星帷」当看破", "value": true}, {"label": "跳过", "value": false}], "「星帷」：%s 对 %s 使用「%s」（%s），是否用黑色牌当「看破」？" % [pname(user), vname2, trick, state2])
+					if bool(xv2):
+						var picked_blk := await pick_card(p, {"black_only": true, "prompt": "「星帷」：选择 1 张黑色手牌当作「看破」"})
+						if not picked_blk.is_empty():
+							actor = p
+							actor_card = picked_blk
+							actor_xw = true
+							break
 		if actor.is_empty():
 			break
 		if is_ai(actor):
 			await think(0.6, 1.0)
-		var c := find_in_hand(actor, "看破")
+		var c := actor_card
+		if actor_xw:
+			actor["xingwei_turn_used"] = true
+			fx("skill", {"seat": int(actor["seat"]), "name": "星帷", "sid": "xingwei", "big": true})
 		if ui.has("played"):
 			(ui["played"] as Callable).call(c, pname(actor))
 		discard_from_hand(actor, c)
-		await yb_response_effects(actor, c, resp_target)
-		resp_target = c
-		negated = not negated
-		if negated:
-			log_msg("%s 打出「看破」：%s 的「%s」被看破！" % [pname(actor), pname(user), trick])
+		if not actor_xw:
+			await yb_response_effects(actor, c, resp_target)
+			resp_target = c
 		else:
-			log_msg("%s 打出「看破」反制：「%s」恢复生效！" % [pname(actor), trick])
+			resp_target = {"name": "看破", "suit": String(c["suit"]), "point": int(c["point"]), "nature": "", "yb": [], "virtual": true, "src_cards": [c]}
+		negated = not negated
+		var kp_tag := ("以「星帷」将 %s 当作「看破」" % card_text(c)) if actor_xw else "打出「看破」"
+		if negated:
+			log_msg("%s %s：%s 的「%s」被看破！" % [pname(actor), kp_tag, pname(user), trick])
+		else:
+			log_msg("%s %s反制：「%s」恢复生效！" % [pname(actor), kp_tag, trick])
 		fx("nullify", {"seat": int(actor["seat"]), "negated": negated})
 		await pace(0.5)
 	return negated
@@ -1634,7 +1702,7 @@ func ai_should_save(rescuer: Dictionary, dying: Dictionary) -> bool:
 		return true
 	if mode == "duel":
 		return false
-	if mode == "doudizhu":
+	if mode == "doudizhu" or mode == "puzzle":
 		return ai_is_ally(rescuer, dying)
 	var di := String(dying["identity"])
 	if di == "主公":
@@ -1720,6 +1788,20 @@ func die(p: Dictionary, killer: Dictionary) -> void:
 
 
 func check_over() -> void:
+	if mode == "puzzle":
+		var guard_alive := 0
+		for p in players:
+			if bool(p["alive"]) and String(p["identity"]) == "守关":
+				guard_alive += 1
+		if players.is_empty() or not bool(players[0]["alive"]):
+			game_over = true
+			winner_text = "残局挑战失败！"
+		elif guard_alive == 0:
+			game_over = true
+			winner_text = "残局破解成功！"
+		if game_over:
+			log_msg("对局结束：%s" % winner_text)
+		return
 	if mode == "boss":
 		var boss_alive := false
 		var ally_alive := 0
@@ -1818,6 +1900,8 @@ func run_turn(p: Dictionary) -> void:
 		return
 	if is_ai(p):
 		await think(0.6, 1.0)
+	for q in players:
+		q["xingwei_turn_used"] = false
 	turn_player = p
 	phase_text = "准备阶段"
 	changed()
@@ -2047,7 +2131,7 @@ func ai_is_enemy(p: Dictionary, t: Dictionary) -> bool:
 		return false
 	if mode == "duel":
 		return true
-	if mode == "doudizhu" or mode == "twovtwo" or mode == "boss":
+	if mode == "doudizhu" or mode == "twovtwo" or mode == "boss" or mode == "puzzle":
 		return String(p["identity"]) != String(t["identity"])
 	# V0.32：身份场只剩两人且未分胜负时，双方必然敌对（主忠/反贼同阵营两人存活时对局已结束）
 	if bool(p["alive"]) and bool(t["alive"]) and alive_players().size() <= 2:
@@ -2078,7 +2162,7 @@ func ai_is_enemy(p: Dictionary, t: Dictionary) -> bool:
 func ai_is_ally(p: Dictionary, t: Dictionary) -> bool:
 	if mode == "duel":
 		return false
-	if mode == "doudizhu" or mode == "twovtwo" or mode == "boss":
+	if mode == "doudizhu" or mode == "twovtwo" or mode == "boss" or mode == "puzzle":
 		return p != t and String(p["identity"]) == String(t["identity"])
 	if p == t:
 		return true
@@ -2668,6 +2752,14 @@ func run_game() -> void:
 		if turn_hook.is_valid():
 			turn_hook.call(self, p)
 		await run_turn(p)
+		# V0.37 残局：挑战者用完规定回合仍未击破全部守关者即判负
+		if mode == "puzzle" and not game_over and int(p["seat"]) == 0:
+			puzzle_turns_used += 1
+			if puzzle_turns_used >= puzzle_turn_limit:
+				game_over = true
+				winner_text = "残局挑战失败！回合结束仍有守关者存活。"
+				log_msg("对局结束：%s" % winner_text)
+				changed()
 	if turn_hook.is_valid():
 		turn_hook.call(self, {})
 	if not game_over:
@@ -2835,6 +2927,8 @@ func resolve_delayed_phase(p: Dictionary) -> void:
 
 var lightning_back: Array = []
 var xingmian_legacy := false  # 仅平衡压测对照用：true = 旧口径（保护持续到下个回合开始）
+var puzzle_turn_limit := 1  # V0.37 残局：挑战者可用的回合数
+var puzzle_turns_used := 0
 var ai_chain_second: Dictionary = {}  # AI 使用羁绊锁链时预先选好的第二目标（空 = 只连一人）
 
 

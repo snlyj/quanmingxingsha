@@ -32,11 +32,13 @@ const ACHIEVEMENTS := [
 	["all_chars", "全员集合", "用全部 7 名角色各完成 1 局"],
 	["mastery_3", "得心应手", "任一角色熟练度达到 Lv3"],
 	["tutorial", "新手毕业", "完成教学关"],
+	["puzzle_first", "初破残局", "通过任意 1 关残局挑战"],
+	["puzzle_all", "残局大师", "通关全部 10 关残局挑战"],
 ]
 
 
 static func _blank() -> Dictionary:
-	return {"version": 2, "records": [], "totals": {}, "chars": {}, "ach": {}, "tutorial_done": false}
+	return {"version": 2, "records": [], "totals": {}, "chars": {}, "ach": {}, "puzzles": {}, "tutorial_done": false}
 
 
 static func load_data() -> Dictionary:
@@ -154,6 +156,34 @@ static func mark_tutorial() -> Array:
 		out.append(ach_def("tutorial"))
 	save()
 	return out
+
+
+static func mark_puzzle(pid: String) -> Array:
+	var d := load_data()
+	var pz: Dictionary = d.get("puzzles", {})
+	pz[pid] = int(Time.get_unix_time_from_system())
+	d["puzzles"] = pz
+	var out := []
+	var pz_script = load("res://data/puzzles.gd")
+	var total_n: int = pz_script.count() if pz_script != null else 10
+	if pz.size() >= 1 and not (d["ach"] as Dictionary).has("puzzle_first"):
+		d["ach"]["puzzle_first"] = int(Time.get_unix_time_from_system())
+		out.append(ach_def("puzzle_first"))
+	if pz.size() >= total_n and not (d["ach"] as Dictionary).has("puzzle_all"):
+		d["ach"]["puzzle_all"] = int(Time.get_unix_time_from_system())
+		out.append(ach_def("puzzle_all"))
+	save()
+	return out
+
+
+static func puzzle_cleared(pid: String) -> bool:
+	var pz: Dictionary = load_data().get("puzzles", {})
+	return pz.has(pid)
+
+
+static func puzzles_cleared_count() -> int:
+	var pz: Dictionary = load_data().get("puzzles", {})
+	return pz.size()
 
 
 static func ach_def(id: String) -> Array:

@@ -2,6 +2,7 @@ extends Control
 const HelpText = preload("res://data/help.gd")
 const CardDefsM = preload("res://data/cards.gd")
 const Art = preload("res://scripts/art.gd")
+const Puzzles = preload("res://data/puzzles.gd")
 const Meta = preload("res://scripts/meta.gd")
 const MusicDirector = preload("res://scripts/music.gd")
 
@@ -585,30 +586,35 @@ func show_home() -> void:
 	var b_duel := cute_button("单挑对决", "1 对 1 · 先手3张 / 后手4张", Color(0.45, 0.55, 0.95), Vector2(372, 134))
 	b_duel.pressed.connect(func() -> void: show_battle_mode("duel"))
 	btn_row2.add_child(b_duel)
-	var b_chars := cute_button("人物·卡牌图鉴", "15 名角色 & 55 种卡牌百科", C_SKY, Vector2(372, 134))
-	b_chars.pressed.connect(show_gallery)
-	btn_row2.add_child(b_chars)
+	var pz_done := Meta.puzzles_cleared_count()
+	var pz_all := Puzzles.count()
+	var b_pz := cute_button("残局闯关", "10 关一回合绝杀 · 已破 %d/%d" % [pz_done, pz_all], Color(0.84, 0.42, 0.22), Vector2(372, 134))
+	b_pz.pressed.connect(show_puzzles)
+	btn_row2.add_child(b_pz)
 	vb.add_child(btn_row2)
 
 	var theme_row := HBoxContainer.new()
 	theme_row.alignment = BoxContainer.ALIGNMENT_CENTER
-	theme_row.add_theme_constant_override("separation", 24)
-	# V0.30：第三排改为 4 个小按钮——战绩成就 / 教学关 / 新手说明 / 昼夜主题
-	var b_meta := cute_button("战绩·成就", "", Color(0.93, 0.55, 0.62), Vector2(272, 108))
+	theme_row.add_theme_constant_override("separation", 16)
+	# V0.37：第三排 5 个入口——图鉴百科 / 战绩成就 / 教学关 / 新手说明 / 昼夜主题
+	var b_chars := cute_button("图鉴百科", "", C_SKY, Vector2(224, 108))
+	b_chars.pressed.connect(show_gallery)
+	theme_row.add_child(b_chars)
+	var b_meta := cute_button("战绩·成就", "", Color(0.93, 0.55, 0.62), Vector2(224, 108))
 	b_meta.pressed.connect(show_records)
 	theme_row.add_child(b_meta)
-	var b_tut := cute_button("教学关", "", Color(0.98, 0.66, 0.38), Vector2(272, 108))
+	var b_tut := cute_button("教学关", "", Color(0.98, 0.66, 0.38), Vector2(224, 108))
 	b_tut.pressed.connect(show_tutorial)
 	theme_row.add_child(b_tut)
-	var b_help := cute_button("新手说明", "", Color(0.36, 0.70, 0.55), Vector2(272, 108))
+	var b_help := cute_button("新手说明", "", Color(0.36, 0.70, 0.55), Vector2(224, 108))
 	b_help.pressed.connect(show_help)
 	theme_row.add_child(b_help)
-	var b_theme := cute_button("昼樱主题" if theme_night else "祭典夜", "", Color(0.98, 0.72, 0.30) if theme_night else Color(0.35, 0.32, 0.62), Vector2(272, 108))
+	var b_theme := cute_button("昼樱主题" if theme_night else "祭典夜", "", Color(0.98, 0.72, 0.30) if theme_night else Color(0.35, 0.32, 0.62), Vector2(224, 108))
 	b_theme.pressed.connect(toggle_theme)
 	theme_row.add_child(b_theme)
 	vb.add_child(theme_row)
 
-	var foot := lbl("单机版 · 五大模式 · 全量 197/203 张牌（55种）· 角色池：第一至三弹共 15 人 · V%s" % String(ProjectSettings.get_setting("application/config/version", "")), 26, C_WHITE, false, HORIZONTAL_ALIGNMENT_CENTER)
+	var foot := lbl("单机版 · 六大玩法 · 全量 197/203 张牌（55种）· 角色池：第一至三弹共 %d 人 · V%s" % [Characters.LIST.size(), String(ProjectSettings.get_setting("application/config/version", ""))], 26, C_WHITE, false, HORIZONTAL_ALIGNMENT_CENTER)
 	# V0.24：页脚原为浅灰字直接压在背景图上，看不清；改白字加深色描边
 	foot.add_theme_color_override("font_outline_color", Color(0.30, 0.10, 0.22, 0.85))
 	foot.add_theme_constant_override("outline_size", 8)
@@ -822,6 +828,88 @@ func show_battle_mode(m: String) -> void:
 	bs.show_setup()
 
 
+func start_puzzle(pid: String) -> void:
+	if music != null:
+		music.play_scene("battle")
+	clear_screen()
+	var bs := BattleScreen.new()
+	bs.game_mode = "puzzle"
+	bs.puzzle_id = pid
+	bs.set_anchors_preset(Control.PRESET_FULL_RECT)
+	bs.go_home = Callable(self, "show_home")
+	bs.open_puzzles_cb = Callable(self, "show_puzzles")
+	screen_root.add_child(bs)
+	bs.start_match(false)
+
+
+func show_puzzles() -> void:
+	clear_screen()
+	var m := page_margin()
+	var vb := VBoxContainer.new()
+	vb.add_theme_constant_override("separation", 18)
+	m.add_child(vb)
+	var done_n := Meta.puzzles_cleared_count()
+	var total_n := Puzzles.count()
+	var bbar := back_bar("残局闯关（一回合绝杀 · 已通关 %d / %d）" % [done_n, total_n], show_home)
+	vb.add_child(bbar)
+	var sub := Art.halo(lbl("每关为固定手牌与残局阵容，须在【你的本回合内】击破全部守关者；长按手牌或敌人可随时查看详情。", 25, C_INK, false, HORIZONTAL_ALIGNMENT_CENTER), 6)
+	vb.add_child(sub)
+	var sc := ScrollContainer.new()
+	sc.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	sc.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	vb.add_child(sc)
+	var grid := GridContainer.new()
+	grid.columns = 2
+	grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	grid.add_theme_constant_override("h_separation", 20)
+	grid.add_theme_constant_override("v_separation", 18)
+	sc.add_child(grid)
+	for i in total_n:
+		var ps: Dictionary = Puzzles.LIST[i]
+		var pid := String(ps["id"])
+		var cleared := Meta.puzzle_cleared(pid)
+		var stars := int(ps.get("stars", 1))
+		var star_s := "★".repeat(stars) + "☆".repeat(maxi(0, 4 - stars))
+		var card := PanelContainer.new()
+		card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		card.add_theme_stylebox_override("panel", style(Color(0.94, 1.0, 0.95, 0.95) if cleared else Color(1, 0.99, 1, 0.94), 20, Color(0.28, 0.72, 0.42) if cleared else C_GOLD, 3, true))
+		var mg := MarginContainer.new()
+		for side in ["left", "right", "top", "bottom"]:
+			mg.add_theme_constant_override("margin_" + side, 16)
+		card.add_child(mg)
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 16)
+		mg.add_child(row)
+		var ch0 := Characters.by_id(String((ps["me"] as Dictionary).get("char", "hina")))
+		if not ch0.is_empty():
+			var port := Art.cg_card(ch0, Vector2(126, 164), {"zoom": 0.56, "face_y": 0.34, "title": false, "hp": false, "fs": 16})
+			row.add_child(port)
+		var info := VBoxContainer.new()
+		info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		info.add_theme_constant_override("separation", 6)
+		row.add_child(info)
+		var hd := HBoxContainer.new()
+		hd.add_theme_constant_override("separation", 12)
+		hd.add_child(lbl("第 %d 关 · %s" % [i + 1, String(ps["name"])], 28, C_INK, true))
+		hd.add_child(lbl(star_s, 22, C_GOLD, true))
+		hd.add_child(lbl("✓ 已破关" if cleared else "待挑战", 21, Color(0.18, 0.62, 0.32) if cleared else C_PINK_DEEP, true))
+		info.add_child(hd)
+		info.add_child(lbl(String(ps["brief"]), 21, C_INK_SOFT))
+		info.add_child(lbl("目标：" + String(ps["goal"]), 20, C_INK, true))
+		var go_b := Button.new()
+		go_b.text = "重玩此关" if cleared else "挑战本关"
+		go_b.custom_minimum_size = Vector2(150, 56)
+		go_b.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		go_b.focus_mode = Control.FOCUS_NONE
+		go_b.add_theme_font_override("font", font_bold)
+		go_b.add_theme_font_size_override("font_size", 24)
+		go_b.add_theme_color_override("font_color", C_WHITE)
+		go_b.add_theme_stylebox_override("normal", style(Color(0.32, 0.68, 0.44) if cleared else C_PLATE, 16, C_GOLD, 2, true))
+		go_b.pressed.connect(func() -> void: start_puzzle(pid))
+		row.add_child(go_b)
+		grid.add_child(card)
+
+
 func show_tutorial() -> void:
 	if music != null:
 		music.play_scene("battle")
@@ -880,7 +968,7 @@ func show_records() -> void:
 	cols.add_child(right)
 	# 战绩汇总（按模式 / 按身份胜率）
 	var sv := _meta_panel(left, "战绩")
-	sv.add_child(lbl("总计：" + Meta.win_rate_text("all"), 26, C_INK, true))
+	sv.add_child(lbl("总计：%s　｜　残局闯关：已破 %d / %d" % [Meta.win_rate_text("all"), Meta.puzzles_cleared_count(), Puzzles.count()], 25, C_INK, true))
 	for mk in [["identity", "身份场", ["主公", "忠臣", "反贼", "内奸"]], ["doudizhu", "斗地主", ["地主", "农民"]], ["twovtwo", "欢乐2v2", ["红方", "蓝方"]], ["boss", "魔王挑战", ["联军", "魔王"]], ["duel", "单挑", ["先手", "后手"]]]:
 		sv.add_child(lbl("%s：%s" % [mk[1], Meta.win_rate_text("mode|" + String(mk[0]))], 24, C_INK, true))
 		var parts: Array = []
