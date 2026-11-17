@@ -361,6 +361,7 @@ func _run_reg_test() -> void:
 	await _reg_v30()
 	await _reg_v32()
 	await _reg_v33()
+	await _reg_v34()
 	_reg_lines.append("REGTEST_DONE tests=%d fails=%d" % [_reg_n, _reg_fails])
 	_write("/tmp/ask_regtest.txt", _reg_lines)
 	print(_reg_lines[_reg_lines.size() - 1])
@@ -2582,4 +2583,75 @@ func _reg_v33() -> void:
 	_ok(not bool(p1["alive"]) and fx_events.has("kill_spree"), "V33-3 击杀目标时触发 kill_spree 连破横幅事件")
 
 	# V33-4 角色池扩充至 9 人（含第二弹 2 人且 CG 资源齐全）
-	_ok(Characters.LIST.size() == 9 and ResourceLoader.exists("res://assets/cg/sena.webp") and ResourceLoader.exists("res://assets/cg/reo.webp"), "V33-4 角色池共 9 名角色且新角色 CG 资源齐全")
+	_ok(Characters.LIST.size() >= 9 and ResourceLoader.exists("res://assets/cg/sena.webp") and ResourceLoader.exists("res://assets/cg/reo.webp"), "V33-4 第二弹首批角色 CG 资源齐全")
+
+
+# ---------------- V0.34：转换技 / 觉醒技与衍生技 / 欢乐 2v2 模式 / 12 角色全集 ----------------
+func _reg_v34() -> void:
+	# V34-1 神乐坂真昼（mahiru）：转换技「昼夜卷」（阳：弃1造成1火伤转阴；阴：摸2弃1转阳）与「静读」
+	var e = _clean_eng("duel", ["先手", "后手"], 4)
+	var p0: Dictionary = e.players[0]
+	var p1: Dictionary = e.players[1]
+	p0["char_name"] = "神乐坂真昼"
+	e.add_skill(p0, "zhouye")
+	e.add_skill(p0, "jingdu")
+	_give(e, p0, "闪避", "方块", 4)
+	_ok(int(p0.get("switch_zhouye", 0)) == 0, "V34-1 转换技「昼夜卷」初始为【阳】状态")
+	await e.use_active_skill(p0, "zhouye")
+	_ok(int(p1["hp"]) == 3 and int(p0.get("switch_zhouye", 0)) == 1 and (p0["hand"] as Array).is_empty(), "V34-1 「昼夜卷·阳」弃1牌造成1点火焰伤害并转为【阴】")
+	p0["turn_used"] = {}
+	await e.use_active_skill(p0, "zhouye")
+	_ok(int(p0.get("switch_zhouye", 0)) == 0 and (p0["hand"] as Array).size() == 1, "V34-1 「昼夜卷·阴」令目标摸2弃1并转回【阳】")
+	await e.fire("phaseJieshuStart", {"name": "phase", "player": p0, "target": p0})
+	_ok((p0["hand"] as Array).size() == 2, "V34-1 「静读」在结束阶段手牌数不大于体力值时摸1张牌")
+
+	# V34-2 久远寺绫（aya）：锁定技「破的」（攻击范围+1、突击命中弃手牌）与觉醒技「心眼觉醒」（习得「神射」）
+	e = _clean_eng("duel", ["先手", "后手"], 4)
+	p0 = e.players[0]
+	p1 = e.players[1]
+	p0["char_name"] = "久远寺绫"
+	e.add_skill(p0, "podi")
+	e.add_skill(p0, "xinyan")
+	_ok(e.weapon_range(p0) == 2, "V34-2 「破的」使无武器时攻击范围提升为 2")
+	p0["hp"] = 2
+	await e.fire("phaseZhunbeiStart", {"name": "phase", "player": p0, "target": p0})
+	_ok(bool(p0.get("awakened_xinyan", false)) and int(p0["max_hp"]) == 3 and int(p0["hp"]) == 3 and (p0["hand"] as Array).size() == 2 and e.has_skill(p0, "shenshe"), "V34-2 觉醒技「心眼觉醒」减上限回血摸2牌并习得「神射」")
+	# 再次准备阶段不再重复觉醒
+	await e.fire("phaseZhunbeiStart", {"name": "phase", "player": p0, "target": p0})
+	_ok(int(p0["max_hp"]) == 3, "V34-2 觉醒技每局只触发一次")
+	# 验证「神射」无视距离且不可被闪避响应，命中后触发「破的」弃置目标1张手牌
+	p1["equip"]["plus"] = _mk("远行披风", "红桃", 5)
+	_give(e, p1, "闪避", "方块", 2)
+	_give(e, p1, "补给", "红桃", 3)
+	await e.use_active_skill(p0, "shenshe")
+	_ok(int(p1["hp"]) == 3 and (p1["hand"] as Array).size() == 1, "V34-2 「神射」无视距离且强命不可闪避，命中后「破的」令目标弃置1张手牌")
+
+	# V34-3 结城奈奈（nana）：「催化」（横置/重置锁链并摸1）与「余震」（属性伤害摸牌，每轮限二次）
+	e = _clean_eng("duel", ["先手", "后手"], 3)
+	p0 = e.players[0]
+	p1 = e.players[1]
+	p0["char_name"] = "结城奈奈"
+	e.add_skill(p0, "cuihua")
+	e.add_skill(p0, "yuzhen")
+	await e.use_active_skill(p0, "cuihua")
+	_ok(bool(p1.get("chained", false)) and (p0["hand"] as Array).size() == 1, "V34-3 「催化」横置敌方锁链并摸 1 张牌")
+	await e.damage(p0, p1, 1, "测试火伤", "火")
+	await e.damage(p0, p1, 1, "测试雷伤", "雷")
+	await e.damage(p0, p1, 1, "测试冰伤", "冰")
+	_ok((p0["hand"] as Array).size() == 3, "V34-3 「余震」在场上发生属性伤害后摸牌，且每轮最多触发 2 次（手牌 1→3）")
+
+	# V34-4 欢乐 2v2 模式（twovtwo）：1·4红方 vs 2·3蓝方、末位起手5张、队友阵亡抚恤摸1张与胜负判定
+	var e2v2 = EngineS.new()
+	e2v2.load_skills()
+	e2v2.mode = "twovtwo"
+	e2v2.setup_game(make_chars(4, 3), ["红方", "蓝方", "蓝方", "红方"])
+	_ok((e2v2.players[0]["hand"] as Array).size() == 4 and (e2v2.players[3]["hand"] as Array).size() == 5, "V34-4 欢乐 2v2：4号位末置位起手 5 张牌")
+	_ok(e2v2.ai_is_ally(e2v2.players[0], e2v2.players[3]) and e2v2.ai_is_enemy(e2v2.players[0], e2v2.players[1]), "V34-4 欢乐 2v2：1·4号位互为盟友，与2·3号位敌对")
+	var h3_before := (e2v2.players[3]["hand"] as Array).size()
+	await e2v2.die(e2v2.players[0], e2v2.players[1])
+	_ok((e2v2.players[3]["hand"] as Array).size() == h3_before + 1 and not e2v2.game_over, "V34-4 欢乐 2v2：一名角色阵亡后，存活队友摸 1 张牌")
+	await e2v2.die(e2v2.players[3], e2v2.players[2])
+	_ok(e2v2.game_over and e2v2.winner_text == "蓝方获胜！", "V34-4 欢乐 2v2：同队两人全灭后判定对方阵营获胜")
+
+	# V34-5 全部 12 名角色及 CG 资源校验
+	_ok(Characters.LIST.size() == 12 and ResourceLoader.exists("res://assets/cg/mahiru.webp") and ResourceLoader.exists("res://assets/cg/aya.webp") and ResourceLoader.exists("res://assets/cg/nana.webp"), "V34-5 角色池扩充至 12 人且全部 CG 资源齐全")

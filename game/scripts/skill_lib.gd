@@ -24,6 +24,13 @@ func register_all(eng) -> void:
 	eng.register_skill("caijue", {"name": "裁决", "active": {"filter": Callable(self, "_caijue_filter"), "ai_use": Callable(self, "_caijue_aiuse"), "content": Callable(self, "_caijue_content")}})
 	eng.register_skill("jianxin", {"name": "剑心", "timings": {"useCardBegin": {"who": "source", "forced": true, "priority": 5, "filter": Callable(self, "_jianxin_filter"), "content": Callable(self, "_jianxin_content")}}})
 	eng.register_skill("canyue", {"name": "奥义·残月", "limited": true, "active": {"filter": Callable(self, "_canyue_filter"), "ai_use": Callable(self, "_canyue_aiuse"), "content": Callable(self, "_canyue_content")}})
+	eng.register_skill("zhouye", {"name": "昼夜卷", "switchable": true, "active": {"filter": Callable(self, "_zhouye_filter"), "ai_use": Callable(self, "_zhouye_aiuse"), "content": Callable(self, "_zhouye_content")}})
+	eng.register_skill("jingdu", {"name": "静读", "timings": {"phaseJieshuStart": {"who": "player", "forced": true, "filter": Callable(self, "_jingdu_filter"), "content": Callable(self, "_jingdu_content")}}})
+	eng.register_skill("podi", {"name": "破的", "timings": {"damageAfter": {"who": "source", "forced": true, "filter": Callable(self, "_podi_filter"), "content": Callable(self, "_podi_content")}}})
+	eng.register_skill("xinyan", {"name": "心眼觉醒", "awaken": true, "timings": {"phaseZhunbeiStart": {"who": "player", "forced": true, "filter": Callable(self, "_xinyan_filter"), "content": Callable(self, "_xinyan_content")}}})
+	eng.register_skill("shenshe", {"name": "神射", "text": "出牌阶段限一次。你可以将 1 张手牌当作无距离限制且不可被「闪避」响应的「突击」使用。", "active": {"filter": Callable(self, "_shenshe_filter"), "ai_use": Callable(self, "_shenshe_aiuse"), "content": Callable(self, "_shenshe_content")}})
+	eng.register_skill("cuihua", {"name": "催化", "active": {"filter": Callable(self, "_cuihua_filter"), "ai_use": Callable(self, "_cuihua_aiuse"), "content": Callable(self, "_cuihua_content")}})
+	eng.register_skill("yuzhen", {"name": "余震", "timings": {"damageAfter": {"who": "global", "forced": true, "filter": Callable(self, "_yuzhen_filter"), "content": Callable(self, "_yuzhen_content")}}})
 
 
 # ---------- 通用小工具 ----------
@@ -650,3 +657,190 @@ func _canyue_content(eng, p) -> void:
 	eng.draw_cards(p, 2)
 	eng.heal(p, 1, p)
 	eng.log_msg("★限定技「奥义·残月」：%s 摸 2 张牌、回复 1 点体力，本回合使用「突击」无次数限制！" % eng.pname(p))
+
+
+# ---------- 神乐坂真昼（转换技 · 昼夜卷 + 静读） ----------
+func _zhouye_filter(eng, p) -> bool:
+	var st := int(p.get("switch_zhouye", 0))
+	if st == 0:
+		return not (p["hand"] as Array).is_empty() and _others_exist_p(eng, p)
+	return not eng.alive_players().is_empty()
+
+
+func _zhouye_aiuse(eng, p) -> bool:
+	var st := int(p.get("switch_zhouye", 0))
+	if st == 1:
+		return true
+	for t in eng.players:
+		if t != p and t["alive"] and eng.ai_is_enemy(p, t):
+			if int(t["hp"]) <= 1 or (p["hand"] as Array).size() >= 2:
+				return true
+	return false
+
+
+func _zhouye_content(eng, p) -> void:
+	var st := int(p.get("switch_zhouye", 0))
+	if st == 0:
+		var cost: Dictionary = await eng.pick_card(p, {"prompt": "「昼夜卷·阳」：弃置 1 张手牌作为代价", "ai": Callable(self, "_worst_card")})
+		if cost.is_empty():
+			return
+		var cands: Array = []
+		for t in eng.players:
+			if t != p and t["alive"]:
+				cands.append(t)
+		var tgt: Dictionary = await eng.pick_target(p, cands, "「昼夜卷·阳」：选择 1 名其他角色造成 1 点火焰伤害", Callable(self, "_caijue_target"))
+		if tgt.is_empty():
+			return
+		eng.discard_from_hand(p, cost)
+		p["switch_zhouye"] = 1
+		eng.fx("switch_skill", {"seat": int(p["seat"]), "name": "昼夜卷", "state": "阴"})
+		eng.observe_hostile(p, tgt)
+		eng.log_msg("☯「昼夜卷·阳」：%s 弃置 %s，对 %s 造成 1 点火焰伤害（昼夜卷转为【阴】）。" % [eng.pname(p), eng.card_text(cost), eng.pname(tgt)])
+		await eng.damage(p, tgt, 1, "昼夜卷", "火")
+	else:
+		var cands2: Array = eng.alive_players()
+		var tgt2: Dictionary = await eng.pick_target(p, cands2, "「昼夜卷·阴」：选择 1 名角色摸 2 张牌并弃 1 张牌", Callable(self, "_yingyuan_target"))
+		if tgt2.is_empty():
+			return
+		p["switch_zhouye"] = 0
+		eng.fx("switch_skill", {"seat": int(p["seat"]), "name": "昼夜卷", "state": "阳"})
+		eng.draw_cards(tgt2, 2)
+		var dc: Dictionary = {}
+		if eng.is_ai(tgt2):
+			dc = eng.ai_pick_discard(tgt2)
+		elif eng.ui.has("choose_discard"):
+			dc = await (eng.ui["choose_discard"] as Callable).call(tgt2)
+		if dc.is_empty() and not (tgt2["hand"] as Array).is_empty():
+			dc = eng.ai_pick_discard(tgt2)
+		if not dc.is_empty():
+			eng.discard_from_hand(tgt2, dc)
+		eng.log_msg("☯「昼夜卷·阴」：%s 令 %s 摸 2 张牌并弃置 1 张牌（昼夜卷转为【阳】）。" % [eng.pname(p), eng.pname(tgt2)])
+
+
+func _jingdu_filter(eng, ctx, p) -> bool:
+	return (p["hand"] as Array).size() <= int(p["hp"])
+
+
+func _jingdu_content(eng, ctx, p) -> void:
+	eng.draw_cards(p, 1)
+	eng.log_msg("「静读」：%s 手牌数不大于体力值，摸 1 张牌。" % eng.pname(p))
+
+
+# ---------- 久远寺绫（破的 + 觉醒技 · 心眼觉醒 + 衍生技 · 神射） ----------
+func _podi_filter(eng, ctx, p) -> bool:
+	if not String(ctx.get("cause", "")).begins_with("突击"):
+		return false
+	var tgt: Dictionary = ctx.get("target", {})
+	if tgt.is_empty() or not bool(tgt.get("alive", false)):
+		return false
+	return not (tgt["hand"] as Array).is_empty()
+
+
+func _podi_content(eng, ctx, p) -> void:
+	var tgt: Dictionary = ctx["target"]
+	if (tgt["hand"] as Array).is_empty():
+		return
+	var dc: Dictionary = eng.ai_pick_discard(tgt)
+	if dc.is_empty():
+		dc = (tgt["hand"] as Array)[0]
+	eng.discard_from_hand(tgt, dc)
+	eng.log_msg("「破的」：%s 突击命中，令 %s 弃置了 %s。" % [eng.pname(p), eng.pname(tgt), eng.card_text(dc)])
+
+
+func _xinyan_filter(eng, ctx, p) -> bool:
+	if bool(p.get("awakened_xinyan", false)):
+		return false
+	return int(p["hp"]) <= 2 or int(p.get("stat_damage", 0)) >= 2
+
+
+func _xinyan_content(eng, ctx, p) -> void:
+	p["awakened_xinyan"] = true
+	p["max_hp"] = maxi(1, int(p["max_hp"]) - 1)
+	if int(p["hp"]) > int(p["max_hp"]):
+		p["hp"] = int(p["max_hp"])
+	eng.heal(p, 1, p)
+	eng.draw_cards(p, 2)
+	eng.add_skill(p, "shenshe")
+	eng.fx("awaken", {"seat": int(p["seat"]), "name": "心眼觉醒", "char": String(p["char_name"])})
+	eng.log_msg("★觉醒技「心眼觉醒」：%s 减 1 点体力上限、回复 1 点体力并摸 2 张牌，习得技能「神射」！" % eng.pname(p))
+	eng.changed()
+
+
+func _shenshe_cands(eng, p) -> Array:
+	var out: Array = []
+	for t in eng.players:
+		if t != p and t["alive"] and not bool(t.get("dream_guard", false)):
+			out.append(t)
+	return out
+
+
+func _shenshe_filter(eng, p) -> bool:
+	if (p["hand"] as Array).is_empty():
+		return false
+	return not _shenshe_cands(eng, p).is_empty()
+
+
+func _shenshe_aiuse(eng, p) -> bool:
+	for t in _shenshe_cands(eng, p):
+		if eng.ai_is_enemy(p, t):
+			return true
+	return false
+
+
+func _shenshe_content(eng, p) -> void:
+	var c: Dictionary = await eng.pick_card(p, {"prompt": "「神射」：选择 1 张手牌当作无距离限制且不可闪避的「突击」", "ai": Callable(self, "_worst_card")})
+	if c.is_empty():
+		return
+	var cands: Array = _shenshe_cands(eng, p)
+	var tgt: Dictionary = await eng.pick_target(p, cands, "「神射」：选择目标（无视距离、不可闪避）", Callable(self, "_qinyin_target"))
+	if tgt.is_empty():
+		return
+	eng.discard_from_hand(p, c)
+	var vsha := {"name": "突击", "suit": String(c["suit"]), "point": int(c["point"]), "nature": "", "yb": [], "virtual": true, "src_cards": [c], "force_hit": true}
+	eng.log_msg("「神射」：%s 将 %s 化作必中之矢射向 %s（无视距离、不可闪避）！" % [eng.pname(p), eng.card_text(c), eng.pname(tgt)])
+	await eng.use_attack(p, tgt, vsha, false, true)
+
+
+# ---------- 结城奈奈（催化 + 余震） ----------
+func _cuihua_filter(eng, p) -> bool:
+	return not eng.alive_players().is_empty()
+
+
+func _cuihua_aiuse(eng, p) -> bool:
+	return true
+
+
+func _cuihua_target(eng, p, cands) -> Dictionary:
+	for t in cands:
+		if eng.ai_is_enemy(p, t) and not bool(t.get("chained", false)):
+			return t
+	for t in cands:
+		if eng.ai_is_ally(p, t) and bool(t.get("chained", false)):
+			return t
+	return p if cands.has(p) else cands[0]
+
+
+func _cuihua_content(eng, p) -> void:
+	var cands: Array = eng.alive_players()
+	var tgt: Dictionary = await eng.pick_target(p, cands, "「催化」：选择 1 名角色横置或重置锁链，然后你摸 1 张牌", Callable(self, "_cuihua_target"))
+	if tgt.is_empty():
+		return
+	eng.toggle_chain(tgt)
+	eng.fx("chain", {"seat": int(tgt["seat"]), "on": bool(tgt.get("chained", false))})
+	eng.draw_cards(p, 1)
+	eng.log_msg("「催化」：%s %s了 %s 的羁绊锁链，并摸 1 张牌。" % [eng.pname(p), "横置" if bool(tgt.get("chained", false)) else "重置", eng.pname(tgt)])
+
+
+func _yuzhen_filter(eng, ctx, p) -> bool:
+	var nat := String(ctx.get("nature", ""))
+	if nat not in ["火", "雷", "冰"]:
+		return false
+	var used_n := int((p["round_marks"] as Dictionary).get("yuzhen_cnt", 0))
+	return used_n < 2
+
+
+func _yuzhen_content(eng, ctx, p) -> void:
+	var used_n := int((p["round_marks"] as Dictionary).get("yuzhen_cnt", 0)) + 1
+	(p["round_marks"] as Dictionary)["yuzhen_cnt"] = used_n
+	eng.draw_cards(p, 1)
+	eng.log_msg("「余震」：场上发生%s属性伤害，%s 引发连锁反应摸 1 张牌（本轮 %d/2）。" % [String(ctx.get("nature", "")), eng.pname(p), used_n])

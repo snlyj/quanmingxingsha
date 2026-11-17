@@ -275,6 +275,8 @@ func concede(p: Dictionary) -> void:
 	game_over = true
 	if mode == "doudizhu":
 		winner_text = "农民阵营获胜！" if String(p["identity"]) == "地主" else "地主获胜！"
+	elif mode == "twovtwo":
+		winner_text = "蓝方获胜！" if String(p["identity"]) == "红方" else "红方获胜！"
 	elif mode == "duel":
 		var other: Dictionary = players[0] if p == players[1] else players[1]
 		winner_text = "%s 在单挑中获胜！" % pname(other)
@@ -332,9 +334,10 @@ func eff_dist(src: Dictionary, tgt: Dictionary) -> int:
 
 func weapon_range(p: Dictionary) -> int:
 	var w: Dictionary = p["equip"]["weapon"]
-	if w.is_empty():
-		return 1
-	return int(w.get("range", 1))
+	var r := 1 if w.is_empty() else int(w.get("range", 1))
+	if has_skill(p, "podi"):
+		r += 1
+	return r
 
 
 func in_attack_range(src: Dictionary, tgt: Dictionary) -> bool:
@@ -575,9 +578,13 @@ func setup_game(char_list: Array, identities: Array) -> void:
 		var start_n := 4
 		if mode == "duel" and int(p["seat"]) == duel_first_seat:
 			start_n = 3
+		elif mode == "twovtwo" and int(p["seat"]) == 3:
+			start_n = 5  # 对标手杀欢乐成双 2v2：4 号位末置位起手 5 张牌
 		draw_cards(p, start_n)
 	if mode == "doudizhu":
 		log_msg("对局开始：斗地主（全员起手 4 张，先叫分决定地主，倍数 1~3 倍）。")
+	elif mode == "twovtwo":
+		log_msg("对局开始：欢乐 2v2（1·4号位红方 vs 2·3号位蓝方；1号位首轮少摸1张，4号位起手5张，队友阵亡摸1张）。")
 	elif mode == "duel":
 		log_msg("对局开始：单挑对决（先手起手 3 张，后手 4 张）。")
 	else:
@@ -601,6 +608,8 @@ func first_player() -> Dictionary:
 		return {}
 	if mode == "duel":
 		return players[duel_first_seat] if players.size() > duel_first_seat else {}
+	if mode == "twovtwo":
+		return players[0] if not players.is_empty() else {}
 	return lord_player()
 
 
@@ -624,7 +633,7 @@ func heal(p: Dictionary, n: int, src: Dictionary = {}) -> void:
 func damage(src: Dictionary, tgt: Dictionary, num: int, cause: String, nature: String = "", spread: bool = false, ignore_armor: bool = false) -> void:
 	if not tgt["alive"] or game_over or num <= 0:
 		return
-	var ctx := {"name": "damage", "player": tgt, "target": tgt, "source": src, "num": num, "cause": cause, "cancelled": false}
+	var ctx := {"name": "damage", "player": tgt, "target": tgt, "source": src, "num": num, "cause": cause, "nature": nature, "cancelled": false}
 	await fire("damageBefore", ctx)
 	if bool(ctx.get("cancelled", false)):
 		return
@@ -1252,7 +1261,7 @@ func use_attack(src: Dictionary, tgt: Dictionary, card: Dictionary, counts := tr
 			changed()
 	# 应变：声明使用后（牌已离手）满足条件词则触发效果词（突击实装 伤害+/强命/目标+，条件含简单条件与助战）
 	var yb := await eval_yingbian_full(src, card, tgt)
-	var yb_hit := false
+	var yb_hit := bool(card.get("force_hit", false))
 	var yb_extra: Dictionary = {}
 	if bool(yb["triggered"]):
 		var cond_s := "·".join(PackedStringArray(yb["conds"]))
@@ -1633,6 +1642,16 @@ func die(p: Dictionary, killer: Dictionary) -> void:
 					discard_pile.append(e2)
 					killer["equip"][slot] = {}
 			log_msg("主公误杀忠臣，弃置所有手牌与装备。")
+	# V0.34 欢乐 2v2 阵亡抚恤（对标手杀排位赛/欢乐成双：队友阵亡时存活队友摸 1 张牌）：
+	if mode == "twovtwo":
+		check_over()
+		if game_over:
+			return
+		for mate in players:
+			if mate != p and bool(mate["alive"]) and String(mate["identity"]) == String(p["identity"]):
+				draw_cards(mate, 1)
+				log_msg("「同盟抚恤」：%s 阵亡，队友 %s 摸 1 张牌。" % [pname(p), pname(mate)])
+		return
 	# V0.24 补齐斗地主死亡奖惩（对照 mode/doudizhu.js 规则说明与 dieAfter2 的 chooseDrawRecover(2)）：
 	# 一名农民阵亡后，若另一名农民存活，其可以选择摸两张牌或回复 1 点体力
 	if mode == "doudizhu" and String(p["identity"]) == "农民":
@@ -1661,6 +1680,24 @@ func die(p: Dictionary, killer: Dictionary) -> void:
 
 
 func check_over() -> void:
+	if mode == "twovtwo":
+		var red_alive := 0
+		var blue_alive := 0
+		for p in players:
+			if bool(p["alive"]):
+				if String(p["identity"]) == "红方":
+					red_alive += 1
+				else:
+					blue_alive += 1
+		if blue_alive == 0:
+			game_over = true
+			winner_text = "红方获胜！"
+		elif red_alive == 0:
+			game_over = true
+			winner_text = "蓝方获胜！"
+		if game_over:
+			log_msg("对局结束：%s" % winner_text)
+		return
 	if mode == "duel":
 		for p in players:
 			if not p["alive"]:
@@ -1764,8 +1801,11 @@ func run_turn(p: Dictionary) -> void:
 	await fire("phaseDrawStart", base.duplicate())
 	if not bool(p["skip_draw"]):
 		var draw_n := 2
-		if bool(p.get("caomu_less", false)):
+		if mode == "twovtwo" and round_no == 1 and int(p["seat"]) == 0:
 			draw_n = 1
+			log_msg("「先手平衡」：1号位首轮摸牌阶段少摸 1 张牌。")
+		if bool(p.get("caomu_less", false)):
+			draw_n = maxi(0, draw_n - 1)
 			log_msg("「草木疑兵」：%s 少摸一张牌。" % pname(p))
 		draw_cards(p, draw_n)
 		log_msg("%s 摸 %d 张牌。" % [pname(p), draw_n])
@@ -1945,7 +1985,7 @@ func ai_is_enemy(p: Dictionary, t: Dictionary) -> bool:
 		return false
 	if mode == "duel":
 		return true
-	if mode == "doudizhu":
+	if mode == "doudizhu" or mode == "twovtwo":
 		return String(p["identity"]) != String(t["identity"])
 	# V0.32：身份场只剩两人且未分胜负时，双方必然敌对（主忠/反贼同阵营两人存活时对局已结束）
 	if bool(p["alive"]) and bool(t["alive"]) and alive_players().size() <= 2:
@@ -1976,7 +2016,7 @@ func ai_is_enemy(p: Dictionary, t: Dictionary) -> bool:
 func ai_is_ally(p: Dictionary, t: Dictionary) -> bool:
 	if mode == "duel":
 		return false
-	if mode == "doudizhu":
+	if mode == "doudizhu" or mode == "twovtwo":
 		return p != t and String(p["identity"]) == String(t["identity"])
 	if p == t:
 		return true
@@ -2089,9 +2129,9 @@ func ai_target_score(p: Dictionary, t: Dictionary) -> float:
 
 
 func camp_of(identity: String) -> String:
-	if identity == "主公" or identity == "忠臣":
+	if identity == "主公" or identity == "忠臣" or identity == "红方":
 		return "loyal"
-	if identity == "反贼":
+	if identity == "反贼" or identity == "蓝方":
 		return "fan"
 	return "nei"
 

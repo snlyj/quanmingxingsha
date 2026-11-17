@@ -551,13 +551,16 @@ func show_home() -> void:
 
 	var btn_row := HBoxContainer.new()
 	btn_row.alignment = BoxContainer.ALIGNMENT_CENTER
-	btn_row.add_theme_constant_override("separation", 36)
-	var b_battle := cute_button("5人身份场", "和 AI 进行对战 · 主公 / 忠臣 / 反贼 / 内奸", C_PLATE, Vector2(560, 134))
+	btn_row.add_theme_constant_override("separation", 24)
+	var b_battle := cute_button("5人身份场", "主公 / 忠臣 / 反贼 / 内奸", C_PLATE, Vector2(372, 134))
 	b_battle.pressed.connect(show_battle)
 	btn_row.add_child(b_battle)
-	var b_ddz := cute_button("斗地主", "3 人对战 · 叫分 1~3 倍 · 专属牌", Color(0.98, 0.62, 0.25), Vector2(560, 134))
+	var b_ddz := cute_button("斗地主", "3 人叫分 1~3 倍 · 专属牌", Color(0.98, 0.62, 0.25), Vector2(372, 134))
 	b_ddz.pressed.connect(func() -> void: show_battle_mode("doudizhu"))
 	btn_row.add_child(b_ddz)
+	var b_2v2 := cute_button("欢乐 2v2", "4 人同盟排位 · 队友协同", Color(0.88, 0.38, 0.52), Vector2(372, 134))
+	b_2v2.pressed.connect(func() -> void: show_battle_mode("twovtwo"))
+	btn_row.add_child(b_2v2)
 	vb.add_child(btn_row)
 	var btn_row2 := HBoxContainer.new()
 	btn_row2.alignment = BoxContainer.ALIGNMENT_CENTER
@@ -565,7 +568,7 @@ func show_home() -> void:
 	var b_duel := cute_button("单挑对决", "1 对 1 · 先手 3 张 / 后手 4 张", Color(0.45, 0.55, 0.95), Vector2(560, 134))
 	b_duel.pressed.connect(func() -> void: show_battle_mode("duel"))
 	btn_row2.add_child(b_duel)
-	var b_chars := cute_button("人物", "查看已登场的所有人物 · 按系列分类", C_SKY, Vector2(560, 134))
+	var b_chars := cute_button("人物图鉴", "查看全 12 名登场角色 · 按系列分类", C_SKY, Vector2(560, 134))
 	b_chars.pressed.connect(show_gallery)
 	btn_row2.add_child(b_chars)
 	vb.add_child(btn_row2)
@@ -588,7 +591,7 @@ func show_home() -> void:
 	theme_row.add_child(b_theme)
 	vb.add_child(theme_row)
 
-	var foot := lbl("单机版 · 身份场 / 斗地主 / 单挑 · 全量 197 张牌（斗地主 203 张）· 角色池：《星樱坂学园》第一、二弹共 9 人 · V%s" % String(ProjectSettings.get_setting("application/config/version", "")), 26, C_WHITE, false, HORIZONTAL_ALIGNMENT_CENTER)
+	var foot := lbl("单机版 · 身份场 / 斗地主 / 欢乐2v2 / 单挑 · 全量 197 张牌（斗地主 203 张）· 角色池：第一、二弹共 12 人 · V%s" % String(ProjectSettings.get_setting("application/config/version", "")), 26, C_WHITE, false, HORIZONTAL_ALIGNMENT_CENTER)
 	# V0.24：页脚原为浅灰字直接压在背景图上，看不清；改白字加深色描边
 	foot.add_theme_color_override("font_outline_color", Color(0.30, 0.10, 0.22, 0.85))
 	foot.add_theme_constant_override("outline_size", 8)
@@ -849,7 +852,7 @@ func show_records() -> void:
 	# 战绩汇总（按模式 / 按身份胜率）
 	var sv := _meta_panel(left, "战绩")
 	sv.add_child(lbl("总计：" + Meta.win_rate_text("all"), 26, C_INK, true))
-	for mk in [["identity", "身份场", ["主公", "忠臣", "反贼", "内奸"]], ["doudizhu", "斗地主", ["地主", "农民"]], ["duel", "单挑", ["先手", "后手"]]]:
+	for mk in [["identity", "身份场", ["主公", "忠臣", "反贼", "内奸"]], ["doudizhu", "斗地主", ["地主", "农民"]], ["twovtwo", "欢乐2v2", ["红方", "蓝方"]], ["duel", "单挑", ["先手", "后手"]]]:
 		sv.add_child(lbl("%s：%s" % [mk[1], Meta.win_rate_text("mode|" + String(mk[0]))], 24, C_INK, true))
 		var parts: Array = []
 		for idn in mk[2]:
@@ -908,7 +911,7 @@ func show_records() -> void:
 	var recs: Array = d["records"]
 	if recs.is_empty():
 		rv.add_child(lbl("还没有对局记录，去打一局吧！", 22, C_INK_SOFT))
-	var mode_cn := {"identity": "身份场", "doudizhu": "斗地主", "duel": "单挑"}
+	var mode_cn := {"identity": "身份场", "doudizhu": "斗地主", "twovtwo": "欢乐2v2", "duel": "单挑"}
 	var res_cn := {"win": "胜", "lose": "负", "draw": "平"}
 	for i in mini(recs.size(), 12):
 		var r: Dictionary = recs[i]
