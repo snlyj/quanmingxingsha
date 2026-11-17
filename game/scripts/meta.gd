@@ -35,11 +35,12 @@ const ACHIEVEMENTS := [
 	["puzzle_first", "初破残局", "通过任意 1 关残局挑战"],
 	["puzzle_all", "残局大师", "通关全部 10 关残局挑战"],
 	["rich_beans", "欢斗富豪", "累计拥有至少 2000 欢斗豆"],
+	["streak_3", "势如破竹", "常规对战达成 3 连胜"],
 ]
 
 
 static func _blank() -> Dictionary:
-	return {"version": 2, "records": [], "totals": {}, "chars": {}, "ach": {}, "puzzles": {}, "beans": 1000, "tutorial_done": false}
+	return {"version": 2, "records": [], "totals": {}, "chars": {}, "ach": {}, "puzzles": {}, "beans": 1000, "win_streak": 0, "best_streak": 0, "tutorial_done": false}
 
 
 static func load_data() -> Dictionary:
@@ -160,10 +161,13 @@ static func record(rec: Dictionary) -> Dictionary:
 	var binfo := {}
 	if rec.has("beans_delta"):
 		binfo = _apply_beans(d, int(rec["beans_delta"]))
+	var ws := (int(d.get("win_streak", 0)) + 1) if won else 0
+	d["win_streak"] = ws
+	d["best_streak"] = maxi(int(d.get("best_streak", 0)), ws)
 	var new_lv := level_of(int(cs["xp"]))
 	var new_ach := _check_achievements(d, rec)
 	save()
-	var out := {"xp": xp, "level": new_lv, "level_up": new_lv > old_lv, "new_ach": new_ach}
+	var out := {"xp": xp, "level": new_lv, "level_up": new_lv > old_lv, "win_streak": ws, "best_streak": int(d["best_streak"]), "new_ach": new_ach}
 	for bk in binfo:
 		out[bk] = binfo[bk]
 	return out
@@ -241,6 +245,7 @@ static func _check_achievements(d: Dictionary, rec: Dictionary) -> Array:
 		"flawless": won and int(rec.get("taken", 0)) == 0,
 		"all_chars": (d["chars"] as Dictionary).size() >= 7,
 		"rich_beans": int(d.get("beans", 1000)) >= 2000,
+		"streak_3": int(d.get("best_streak", 0)) >= 3,
 		"mastery_3": false,
 	}
 	for cn in (d["chars"] as Dictionary).keys():
@@ -251,6 +256,24 @@ static func _check_achievements(d: Dictionary, rec: Dictionary) -> Array:
 			d["ach"][id] = int(Time.get_unix_time_from_system())
 			got.append(ach_def(id))
 	return got
+
+
+static func top_chars(limit: int = 3) -> Array:
+	var d := load_data()
+	var chars_d: Dictionary = d.get("chars", {})
+	var arr: Array = []
+	for cn in chars_d.keys():
+		var cs: Dictionary = chars_d[cn]
+		if int(cs.get("games", 0)) <= 0:
+			continue
+		arr.append({"name": String(cn), "games": int(cs.get("games", 0)), "wins": int(cs.get("wins", 0)), "xp": int(cs.get("xp", 0))})
+	arr.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		if int(a["wins"]) != int(b["wins"]):
+			return int(a["wins"]) > int(b["wins"])
+		if int(a["games"]) != int(b["games"]):
+			return int(a["games"]) > int(b["games"])
+		return int(a["xp"]) > int(b["xp"]))
+	return arr.slice(0, mini(limit, arr.size()))
 
 
 static func win_rate_text(key: String) -> String:

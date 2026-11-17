@@ -427,6 +427,25 @@ func gain_card(p: Dictionary, c: Dictionary) -> void:
 
 
 # ---------- 判定 ----------
+func _judge_helps_target(reason: String, c: Dictionary) -> bool:
+	if c.is_empty():
+		return false
+	var su := String(c.get("suit", ""))
+	var pt := int(c.get("point", 0))
+	match reason:
+		"结界手环", "花愈":
+			return is_red(c)
+		"沉迷游戏":
+			return su == "红桃"
+		"断粮封锁", "草木疑兵":
+			return su == "梅花"
+		"落雷":
+			return not (su == "黑桃" and pt >= 2 and pt <= 9)
+		"浮雷":
+			return su != "黑桃"
+	return true
+
+
 func do_judge(p: Dictionary, reason: String) -> Dictionary:
 	reshuffle_if_needed()
 	if deck.is_empty():
@@ -434,7 +453,53 @@ func do_judge(p: Dictionary, reason: String) -> Dictionary:
 	var c: Dictionary = deck.pop_back()
 	log_msg("%s 进行判定（%s）：%s。" % [pname(p), reason, card_text(c)])
 	fx("judge", {"seat": int(p["seat"]), "card": c, "label": reason})
-	discard_pile.append(c)
+	var swapped := false
+	# 改判窗口（对照 noname 鬼才/鬼道）：在判定牌生效前按座次询问持有「命札」的角色是否替换
+	for q in seat_order_from(int(p["seat"])):
+		if not bool(q.get("alive", false)) or not has_skill(q, "mingzha"):
+			continue
+		if (q["hand"] as Array).is_empty():
+			continue
+		var used_n: int = int((q["round_marks"] as Dictionary).get("mingzha_cnt", 0))
+		if used_n >= 2:
+			continue
+		var rep: Dictionary = {}
+		var cur_good: bool = _judge_helps_target(reason, c)
+		if is_ai(q):
+			var want_good: bool = (q == p) or ai_is_ally(q, p)
+			var want_bad: bool = (not want_good) and ai_is_enemy(q, p)
+			if (want_good and not cur_good) or (want_bad and cur_good):
+				var match_cands: Array = []
+				for hc in q["hand"]:
+					var hg: bool = _judge_helps_target(reason, hc)
+					if (want_good and hg) or (want_bad and not hg):
+						match_cands.append(hc)
+				if not match_cands.is_empty():
+					var tmp_q: Dictionary = q.duplicate()
+					tmp_q["hand"] = match_cands
+					rep = ai_pick_discard(tmp_q)
+					if String(rep.get("name", "")) == "补给" and reason != "落雷" and int(q["hp"]) < int(q["max_hp"]):
+						rep = {}
+		else:
+			var desc_s := "（当前已生效/有利）" if cur_good else "（当前未中/不利）"
+			var go: Variant = await pick_option(q, [{"label": "发动「命札」改判", "value": true}, {"label": "不改判", "value": false}], "「命札」：%s「%s」判定为 %s%s，是否打出手牌替换并摸 1 张牌？（本轮 %d/2）" % [pname(p), reason, card_text(c), desc_s, used_n], false)
+			if bool(go):
+				rep = await pick_card(q, {"prompt": "「命札」：选择 1 张手牌代替判定牌 %s" % card_text(c)})
+		if not rep.is_empty():
+			discard_pile.append(c)
+			discard_from_hand(q, rep)
+			(q["round_marks"] as Dictionary)["mingzha_cnt"] = used_n + 1
+			var old_t := card_text(c)
+			c = rep
+			swapped = true
+			draw_cards(q, 1)
+			fx("skill", {"seat": int(q["seat"]), "name": "命札", "sid": "mingzha", "big": true})
+			fx("judge", {"seat": int(p["seat"]), "card": c, "label": reason + "·改判"})
+			log_msg("🔮「命札」：%s 打出 %s 替换了 %s 的「%s」判定牌（原为 %s），并摸 1 张牌（%d/2）！" % [pname(q), card_text(c), pname(p), reason, old_t, used_n + 1])
+			changed()
+			break
+	if not swapped:
+		discard_pile.append(c)
 	return c
 
 
@@ -1485,7 +1550,7 @@ func resolve_attack_hit(src: Dictionary, tgt: Dictionary, card: Dictionary, dmg:
 		return
 	# 结界手环：判定红色视为打出闪避（破甲光剑无视防具；应变强命不可被响应，此判定亦不触发）
 	if not unrespondable and not ignore_armor and not armor.is_empty() and String(armor["name"]) == "结界手环":
-		var jc := do_judge(tgt, "结界手环")
+		var jc := await do_judge(tgt, "结界手环")
 		if not jc.is_empty() and is_red(jc):
 			log_msg("「结界手环」判定成功，%s 视为打出「闪避」。" % pname(tgt))
 			fx("dodge", {"seat": int(tgt["seat"])})
@@ -3049,7 +3114,7 @@ func _resolve_delayed_inner(p: Dictionary) -> void:
 				discard_pile.append(card)
 			continue
 		if nm == "落雷":
-			var jc := do_judge(p, "落雷")
+			var jc := await do_judge(p, "落雷")
 			if not jc.is_empty() and String(jc["suit"]) == "黑桃" and int(jc["point"]) >= 2 and int(jc["point"]) <= 9:
 				discard_pile.append(card)
 				log_msg("「落雷」命中！")
@@ -3058,7 +3123,7 @@ func _resolve_delayed_inner(p: Dictionary) -> void:
 				_move_or_back(p, card)
 		elif nm == "沉迷游戏":
 			discard_pile.append(card)
-			var jc2 := do_judge(p, "沉迷游戏")
+			var jc2 := await do_judge(p, "沉迷游戏")
 			if not jc2.is_empty() and String(jc2["suit"]) != "红桃":
 				p["skip_use"] = true
 				log_msg("「沉迷游戏」生效：%s 跳过出牌阶段。" % pname(p))
@@ -3066,7 +3131,7 @@ func _resolve_delayed_inner(p: Dictionary) -> void:
 				log_msg("「沉迷游戏」判定未生效。")
 		elif nm == "断粮封锁":
 			discard_pile.append(card)
-			var jc3 := do_judge(p, "断粮封锁")
+			var jc3 := await do_judge(p, "断粮封锁")
 			if not jc3.is_empty() and String(jc3["suit"]) != "梅花":
 				p["skip_draw"] = true
 				log_msg("「断粮封锁」生效：%s 跳过摸牌阶段。" % pname(p))
@@ -3074,7 +3139,7 @@ func _resolve_delayed_inner(p: Dictionary) -> void:
 				log_msg("「断粮封锁」判定未生效。")
 		elif nm == "草木疑兵":
 			discard_pile.append(card)
-			var jc5 := do_judge(p, "草木疑兵")
+			var jc5 := await do_judge(p, "草木疑兵")
 			if not jc5.is_empty() and String(jc5["suit"]) != "梅花":
 				p["caomu_less"] = true
 				p["caomu_cheer"] = true
@@ -3082,7 +3147,7 @@ func _resolve_delayed_inner(p: Dictionary) -> void:
 			else:
 				log_msg("「草木疑兵」判定为梅花，未生效。")
 		elif nm == "浮雷":
-			var jc4 := do_judge(p, "浮雷")
+			var jc4 := await do_judge(p, "浮雷")
 			if not jc4.is_empty() and String(jc4["suit"]) == "黑桃":
 				var fx4 := int(card.get("fulei_x", 0)) + 1
 				card["fulei_x"] = fx4
@@ -3255,7 +3320,7 @@ func effect_wanjian(p: Dictionary, card: Dictionary, vname: String) -> void:
 			continue
 		# V0.24 修复：结界手环（八卦阵）对任何需要打出「闪避」的场合生效（对照 noname bagua_skill：chooseToRespondBegin），旧版只在被「突击」时判定
 		if not tarmor6.is_empty() and String(tarmor6["name"]) == "结界手环":
-			var bjc := do_judge(t, "结界手环")
+			var bjc := await do_judge(t, "结界手环")
 			if not bjc.is_empty() and is_red(bjc):
 				log_msg("「结界手环」判定成功，%s 视为打出「闪避」。" % pname(t))
 				fx("dodge", {"seat": int(t["seat"])})

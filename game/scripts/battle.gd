@@ -562,7 +562,7 @@ func build_table() -> void:
 		add_child(fb)
 		match feat_defs[fi]:
 			"记牌":
-				fb.pressed.connect(func() -> void: open_info_overlay("记牌器 · 战场情报", counter_text()))
+				fb.pressed.connect(func() -> void: open_info_overlay("记牌器 · 战场情报", counter_text(), true))
 			"记录":
 				fb.pressed.connect(func() -> void: open_info_overlay("战况记录", "\n".join(eng.log_lines) if eng != null else ""))
 			"排序":
@@ -3877,6 +3877,8 @@ func build_settlement(winner_text: String, your_result: String) -> void:
 		if meta_result.has("xp"):
 			var lvl := int(meta_result["level"])
 			mt_parts.append("熟练度 +%d · %s Lv%d %s%s" % [int(meta_result["xp"]), String(players[0]["char_name"]), lvl, Meta.MASTERY_TITLE[lvl - 1], "（升级！）" if bool(meta_result["level_up"]) else ""])
+		if int(meta_result.get("win_streak", 0)) >= 2:
+			mt_parts.append("🔥%d连胜！" % int(meta_result["win_streak"]))
 		if meta_result.has("beans"):
 			var bd := int(meta_result.get("beans_delta", 0))
 			var bsign := ("+%d" % bd) if bd >= 0 else str(bd)
@@ -4349,35 +4351,39 @@ func counter_text() -> String:
 	for kn in key_names:
 		var total_n := int((CardDefs.DEFS.get(kn, {}) as Dictionary).get("n", 0))
 		var left_n := maxi(0, total_n - int(seen.get(kn, 0)))
-		key_parts.append("%s ×%d" % [kn, left_n])
+		var col_k := "#9a95a0" if left_n == 0 else ("#c77d14" if left_n <= 2 else "#2e8555")
+		key_parts.append("[color=%s][b]%s ×%d[/b][/color]" % [col_k, kn, left_n])
 	var lines: Array = [
-		"牌堆剩余 %d 张 · 弃牌堆 %d 张" % [eng.deck.size(), eng.discard_pile.size()],
+		"[b][color=#3d2f42]牌堆剩余 %d 张 · 弃牌堆 %d 张[/color][/b]" % [eng.deck.size(), eng.discard_pile.size()],
 	]
+	var fmt_c := func(cd: Dictionary) -> String:
+		var col_s := "#d63649" if is_red(cd) else "#2b2a38"
+		return "[color=%s]%s[/color]" % [col_s, card_text(cd)]
 	var can_see_ally := (game_mode == "twovtwo" or game_mode == "boss" or (game_mode == "doudizhu" and not players.is_empty() and String(players[0]["identity"]) == "农民"))
 	if can_see_ally and not players.is_empty():
 		lines.append("")
-		lines.append("【同盟队友实时手牌与状态】")
+		lines.append("[b][color=#c9345a]【同盟队友实时手牌与状态】[/color][/b]")
 		for mp in players:
 			if int(mp["seat"]) != 0 and String(mp["identity"]) == String(players[0]["identity"]):
 				var mh: Array = []
 				for mc in mp["hand"]:
-					mh.append(card_text(mc))
+					mh.append(fmt_c.call(mc))
 				var mst := ("存活 ♥%d/%d" % [int(mp["hp"]), int(mp["max_hp"])]) if bool(mp["alive"]) else "已阵亡"
-				lines.append("  · %s（%s）：%s" % [pname(mp), mst, "、".join(PackedStringArray(mh)) if not mh.is_empty() else "（无手牌）"])
+				lines.append("  · [b]%s[/b]（%s）：%s" % [pname(mp), mst, "、".join(PackedStringArray(mh)) if not mh.is_empty() else "（无手牌）"])
 	lines.append("")
-	lines.append("【关键牌剩余速查】")
-	lines.append("  ".join(PackedStringArray(key_parts)))
+	lines.append("[b][color=#b83258]【关键牌剩余速查】[/color][/b]")
+	lines.append("　".join(PackedStringArray(key_parts)))
 	if not eng.discard_pile.is_empty():
 		var rec_cards: Array = []
 		var dsz: int = (eng.discard_pile as Array).size()
 		for i in range(dsz - 1, maxi(-1, dsz - 13), -1):
-			rec_cards.append(card_text(eng.discard_pile[i]))
+			rec_cards.append(fmt_c.call(eng.discard_pile[i]))
 		lines.append("")
-		lines.append("【最近弃牌堆明细（最新在前，共 %d 张）】" % dsz)
+		lines.append("[b][color=#664396]【最近弃牌堆明细（最新在前，共 %d 张）】[/color][/b]" % dsz)
 		lines.append("  ".join(PackedStringArray(rec_cards)))
 	lines.append("")
-	lines.append("以下按已出现的牌推算未见张数：")
-	var kind_order := ["基本牌", "锦囊牌", "延时锦囊", "武器", "防具", "饰品"]
+	lines.append("[color=#554555]以下按已出现的牌推算未见张数：[/color]")
+	var kind_order := ["基本牌", "锦囊牌", "延时锦囊", "武器", "防具", "饰品", "宝物"]
 	for kind in kind_order:
 		var parts: Array = []
 		for nm in CardDefs.DEFS:
@@ -4387,7 +4393,7 @@ func counter_text() -> String:
 			if left > 0:
 				parts.append("%s ×%d" % [nm, left])
 		if not parts.is_empty():
-			lines.append("【%s】" % kind)
+			lines.append("[b][color=#b83258]【%s】[/color][/b]" % kind)
 			lines.append("  ".join(parts))
 	return "\n".join(lines)
 

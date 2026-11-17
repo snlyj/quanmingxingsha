@@ -367,6 +367,7 @@ func _run_reg_test() -> void:
 	await _reg_v36()
 	await _reg_v37()
 	await _reg_v38()
+	await _reg_v39()
 	_reg_lines.append("REGTEST_DONE tests=%d fails=%d" % [_reg_n, _reg_fails])
 	_write("/tmp/ask_regtest.txt", _reg_lines)
 	print(_reg_lines[_reg_lines.size() - 1])
@@ -1764,7 +1765,13 @@ func _reg_v27() -> void:
 		_ok(not bs._hand_has(sha) and used, "S1 点「确定」后才对目标出「突击」")
 	# S3 无目标牌（锦囊）：点牌只选中，「确定」才使用
 	await _reach_my_play(bs)
-	var wz := _give(bs.eng, me, "灵感爆发", "红桃", 7)
+	var wz := _give(bs.eng, me, "灵感爆发", "红桃", 1)
+	for q3 in bs.players:
+		if q3 != me:
+			q3["xingwei_turn_used"] = true
+			for hc3 in (q3["hand"] as Array).duplicate():
+				if String(hc3["name"]) == "看破":
+					(q3["hand"] as Array).erase(hc3)
 	bs.refresh()
 	var hn3: int = (me["hand"] as Array).size()
 	_tap_card(bs, wz)
@@ -3184,3 +3191,55 @@ func _reg_v38() -> void:
 	else:
 		_ok(false, "V38-3 未能进入真人出牌阶段")
 	await _close_battle(bs38)
+
+
+# ---------------- V0.39：星川幽（命札改判/余谶）、彩色 BBCode 记牌器、连胜与本命武将榜 ----------------
+func _reg_v39() -> void:
+	var ey = _clean_eng("twovtwo", ["红方", "蓝方", "蓝方", "红方"], 3)
+	var me0: Dictionary = ey.players[0]
+	var foe1: Dictionary = ey.players[1]
+	var ally3: Dictionary = ey.players[3]
+	ally3["char_name"] = "星川幽"
+	ey.add_skill(ally3, "mingzha")
+	ey.add_skill(ally3, "yuchen")
+	_give(ey, ally3, "突击", "黑桃", 7)
+	ey.deck.append(_mk("补给", "红桃", 6))
+	ey.deck.append(_mk("闪避", "红桃", 2))
+	var c_before := census(ey)
+	var j1: Dictionary = await ey.do_judge(foe1, "结界手环")
+	var c_diff := census_diff(c_before, census(ey))
+	_ok(not ey.is_red(j1) and (ally3["hand"] as Array).size() == 1 and int((ally3["round_marks"] as Dictionary).get("mingzha_cnt", 0)) == 1 and c_diff == "", "V39-1 「命札」将敌方「结界手环」红桃改判为黑色失效并摸 1 牌（牌堆完全守恒）")
+	var hcard := _give(ey, ally3, "闪避", "红桃", 9)
+	ey.deck.append(_mk("特饮", "方块", 9))
+	ey.deck.append(_mk("突击", "黑桃", 5))
+	var j2: Dictionary = await ey.do_judge(me0, "沉迷游戏")
+	_ok(String(j2["suit"]) == "红桃" and not (ally3["hand"] as Array).has(hcard) and int((ally3["round_marks"] as Dictionary).get("mingzha_cnt", 0)) == 2, "V39-1 「命札」将队友「沉迷游戏」黑桃改判为红桃解除控制（第 2/2 次）")
+	var blk_left := _give(ey, ally3, "突击", "梅花", 4)
+	ey.deck.append(_mk("闪避", "方块", 8))
+	var j3: Dictionary = await ey.do_judge(foe1, "结界手环")
+	_ok(ey.is_red(j3) and (ally3["hand"] as Array).has(blk_left) and (ally3["hand"] as Array).size() == 3, "V39-1 「命札」每轮达到 2 次上限后不再触发")
+	(ally3["hand"] as Array).pop_back()  # 调整至 2 张（小于 3 体力上限）
+	ally3["hp"] = 3
+	ally3["max_hp"] = 3
+	await ey.fire("phaseZhunbeiStart", {"name": "phase", "player": ally3, "target": ally3})
+	_ok((ally3["hand"] as Array).size() == 3, "V39-1 「余谶」在手牌小于体力上限时准备阶段摸 1 张牌")
+	await ey.fire("phaseZhunbeiStart", {"name": "phase", "player": ally3, "target": ally3})
+	_ok((ally3["hand"] as Array).size() == 3, "V39-1 「余谶」手牌已达体力上限时不重复摸牌")
+	_ok(Characters.LIST.size() >= 18 and ResourceLoader.exists("res://assets/cg/yuu.webp"), "V39-1 第 18 名角色「星川幽」及 CG 资源齐全")
+
+	const Meta39 = preload("res://scripts/meta.gd")
+	Meta39.reset_for_test("user://meta_v39.json")
+	Meta39.path = "user://meta_v39.json"
+	for wi in 3:
+		Meta39.record({"mode": "duel", "char": "星川幽" if wi < 2 else "御影纱奈", "identity": "先手", "result": "win", "rounds": 4, "dmg": 3, "kills": 1, "heal": 0, "taken": 1, "mvp": true})
+	var d39: Dictionary = Meta39.load_data()
+	var t3: Array = Meta39.top_chars(3)
+	_ok(int(d39.get("win_streak", 0)) == 3 and int(d39.get("best_streak", 0)) == 3 and (d39["ach"] as Dictionary).has("streak_3"), "V39-2 三连胜更新 win_streak/best_streak 并解锁成就「势如破竹」")
+	_ok(t3.size() == 2 and String(t3[0]["name"]) == "星川幽", "V39-2 本命武将榜按胜场正确排序")
+	main_ref.show_records()
+	await get_tree().process_frame
+	_ok(main_ref.screen_root.get_child_count() > 0, "V39-2 含连胜与本命武将榜的战绩页正常渲染")
+	Meta39.reset_for_test("user://meta_v39.json")
+	Meta39.path = "user://meta_test.json"
+	main_ref.show_home()
+	await get_tree().process_frame

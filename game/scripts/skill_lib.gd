@@ -42,6 +42,8 @@ func register_all(eng) -> void:
 	eng.register_skill("shiji", {"name": "时计", "active": {"filter": Callable(self, "_shiji_filter"), "ai_use": Callable(self, "_shiji_aiuse"), "content": Callable(self, "_shiji_content")}})
 	eng.register_skill("xingwei", {"name": "星帷"})
 	eng.register_skill("lianyu", {"name": "敛羽", "timings": {"damageAfter": {"who": "player", "forced": true, "filter": Callable(self, "_lianyu_filter"), "content": Callable(self, "_lianyu_content")}}})
+	eng.register_skill("mingzha", {"name": "命札"})
+	eng.register_skill("yuchen", {"name": "余谶", "timings": {"phaseZhunbeiStart": {"who": "player", "filter": Callable(self, "_yuchen_filter"), "content": Callable(self, "_yuchen_content")}}})
 	eng.register_skill("pokong", {"name": "破空", "active": {"filter": Callable(self, "_pokong_filter"), "ai_use": Callable(self, "_pokong_aiuse"), "content": Callable(self, "_pokong_content")}})
 	eng.register_skill("xingying_lord", {"name": "星樱号令", "text": "主公技，锁定技。你的首个准备阶段开始时，若你没有「护甲」，你获得 1 点「护甲」；其他同阵营角色在濒死时对你使用「补给」后摸 1 张牌。", "timings": {"phaseZhunbeiStart": {"who": "player", "forced": true, "filter": Callable(self, "_xingying_lord_filter"), "content": Callable(self, "_xingying_lord_content")}}})
 
@@ -123,7 +125,7 @@ func _huayu_filter(eng, ctx, p) -> bool:
 
 func _huayu_content(eng, ctx, p) -> void:
 	eng.mark_round(p, "huayu")
-	var jc: Dictionary = eng.do_judge(p, "花愈")
+	var jc: Dictionary = await eng.do_judge(p, "花愈")
 	if not jc.is_empty() and eng.is_red(jc):
 		eng.log_msg("「花愈」判定为红色，%s 回复 1 点体力。" % eng.pname(p))
 		eng.heal(p, 1)
@@ -1132,3 +1134,13 @@ func _pokong_content(eng, p) -> void:
 		bonus_txt = "，并获得本回合突击次数上限 +1 且下一张突击伤害 +1"
 	eng.log_msg("🪶「破空」：%s 消耗 %d 枚「影羽」摸 %d 张牌%s！" % [eng.pname(p), cnt, cnt, bonus_txt])
 	eng.changed()
+
+
+# ---------- 星川幽（命札 + 余谶） ----------
+func _yuchen_filter(eng, ctx, p) -> bool:
+	return (p["hand"] as Array).size() < int(p["max_hp"])
+
+
+func _yuchen_content(eng, ctx, p) -> void:
+	eng.draw_cards(p, 1)
+	eng.log_msg("🔮「余谶」：%s 手牌少于体力上限，摸 1 张牌。" % eng.pname(p))

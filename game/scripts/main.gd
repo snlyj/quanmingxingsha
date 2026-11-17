@@ -968,7 +968,28 @@ func show_records() -> void:
 	cols.add_child(right)
 	# 战绩汇总（按模式 / 按身份胜率）
 	var sv := _meta_panel(left, "战绩")
-	sv.add_child(lbl("总计：%s　｜　残局：%d / %d　｜　🪙欢斗豆 %d" % [Meta.win_rate_text("all"), Meta.puzzles_cleared_count(), Puzzles.count(), Meta.beans()], 24, C_INK, true))
+	sv.add_child(lbl("总计：%s　｜　🔥连胜 %d（最高 %d）　｜　残局：%d/%d　｜　🪙%d豆" % [Meta.win_rate_text("all"), int(d.get("win_streak", 0)), int(d.get("best_streak", 0)), Meta.puzzles_cleared_count(), Puzzles.count(), Meta.beans()], 22, C_INK, true))
+	var tops: Array = Meta.top_chars(3)
+	if not tops.is_empty():
+		var tv := _meta_panel(left, "🏆 本命武将榜 Top%d" % tops.size())
+		var trow := HBoxContainer.new()
+		trow.add_theme_constant_override("separation", 14)
+		tv.add_child(trow)
+		for idx_t in tops.size():
+			var td: Dictionary = tops[idx_t]
+			var tc_box := VBoxContainer.new()
+			tc_box.add_theme_constant_override("separation", 4)
+			var tch: Dictionary = {}
+			for cand_c in Characters.LIST:
+				if String(cand_c["name"]) == String(td["name"]):
+					tch = cand_c
+					break
+			if not tch.is_empty():
+				tc_box.add_child(Art.cg_card(tch, Vector2(146, 178), {"zoom": 0.56, "face_y": 0.34, "title": false, "hp": false, "fs": 16}))
+			var wr := int(round(100.0 * float(td["wins"]) / float(maxi(int(td["games"]), 1))))
+			tc_box.add_child(lbl("#%d %s" % [idx_t + 1, String(td["name"])], 21, C_INK, true, HORIZONTAL_ALIGNMENT_CENTER))
+			tc_box.add_child(lbl("胜 %d/%d (%d%%)" % [int(td["wins"]), int(td["games"]), wr], 18, C_PINK_DEEP, true, HORIZONTAL_ALIGNMENT_CENTER))
+			trow.add_child(tc_box)
 	for mk in [["identity", "身份场", ["主公", "忠臣", "反贼", "内奸"]], ["doudizhu", "斗地主", ["地主", "农民"]], ["twovtwo", "欢乐2v2", ["红方", "蓝方"]], ["boss", "魔王挑战", ["联军", "魔王"]], ["duel", "单挑", ["先手", "后手"]]]:
 		sv.add_child(lbl("%s：%s" % [mk[1], Meta.win_rate_text("mode|" + String(mk[0]))], 24, C_INK, true))
 		var parts: Array = []
