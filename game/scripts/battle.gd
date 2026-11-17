@@ -104,6 +104,7 @@ func _ready() -> void:
 	font_bold = load("res://assets/fonts/NotoSansSC-Bold.otf")
 	rng.randomize()
 	auto_confirm = auto_confirm_saved()  # V0.27：「自动确认」默认关闭，设置持久化在 user://settings.cfg [play]
+	double_tap_play = double_tap_saved()
 
 
 # V0.24 修复：对局中途「退出」回主页时，引擎协程还挂在「等待作答/结束出牌」上，整个引擎实例（牌堆、日志、技能表）
@@ -1599,7 +1600,14 @@ func refresh() -> void:
 		gem_text.text = "?" if idt.begins_with("？") else idt.substr(0, 1)
 		var chip_text: Label = panel.get_node("Chip/ChipText")
 		var p_sh := int(p.get("shield", 0))
-		chip_text.text = ("🛡%d ✋%d" % [p_sh, p["hand"].size()]) if p_sh > 0 else ("✋ %d" % p["hand"].size())
+		var p_mk := int((p.get("marks", {}) as Dictionary).get("影羽", 0))
+		var chip_parts: Array = []
+		if p_sh > 0:
+			chip_parts.append("🛡%d" % p_sh)
+		if p_mk > 0:
+			chip_parts.append("🪶%d" % p_mk)
+		chip_parts.append("✋%d" % p["hand"].size())
+		chip_text.text = " ".join(PackedStringArray(chip_parts))
 		(panel.get_node("Guess") as Control).visible = false
 		var gm := String(guess_marks.get(seat_idx, ""))
 		var gbtn := panel.get_node("GuessBtn") as Button
@@ -1686,11 +1694,13 @@ func refresh() -> void:
 		hearts2 += "♥" if i < int(me["hp"]) else "♡"
 	player_info.text = "%s · %s" % [String(me["char"].get("title", me["char"]["name"])), me["identity"]]
 	var h_cnt: int = (me["hand"] as Array).size()
-	var h_lim: int = maxi(int(me["hp"]), 0)
+	var h_lim: int = eng.hand_limit(me) if eng != null else maxi(int(me["hp"]), 0)
 	var over_txt: String = ("（需弃%d）" % (h_cnt - h_lim)) if (h_cnt > h_lim and turn_seat == 0) else ""
 	var me_sh: int = int(me.get("shield", 0))
+	var me_mk: int = int((me.get("marks", {}) as Dictionary).get("影羽", 0))
 	var sh_txt: String = ("🛡%d " % me_sh) if me_sh > 0 else ""
-	me_hp_label.text = "%s%s %d/%d · 手牌 %d/%d%s" % [sh_txt, hearts2, int(me["hp"]), int(me["max_hp"]), h_cnt, h_lim, over_txt]
+	var mk_txt: String = ("🪶%d " % me_mk) if me_mk > 0 else ""
+	me_hp_label.text = "%s%s%s %d/%d · 手牌 %d/%d%s" % [sh_txt, mk_txt, hearts2, int(me["hp"]), int(me["max_hp"]), h_cnt, h_lim, over_txt]
 	# 自己的体力变化：数值条闪红/闪绿（座位体力槽同理）
 	var me_hp := int(me["hp"])
 	if me_hp_label.has_meta("hp_shown") and int(me_hp_label.get_meta("hp_shown")) != me_hp and not fast and not auto_all:
@@ -2366,6 +2376,27 @@ func _toggle_discard(card: Dictionary) -> void:
 		# 已选满：替换最早选的那张（手杀同款，省一次取消）
 		discard_sel.remove_at(0)
 		discard_sel.append(card)
+	play_sfx("draw")
+	_update_discard_ui()
+	_queue_refresh()
+
+
+func _auto_select_discard_cards() -> void:
+	if not discard_mode or players.is_empty() or eng == null:
+		return
+	var me: Dictionary = players[0]
+	var sim_hand: Array = (me["hand"] as Array).duplicate()
+	var chosen: Array = []
+	var need_n := mini(discard_need, sim_hand.size())
+	var fake := me.duplicate()
+	for _i in need_n:
+		fake["hand"] = sim_hand
+		var c: Dictionary = eng.ai_pick_discard(fake)
+		if c.is_empty():
+			break
+		chosen.append(c)
+		sim_hand.erase(c)
+	discard_sel = chosen
 	play_sfx("draw")
 	_update_discard_ui()
 	_queue_refresh()
@@ -3675,13 +3706,18 @@ func _record_meta(text: String, your_result: String) -> Dictionary:
 	var me: Dictionary = players[0]
 	var res := "win" if your_result == "你赢了！" else ("lose" if your_result == "你输了。" else "draw")
 	var mvi := _mvp_info(text)
-	return Meta.record({
+	var rec := {
 		"mode": game_mode, "char": String(me["char_name"]), "identity": String(me["identity"]),
 		"result": res, "rounds": int(eng.round_no) if eng != null else 0,
 		"dmg": int(me.get("stat_damage", 0)), "kills": int(me.get("stat_kills", 0)),
 		"heal": int(me.get("stat_heal", 0)), "taken": int(me.get("stat_taken", 0)),
 		"mvp": int(mvi[0]) == 0,
-	})
+	}
+	if game_mode == "doudizhu" and eng != null and res in ["win", "lose"]:
+		var stake := int(eng.ddz_stake())
+		var base_b := stake * (200 if String(me["identity"]) == "地主" else 100)
+		rec["beans_delta"] = base_b if res == "win" else -base_b
+	return Meta.record(rec)
 
 
 func _mvp_info(winner_text: String) -> Array:
@@ -3746,7 +3782,7 @@ func build_settlement(winner_text: String, your_result: String) -> void:
 	vb.add_child(title)
 	var sub_text2 := winner_text + " · 身份全部揭示"
 	if game_mode == "doudizhu" and eng != null:
-		sub_text2 += " · 叫分倍数 ×%d" % int(eng.ddz_multiplier)
+		sub_text2 += " · 叫分×%d · 加倍×%d（总×%d）" % [int(eng.ddz_multiplier), int(eng.ddz_double), int(eng.ddz_stake())]
 	var sub := lbl(sub_text2, 24, Color(0.55, 0.4, 0.45))
 	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	vb.add_child(sub)
@@ -3841,6 +3877,11 @@ func build_settlement(winner_text: String, your_result: String) -> void:
 		if meta_result.has("xp"):
 			var lvl := int(meta_result["level"])
 			mt_parts.append("熟练度 +%d · %s Lv%d %s%s" % [int(meta_result["xp"]), String(players[0]["char_name"]), lvl, Meta.MASTERY_TITLE[lvl - 1], "（升级！）" if bool(meta_result["level_up"]) else ""])
+		if meta_result.has("beans"):
+			var bd := int(meta_result.get("beans_delta", 0))
+			var bsign := ("+%d" % bd) if bd >= 0 else str(bd)
+			var aid_t := "（含低保 +300）" if bool(meta_result.get("beans_aid", false)) else ""
+			mt_parts.append("🪙欢斗豆 %s → %d%s" % [bsign, int(meta_result["beans"]), aid_t])
 		var names: Array = []
 		for a in meta_result.get("new_ach", []):
 			names.append(String(a[1]))
@@ -4044,8 +4085,12 @@ func _on_hand_card_clicked(card: Dictionary) -> void:
 		targeting = false
 		target_candidates = []
 	if not selected_card.is_empty() and is_same(selected_card, card):
+		if double_tap_play and (Time.get_ticks_msec() - _last_card_tap_ms) <= 450 and _can_confirm():
+			_on_confirm_pressed()
+			return
 		cancel_targeting()
 		return
+	_last_card_tap_ms = Time.get_ticks_msec()
 	var reason := unusable_reason(me, card)
 	if reason != "":
 		if equip_name(me, "treasure") == "木牛流马":
@@ -4628,8 +4673,14 @@ func _eng_choose_discard(p: Dictionary) -> Dictionary:
 	selected_card = {}
 	targeting = false
 	_queue_refresh()
-	var v: Variant = await ask(discard_prompt, [{"label": "确定", "value": "__confirm"}, {"label": "智能选择", "value": "__auto", "default": true}], func() -> void:
+	var v: Variant = await ask(discard_prompt, [{"label": "确定", "value": "__confirm"}, {"label": "直接智能", "value": "__auto", "default": true}], func() -> void:
 		discard_confirm_btn = prompt_btns.get_child(0) as Button
+		var auto_pick_b := _make_action_btn("⚡ 选弱牌", Color(0.98, 0.76, 0.30), Color(0.24, 0.14, 0.04))
+		auto_pick_b.custom_minimum_size = Vector2(180, 64)
+		(auto_pick_b.get_child(0) as Control).size = Vector2(160, 24)
+		auto_pick_b.pressed.connect(_auto_select_discard_cards)
+		prompt_btns.add_child(auto_pick_b)
+		prompt_btns.move_child(auto_pick_b, 1)
 		_update_discard_ui())
 	var picked: Array = discard_sel.duplicate()
 	discard_mode = false
@@ -5254,9 +5305,21 @@ func _eng_fx(kind: String, data: Dictionary) -> void:
 			play_sfx("skill" if pwin else "card")
 		"shield":
 			var sh_d := int(data.get("delta", 1))
-			var sh_col := Color(0.35, 0.78, 1.0) if sh_d > 0 else Color(0.75, 0.85, 0.95)
-			fx_float(seat, ("🛡护甲+%d" % sh_d) if sh_d > 0 else ("🛡抵消%d" % (-sh_d)), sh_col, 44, 62.0)
+			var sh_now := int(data.get("shield", 0))
+			var sh_col := Color(0.35, 0.78, 1.0) if sh_d > 0 else (Color(1.0, 0.56, 0.25) if sh_now == 0 else Color(0.75, 0.85, 0.95))
+			var sh_msg := ("🛡护甲+%d" % sh_d) if sh_d > 0 else (("🛡抵消%d·碎甲" % (-sh_d)) if sh_now == 0 else ("🛡抵消%d" % (-sh_d)))
+			fx_float(seat, sh_msg, sh_col, 44, 62.0)
 			play_sfx("equip" if sh_d > 0 else "dodge")
+		"mark":
+			var mk_n := String(data.get("name", ""))
+			var mk_d := int(data.get("delta", 1))
+			var mk_v := int(data.get("val", 0))
+			var mk_s := ("🪶%s+%d (%d)" % [mk_n, mk_d, mk_v]) if mk_d > 0 else ("🪶%s-%d (%d)" % [mk_n, -mk_d, mk_v])
+			fx_float(seat, mk_s, Color(0.95, 0.42, 0.46) if mk_d > 0 else Color(0.95, 0.75, 0.30), 42, 62.0)
+		"doubling":
+			var dm := int(data.get("mul", 2))
+			fx_float(seat, "⚡超级加倍！" if dm >= 4 else "⚡加倍！", Color(1.0, 0.76, 0.18), 48, 70.0)
+			play_sfx("skill")
 
 
 # ---------------- 濒死救援特写 ----------------
@@ -5266,6 +5329,8 @@ func fx_dying_show(seat: int) -> void:
 	if seat < 0 or seat >= players.size() or fx_root == null:
 		return
 	dying_seat = seat
+	if seat == 0 and me_panel_ref != null:
+		fx_flash(0, Color(0.95, 0.15, 0.35))
 	var p: Dictionary = players[seat]
 	var holder := PanelContainer.new()
 	holder.mouse_filter = MOUSE_FILTER_IGNORE
@@ -5719,6 +5784,9 @@ func _intro_seat(seat: int) -> Dictionary:
 		st.append("你能突击到TA" if attack_reachable(me, {"name": "突击"}, p) else "不在你的攻击范围内")
 	if bool(p.get("chained", false)):
 		st.append("连环状态")
+	var p_mk2 := int((p.get("marks", {}) as Dictionary).get("影羽", 0))
+	if p_mk2 > 0:
+		st.append("🪶影羽 %d/4（手牌上限+%d）" % [p_mk2, p_mk2])
 	var ddz_ally2 := game_mode == "doudizhu" and String(me["identity"]) == "农民" and String(p["identity"]) == "农民"
 	if ((game_mode == "twovtwo" or game_mode == "boss") or ddz_ally2) and seat != 0 and String(p["identity"]) == String(me["identity"]):
 		var mcards: Array = []
@@ -5805,6 +5873,9 @@ func _maybe_first_hint(force: bool = false) -> void:
 # 「自动确认」（无名杀 auto_confirm）默认关闭：开启后选够且无需再选时自动提交。
 const FEAT_END := 16.0 + 7.0 * 118.0
 var auto_confirm := false
+var double_tap_play := false
+var _last_card_tap_ms := 0
+var double_tap_check: CheckButton = null
 var extra_target := -1          # 多目标牌（羁绊锁链）的第二个目标
 var skill_mode := ""            # 技能选择状态中的技能 sid
 var skill_card: Dictionary = {} # 技能选择状态中选中的手牌
@@ -5831,6 +5902,28 @@ static func auto_confirm_saved() -> bool:
 	return bool(cf.get_value("play", "auto_confirm", false))
 
 
+static func double_tap_saved() -> bool:
+	var cf := ConfigFile.new()
+	if cf.load(SETTINGS_PATH) != OK:
+		return false
+	return bool(cf.get_value("play", "double_tap_play", false))
+
+
+static func save_double_tap(on: bool) -> void:
+	var cf := ConfigFile.new()
+	cf.load(SETTINGS_PATH)
+	cf.set_value("play", "double_tap_play", on)
+	cf.save(SETTINGS_PATH)
+
+
+func set_double_tap(on: bool, persist: bool = true) -> void:
+	double_tap_play = on
+	if persist:
+		save_double_tap(on)
+	if double_tap_check != null and is_instance_valid(double_tap_check) and double_tap_check.button_pressed != on:
+		double_tap_check.set_pressed_no_signal(on)
+
+
 static func save_auto_confirm(on: bool) -> void:
 	var cf := ConfigFile.new()
 	cf.load(SETTINGS_PATH)
@@ -5852,6 +5945,8 @@ func toggle_settings_panel() -> void:
 	settings_panel.visible = not settings_panel.visible
 	if settings_panel.visible:
 		auto_confirm_check.set_pressed_no_signal(auto_confirm)
+		if double_tap_check != null and is_instance_valid(double_tap_check):
+			double_tap_check.set_pressed_no_signal(double_tap_play)
 		move_child(settings_panel, get_child_count() - 1)
 
 
@@ -5884,7 +5979,19 @@ func _build_settings_panel() -> void:
 		set_auto_confirm(on)
 		show_hint("自动确认：%s" % ("已开启——选够且无需再选时自动出牌/作答" if on else "已关闭——选中后需点「确定」才会出牌")))
 	vb.add_child(auto_confirm_check)
-	var desc := lbl("关闭（默认）：点牌、点目标、点技能只会选中，点「确定」才会出牌/发动。\n开启：选择已经选够、没有其他可选时自动提交（同无名杀「自动确认」）。", 21, C_INK_SOFT)
+	double_tap_check = CheckButton.new()
+	double_tap_check.focus_mode = Control.FOCUS_NONE
+	double_tap_check.text = "双击手牌直出"
+	double_tap_check.add_theme_font_override("font", font_bold)
+	double_tap_check.add_theme_font_size_override("font_size", 26)
+	for k in ["font_color", "font_hover_color", "font_pressed_color", "font_hover_pressed_color", "font_focus_color"]:
+		double_tap_check.add_theme_color_override(k, C_INK)
+	double_tap_check.set_pressed_no_signal(double_tap_play)
+	double_tap_check.toggled.connect(func(on: bool) -> void:
+		set_double_tap(on)
+		show_hint("双击手牌直出：%s" % ("已开启——快速双击已选中的牌可直接打出" if on else "已关闭")))
+	vb.add_child(double_tap_check)
+	var desc := lbl("自动确认：选够目标后自动提交；双击手牌直出：450ms 内快速连点同一张牌直接出牌。", 21, C_INK_SOFT)
 	desc.custom_minimum_size = Vector2(520, 0)
 	desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	vb.add_child(desc)
@@ -6137,6 +6244,8 @@ func _skill_ui_spec(sid: String) -> Dictionary:
 		"yuanhu":
 			return {"card": "any", "card_role": "作为代价弃置（令目标获得1点护甲）", "targets": all_alive}
 		"shiji":
+			return {"card": "none", "targets": null}
+		"pokong":
 			return {"card": "none", "targets": null}
 	return {"card": "none", "targets": null}
 

@@ -366,6 +366,7 @@ func _run_reg_test() -> void:
 	await _reg_v35()
 	await _reg_v36()
 	await _reg_v37()
+	await _reg_v38()
 	_reg_lines.append("REGTEST_DONE tests=%d fails=%d" % [_reg_n, _reg_fails])
 	_write("/tmp/ask_regtest.txt", _reg_lines)
 	print(_reg_lines[_reg_lines.size() - 1])
@@ -3098,3 +3099,88 @@ func _reg_v37() -> void:
 		_ok(false, "V37-4 未能启动残局 p07")
 	main_ref.show_home()
 	await _frames(2)
+
+
+# ---------------- V0.38：御影纱奈（通用标记/手牌上限+/破空）、斗地主加倍与欢斗豆、弃牌一键预选与双击直出 ----------------
+func _reg_v38() -> void:
+	# V38-1 御影纱奈「敛羽」&「破空」
+	var esn = _clean_eng("duel", ["先手", "后手"], 4)
+	var sp0: Dictionary = esn.players[0]
+	var sp1: Dictionary = esn.players[1]
+	sp0["char_name"] = "御影纱奈"
+	esn.add_skill(sp0, "lianyu")
+	esn.add_skill(sp0, "pokong")
+	# 回合外打出闪避凝聚影羽
+	esn.turn_player = sp1
+	_give(esn, sp0, "闪避", "红桃", 2)
+	var d_out: bool = await esn.respond_with(sp0, "闪避", "测试敛羽")
+	_ok(d_out and int(esn.mark_count(sp0, "影羽")) == 1 and int(esn.hand_limit(sp0)) == 5, "V38-1 「敛羽」回合外打出闪避获得 1 枚「影羽」，手牌上限变为 5")
+	# 受到伤害再凝聚影羽
+	await esn.damage(sp1, sp0, 2, "突击")
+	_ok(int(sp0["hp"]) == 2 and int(esn.mark_count(sp0, "影羽")) == 3 and int(esn.hand_limit(sp0)) == 5, "V38-1 受到 2 点伤害再凝 2 枚「影羽」（共 3/4），2血手牌上限仍为 5")
+	# 弃牌阶段保留至 hand_limit (5张)
+	for _i in 6:
+		_give(esn, sp0, "闪避", "方块", _i + 2)
+	await esn.discard_phase(sp0)
+	_ok((sp0["hand"] as Array).size() == 5, "V38-1 弃牌阶段按 hand_limit() 正确保留 5 张手牌")
+	# 「破空」消耗 3 枚影羽摸 3 牌，获得 +1 突击次数与 +1 伤害（drunk）
+	esn.turn_player = sp0
+	sp0["pokong_atk_bonus"] = 0
+	var hn_before: int = (sp0["hand"] as Array).size()
+	await esn.use_active_skill(sp0, "pokong")
+	_ok(int(esn.mark_count(sp0, "影羽")) == 0 and (sp0["hand"] as Array).size() == hn_before + 3 and int(esn.attack_limit(sp0)) == 2 and bool(sp0.get("drunk", false)), "V38-1 「破空」消耗全部「影羽」摸等量牌，并获突击次数 +1 与下次突击伤害 +1")
+	_ok(Characters.LIST.size() >= 17 and ResourceLoader.exists("res://assets/cg/sana.webp"), "V38-1 第 17 名角色「御影纱奈」及 CG 资源齐全")
+
+	# V38-2 斗地主加倍与欢斗豆统计
+	var eddz = _clean_eng("doudizhu", ["地主", "农民", "农民"], 4)
+	eddz.ddz_landlord_seat = 0
+	eddz.ddz_multiplier = 3
+	var drec: Array = []
+	_script_ui(eddz, [0], {"option_0": 2}, drec)  # opt[2] = 超级加倍 ×4
+	await eddz.run_ddz_doubling()
+	_ok(int(eddz.ddz_multiplier) == 3 and int(eddz.ddz_double) >= 4 and int(eddz.ddz_stake()) >= 12, "V38-2 斗地主加倍独立叠加在 ddz_double（不改变叫分 1~3）")
+	eddz.set_ui({})
+	const Meta38 = preload("res://scripts/meta.gd")
+	Meta38.reset_for_test("user://meta_v38.json")
+	Meta38.path = "user://meta_v38.json"
+	_ok(Meta38.beans() == 1000, "V38-2 初始欢斗豆为 1000")
+	var mres: Dictionary = Meta38.record({"mode": "doudizhu", "char": "御影纱奈", "identity": "地主", "result": "win", "rounds": 4, "dmg": 6, "kills": 2, "heal": 0, "taken": 1, "mvp": true, "beans_delta": 1200})
+	_ok(int(mres.get("beans", 0)) == 2200 and (Meta38.load_data()["ach"] as Dictionary).has("rich_beans"), "V38-2 斗地主胜局加豆并解锁成就「欢斗富豪」")
+	Meta38.reset_for_test("user://meta_v38.json")
+	Meta38.path = "user://meta_test.json"
+
+	# V38-3 弃牌一键选弱牌 & 双击手牌直出
+	var bs38 = _new_battle("identity", 38)
+	if await _reach_my_play(bs38):
+		var m38: Dictionary = bs38.players[0]
+		bs38.set_double_tap(true, false)
+		var wz38 := _give(bs38.eng, m38, "灵感爆发", "红桃", 1)
+		bs38.refresh()
+		await _frames(1)
+		bs38._last_card_tap_ms = Time.get_ticks_msec()
+		bs38._on_hand_card_clicked(wz38)  # 第1次选中
+		bs38._on_hand_card_clicked(wz38)  # 450ms 内第2次双击直出
+		await _wait_interactive(bs38)
+		_ok(not bs38._hand_has(wz38), "V38-3 开启「双击手牌直出」后，快速连点无目标牌直接打出")
+		bs38.set_double_tap(false, false)
+		# 测试弃牌一键选弱牌
+		while (m38["hand"] as Array).size() < 4:
+			_give(bs38.eng, m38, "突击", "梅花", 7)
+		var done_d := {"fin": false}
+		var run_d := func() -> void:
+			await bs38._eng_choose_discard(m38)
+			done_d["fin"] = true
+		run_d.call()
+		await _frames(2)
+		var pick_weak_btn: Button = bs38.prompt_btns.get_child(1) as Button if bs38.prompt_btns.get_child_count() >= 2 else null
+		_ok(pick_weak_btn != null and pick_weak_btn.text.find("选弱牌") >= 0, "V38-3 弃牌提示栏包含「⚡ 选弱牌」快捷预选按钮")
+		if pick_weak_btn != null:
+			pick_weak_btn.pressed.emit()
+			await _frames(1)
+		_ok(bs38.discard_sel.size() == bs38.discard_need and bs38.discard_confirm_btn != null and not bs38.discard_confirm_btn.disabled, "V38-3 点击「选弱牌」后自动预选所需张数并亮起「确定」")
+		if bs38.discard_confirm_btn != null:
+			bs38.discard_confirm_btn.pressed.emit()
+		await _frames(3)
+	else:
+		_ok(false, "V38-3 未能进入真人出牌阶段")
+	await _close_battle(bs38)

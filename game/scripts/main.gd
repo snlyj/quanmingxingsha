@@ -570,7 +570,7 @@ func show_home() -> void:
 	var b_battle := cute_button("5人身份场", "主公 / 忠臣 / 反贼 / 内奸", C_PLATE, Vector2(372, 134))
 	b_battle.pressed.connect(show_battle)
 	btn_row.add_child(b_battle)
-	var b_ddz := cute_button("斗地主", "3 人叫分 1~3 倍 · 专属牌", Color(0.98, 0.62, 0.25), Vector2(372, 134))
+	var b_ddz := cute_button("斗地主", "3人叫分加倍 · 🪙%d 欢斗豆" % Meta.beans(), Color(0.98, 0.62, 0.25), Vector2(372, 134))
 	b_ddz.pressed.connect(func() -> void: show_battle_mode("doudizhu"))
 	btn_row.add_child(b_ddz)
 	var b_2v2 := cute_button("欢乐 2v2", "4 人同盟排位 · 队友协同", Color(0.88, 0.38, 0.52), Vector2(372, 134))
@@ -968,7 +968,7 @@ func show_records() -> void:
 	cols.add_child(right)
 	# 战绩汇总（按模式 / 按身份胜率）
 	var sv := _meta_panel(left, "战绩")
-	sv.add_child(lbl("总计：%s　｜　残局闯关：已破 %d / %d" % [Meta.win_rate_text("all"), Meta.puzzles_cleared_count(), Puzzles.count()], 25, C_INK, true))
+	sv.add_child(lbl("总计：%s　｜　残局：%d / %d　｜　🪙欢斗豆 %d" % [Meta.win_rate_text("all"), Meta.puzzles_cleared_count(), Puzzles.count(), Meta.beans()], 24, C_INK, true))
 	for mk in [["identity", "身份场", ["主公", "忠臣", "反贼", "内奸"]], ["doudizhu", "斗地主", ["地主", "农民"]], ["twovtwo", "欢乐2v2", ["红方", "蓝方"]], ["boss", "魔王挑战", ["联军", "魔王"]], ["duel", "单挑", ["先手", "后手"]]]:
 		sv.add_child(lbl("%s：%s" % [mk[1], Meta.win_rate_text("mode|" + String(mk[0]))], 24, C_INK, true))
 		var parts: Array = []

@@ -34,11 +34,12 @@ const ACHIEVEMENTS := [
 	["tutorial", "新手毕业", "完成教学关"],
 	["puzzle_first", "初破残局", "通过任意 1 关残局挑战"],
 	["puzzle_all", "残局大师", "通关全部 10 关残局挑战"],
+	["rich_beans", "欢斗富豪", "累计拥有至少 2000 欢斗豆"],
 ]
 
 
 static func _blank() -> Dictionary:
-	return {"version": 2, "records": [], "totals": {}, "chars": {}, "ach": {}, "puzzles": {}, "tutorial_done": false}
+	return {"version": 2, "records": [], "totals": {}, "chars": {}, "ach": {}, "puzzles": {}, "beans": 1000, "tutorial_done": false}
 
 
 static func load_data() -> Dictionary:
@@ -119,6 +120,21 @@ static func _bump(d: Dictionary, key: String, won: bool) -> void:
 	t[key] = [int(v[0]) + 1, int(v[1]) + (1 if won else 0)]
 
 
+static func beans() -> int:
+	return int(load_data().get("beans", 1000))
+
+
+static func _apply_beans(d: Dictionary, delta: int) -> Dictionary:
+	var old_b := int(d.get("beans", 1000))
+	var cur := maxi(0, old_b + delta)
+	var aid := false
+	if cur < 200:
+		cur += 300
+		aid = true
+	d["beans"] = cur
+	return {"beans": cur, "beans_delta": delta, "beans_aid": aid}
+
+
 # 记录一局：rec = {mode, char, identity, result("win"/"lose"/"draw"), rounds, dmg, kills, heal, taken, mvp(bool)}
 # 返回 {"xp": 本局熟练度, "level": 当前等级, "level_up": bool, "new_ach": [[id,名称,说明],...]}
 static func record(rec: Dictionary) -> Dictionary:
@@ -141,10 +157,16 @@ static func record(rec: Dictionary) -> Dictionary:
 	cs["wins"] = int(cs["wins"]) + (1 if won else 0)
 	cs["xp"] = int(cs["xp"]) + xp
 	d["chars"][cn] = cs
+	var binfo := {}
+	if rec.has("beans_delta"):
+		binfo = _apply_beans(d, int(rec["beans_delta"]))
 	var new_lv := level_of(int(cs["xp"]))
 	var new_ach := _check_achievements(d, rec)
 	save()
-	return {"xp": xp, "level": new_lv, "level_up": new_lv > old_lv, "new_ach": new_ach}
+	var out := {"xp": xp, "level": new_lv, "level_up": new_lv > old_lv, "new_ach": new_ach}
+	for bk in binfo:
+		out[bk] = binfo[bk]
+	return out
 
 
 static func mark_tutorial() -> Array:
@@ -218,6 +240,7 @@ static func _check_achievements(d: Dictionary, rec: Dictionary) -> Array:
 		"mvp": bool(rec.get("mvp", false)),
 		"flawless": won and int(rec.get("taken", 0)) == 0,
 		"all_chars": (d["chars"] as Dictionary).size() >= 7,
+		"rich_beans": int(d.get("beans", 1000)) >= 2000,
 		"mastery_3": false,
 	}
 	for cn in (d["chars"] as Dictionary).keys():

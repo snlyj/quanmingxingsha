@@ -41,6 +41,8 @@ func register_all(eng) -> void:
 	eng.register_skill("yuanhu", {"name": "援护", "active": {"filter": Callable(self, "_hand_ge1"), "ai_use": Callable(self, "_yuanhu_aiuse"), "content": Callable(self, "_yuanhu_content")}})
 	eng.register_skill("shiji", {"name": "时计", "active": {"filter": Callable(self, "_shiji_filter"), "ai_use": Callable(self, "_shiji_aiuse"), "content": Callable(self, "_shiji_content")}})
 	eng.register_skill("xingwei", {"name": "星帷"})
+	eng.register_skill("lianyu", {"name": "敛羽", "timings": {"damageAfter": {"who": "player", "forced": true, "filter": Callable(self, "_lianyu_filter"), "content": Callable(self, "_lianyu_content")}}})
+	eng.register_skill("pokong", {"name": "破空", "active": {"filter": Callable(self, "_pokong_filter"), "ai_use": Callable(self, "_pokong_aiuse"), "content": Callable(self, "_pokong_content")}})
 	eng.register_skill("xingying_lord", {"name": "星樱号令", "text": "主公技，锁定技。你的首个准备阶段开始时，若你没有「护甲」，你获得 1 点「护甲」；其他同阵营角色在濒死时对你使用「补给」后摸 1 张牌。", "timings": {"phaseZhunbeiStart": {"who": "player", "forced": true, "filter": Callable(self, "_xingying_lord_filter"), "content": Callable(self, "_xingying_lord_content")}}})
 
 
@@ -1091,4 +1093,42 @@ func _shiji_content(eng, p) -> void:
 		if not dc.is_empty():
 			eng.discard_from_hand(p, dc)
 			eng.log_msg("「时计」：%s 弃置了 %s。" % [eng.pname(p), eng.card_text(dc)])
+	eng.changed()
+
+
+# ---------- 御影纱奈（敛羽 + 破空） ----------
+func _lianyu_filter(eng, ctx, p) -> bool:
+	return int(ctx.get("num", 0)) > 0 and eng.mark_count(p, "影羽") < 4
+
+
+func _lianyu_content(eng, ctx, p) -> void:
+	var add_n: int = mini(int(ctx.get("num", 1)), 4 - int(eng.mark_count(p, "影羽")))
+	if add_n <= 0:
+		return
+	var nv: int = eng.add_mark(p, "影羽", add_n, 4)
+	eng.log_msg("🪶「敛羽」：%s 受到伤害后凝聚 %d 枚「影羽」（当前 %d/4，手牌上限+%d）。" % [eng.pname(p), add_n, nv, nv])
+
+
+func _pokong_filter(eng, p) -> bool:
+	return eng.mark_count(p, "影羽") >= 1
+
+
+func _pokong_aiuse(eng, p) -> bool:
+	var cnt: int = eng.mark_count(p, "影羽")
+	return cnt >= 2 or (cnt >= 1 and (int(p["hp"]) <= 2 or (p["hand"] as Array).size() <= 1))
+
+
+func _pokong_content(eng, p) -> void:
+	var cnt: int = eng.mark_count(p, "影羽")
+	if cnt <= 0:
+		return
+	eng.add_mark(p, "影羽", -cnt, 4)
+	eng.draw_cards(p, cnt)
+	var bonus_txt := ""
+	if cnt >= 2:
+		p["pokong_atk_bonus"] = int(p.get("pokong_atk_bonus", 0)) + 1
+		p["drunk"] = true
+		p["used_attack"] = int(p.get("attack_count", 0)) >= eng.attack_limit(p)
+		bonus_txt = "，并获得本回合突击次数上限 +1 且下一张突击伤害 +1"
+	eng.log_msg("🪶「破空」：%s 消耗 %d 枚「影羽」摸 %d 张牌%s！" % [eng.pname(p), cnt, cnt, bonus_txt])
 	eng.changed()

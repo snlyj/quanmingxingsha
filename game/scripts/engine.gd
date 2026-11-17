@@ -81,6 +81,29 @@ func add_skill(p: Dictionary, sid: String) -> void:
 		(p["skills"] as Array).append(sid)
 
 
+func mark_count(p: Dictionary, mark_name: String) -> int:
+	var m: Dictionary = p.get("marks", {})
+	return int(m.get(mark_name, 0))
+
+
+func add_mark(p: Dictionary, mark_name: String, delta: int, cap: int = 99) -> int:
+	if delta == 0:
+		return mark_count(p, mark_name)
+	var m: Dictionary = p.get("marks", {})
+	if not p.has("marks"):
+		p["marks"] = m
+	var old_v: int = int(m.get(mark_name, 0))
+	var new_v: int = clampi(old_v + delta, 0, cap)
+	if new_v == 0:
+		m.erase(mark_name)
+	else:
+		m[mark_name] = new_v
+	if new_v != old_v:
+		fx("mark", {"seat": int(p["seat"]), "name": mark_name, "val": new_v, "delta": new_v - old_v})
+		changed()
+	return new_v
+
+
 # ---------- 基础工具 ----------
 func is_red(c: Dictionary) -> bool:
 	if c.has("color"):  # V0.28：多张牌转化的虚拟牌按共同颜色（无名杀 get.color：颜色不同则无色）
@@ -576,6 +599,8 @@ func setup_game(char_list: Array, identities: Array) -> void:
 		p["dream_pending"] = false
 		p["chained"] = false
 		p["xingwei_turn_used"] = false
+		p["marks"] = {}
+		p["pokong_atk_bonus"] = 0
 		p["stat_damage"] = 0
 		p["stat_taken"] = 0
 		p["stat_kills"] = 0
@@ -589,6 +614,7 @@ func setup_game(char_list: Array, identities: Array) -> void:
 	revealed_fan_dead = 0
 	ddz_landlord_seat = -1
 	ddz_multiplier = 1
+	ddz_double = 1
 	for p in players:
 		var start_n := 4
 		if mode == "duel" and int(p["seat"]) == duel_first_seat:
@@ -844,6 +870,11 @@ func respond_with(p: Dictionary, card_name: String, reason: String, responded_ca
 		log_msg("%s 打出 %s（%s）。" % [pname(p), card_text(c), reason])
 	if card_name == "闪避" and not converted:
 		await yb_response_effects(p, c, responded_card)
+	if card_name == "闪避" and not turn_player.is_empty() and turn_player != p and has_skill(p, "lianyu"):
+		var cur_m := mark_count(p, "影羽")
+		if cur_m < 4:
+			var nv := add_mark(p, "影羽", 1, 4)
+			log_msg("🪶「敛羽」：%s 回合外打出闪避，获得 1 枚「影羽」（%d/4）。" % [pname(p), nv])
 	await yinyue_trigger(p, c)
 	return true
 
@@ -1028,6 +1059,11 @@ func nullify_window(trick: String, user: Dictionary, victim: Dictionary, trick_c
 			log_msg("%s %s：%s 的「%s」被看破！" % [pname(actor), kp_tag, pname(user), trick])
 		else:
 			log_msg("%s %s反制：「%s」恢复生效！" % [pname(actor), kp_tag, trick])
+		if not turn_player.is_empty() and turn_player != actor and has_skill(actor, "lianyu"):
+			var cur_kp := mark_count(actor, "影羽")
+			if cur_kp < 4:
+				var nv_kp := add_mark(actor, "影羽", 1, 4)
+				log_msg("🪶「敛羽」：%s 回合外打出看破，获得 1 枚「影羽」（%d/4）。" % [pname(actor), nv_kp])
 		fx("nullify", {"seat": int(actor["seat"]), "negated": negated})
 		await pace(0.5)
 	return negated
@@ -1902,6 +1938,7 @@ func run_turn(p: Dictionary) -> void:
 		await think(0.6, 1.0)
 	for q in players:
 		q["xingwei_turn_used"] = false
+	p["pokong_atk_bonus"] = 0
 	turn_player = p
 	phase_text = "准备阶段"
 	changed()
@@ -2006,8 +2043,12 @@ func run_turn(p: Dictionary) -> void:
 	await pace(0.25)
 
 
+func hand_limit(p: Dictionary) -> int:
+	return maxi(int(p["hp"]), 0) + mark_count(p, "影羽")
+
+
 func discard_phase(p: Dictionary) -> void:
-	var limit := maxi(int(p["hp"]), 0)
+	var limit := hand_limit(p)
 	while (p["hand"] as Array).size() > limit and p["alive"]:
 		var c: Dictionary = {}
 		if ui.has("is_human") and bool((ui["is_human"] as Callable).call(p)) and ui.has("choose_discard"):
@@ -2100,6 +2141,7 @@ var difficulty := 1  # 0 简单 1 普通 2 困难
 var mode: String = "identity"
 var duel_first_seat: int = 0
 var ddz_multiplier: int = 1
+var ddz_double: int = 1
 var ddz_landlord_seat: int = -1
 var fan_total := 2
 var revealed_fan_dead := 0
@@ -2732,9 +2774,47 @@ func run_ddz_bidding() -> void:
 	changed()
 
 
+func ddz_stake() -> int:
+	return ddz_multiplier * ddz_double
+
+
+func run_ddz_doubling() -> void:
+	ddz_double = 1
+	var has_hum := false
+	for q in players:
+		if not is_ai(q):
+			has_hum = true
+			break
+	for p in seat_order_from(maxi(ddz_landlord_seat, 0)):
+		if game_over:
+			return
+		var mul := 1
+		if is_ai(p):
+			var des := ai_ddz_bid_desire(p)
+			if des >= 3:
+				mul = 2
+		elif ui.has("pick_option"):
+			var role_tag := "【地主】" if String(p["identity"]) == "地主" else "【农民】"
+			var v: Variant = await (ui["pick_option"] as Callable).call(p, [
+				{"label": "不加倍（×1）", "value": 1, "default": true},
+				{"label": "加倍（×2）", "value": 2},
+				{"label": "超级加倍（×4）", "value": 4},
+			], "斗地主加倍：你作为%s，当前总倍数 ×%d，是否加倍？" % [role_tag, ddz_stake()])
+			mul = clampi(int(v), 1, 4)
+		if mul > 1:
+			ddz_double = mini(16, ddz_double * mul)
+			var lbl_m := "超级加倍！" if mul >= 4 else "加倍！"
+			log_msg("⚡「%s」%s 选择%s本局加倍倍率升至 ×%d（总倍数 ×%d）。" % [String(p["identity"]), pname(p), lbl_m, ddz_double, ddz_stake()])
+			fx("doubling", {"seat": int(p["seat"]), "mul": mul})
+			if has_hum:
+				await pace(0.25)
+	changed()
+
+
 func run_game() -> void:
 	if mode == "doudizhu" and ddz_landlord_seat < 0:
 		await run_ddz_bidding()
+		await run_ddz_doubling()
 	var lord := first_player()
 	if lord.is_empty():
 		return
@@ -2785,9 +2865,8 @@ func equip_slot_of(card_name: String) -> String:
 func attack_limit(p: Dictionary) -> int:
 	if has_unlimited_attack(p):
 		return 999
-	if (mode == "doudizhu" and String(p["identity"]) == "地主") or has_skill(p, "mowei"):
-		return 2
-	return 1
+	var base_lim := 2 if ((mode == "doudizhu" and String(p["identity"]) == "地主") or has_skill(p, "mowei")) else 1
+	return base_lim + int(p.get("pokong_atk_bonus", 0))
 
 
 func has_unlimited_attack(p: Dictionary) -> bool:
