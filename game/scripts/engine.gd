@@ -1936,6 +1936,9 @@ func ai_is_enemy(p: Dictionary, t: Dictionary) -> bool:
 		return true
 	if mode == "doudizhu":
 		return String(p["identity"]) != String(t["identity"])
+	# V0.32：身份场只剩两人且未分胜负时，双方必然敌对（主忠/反贼同阵营两人存活时对局已结束）
+	if bool(p["alive"]) and bool(t["alive"]) and alive_players().size() <= 2:
+		return true
 	var pi := String(p["identity"])
 	var lord := lord_player()
 	if not lord.is_empty() and t == lord:
@@ -1966,6 +1969,8 @@ func ai_is_ally(p: Dictionary, t: Dictionary) -> bool:
 		return p != t and String(p["identity"]) == String(t["identity"])
 	if p == t:
 		return true
+	if bool(p["alive"]) and bool(t["alive"]) and alive_players().size() <= 2:
+		return false
 	var pi := String(p["identity"])
 	if pi == "反贼" and String(t["identity"]) == "反贼":
 		return true

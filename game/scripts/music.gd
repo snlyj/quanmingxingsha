@@ -10,11 +10,13 @@ const TRACKS := {
 }
 const FADE_SEC := 0.75
 const FADE_DB := -34.0
+const TENSE_MIN_SEC := 20.0
 
 var current_scene := ""
 var _players: Array[AudioStreamPlayer] = []
 var _active_idx := 0
 var _fades: Array[Tween] = []
+var _switched_ms := -1000000
 
 
 func _ready() -> void:
@@ -31,9 +33,19 @@ func _exit_tree() -> void:
 	for t in _fades:
 		if t is Tween and (t as Tween).is_valid():
 			(t as Tween).kill()
+	_fades.clear()
 	for p in _players:
 		if is_instance_valid(p):
 			p.stop()
+			p.stream = null  # 释放 MP3 播放实例，避免退出时资源泄漏
+
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_WM_CLOSE_REQUEST or what == NOTIFICATION_PREDELETE:
+		for p in _players:
+			if is_instance_valid(p):
+				p.stop()
+				p.stream = null
 
 
 func play_scene(scene: String) -> void:
@@ -46,6 +58,14 @@ func play_scene(scene: String) -> void:
 	if scene == "off":
 		_stop_all()
 		current_scene = "off"
+		return
+	# 紧张曲至少停留 TENSE_MIN_SEC 秒再回落到对局曲，避免体力在 1/2 之间反复时来回切歌
+	if current_scene == "tense" and scene == "battle" and Time.get_ticks_msec() - _switched_ms < int(TENSE_MIN_SEC * 1000.0):
+		return
+	_switched_ms = Time.get_ticks_msec()
+	# 无头运行（自测/导出）没有音频输出，只记场景不解码播放，也避免退出时 MP3 播放实例泄漏
+	if DisplayServer.get_name() == "headless":
+		current_scene = scene
 		return
 	var stream := _stream_for(scene)
 	if stream == null:
@@ -74,6 +94,7 @@ func _stop_all() -> void:
 
 
 func _fade(player: AudioStreamPlayer, target_db: float, stop_after: bool) -> void:
+	_fades = _fades.filter(func(t: Tween) -> bool: return t != null and t.is_valid())
 	var tween := player.create_tween()
 	tween.tween_property(player, "volume_db", target_db, FADE_SEC).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
 	if stop_after:

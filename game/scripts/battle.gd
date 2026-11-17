@@ -3885,8 +3885,7 @@ func _tut_tick() -> void:
 			if turn_seat == 1 and not tut_saw_enemy_turn:
 				tut_saw_enemy_turn = true
 				_tut_show(3)
-		4:
-			if turn_seat == 0 and tut_saw_enemy_turn:
+			elif turn_seat == 0 and tut_saw_enemy_turn:
 				_tut_show(4)
 
 
@@ -5386,16 +5385,22 @@ func _update_music_scene() -> void:
 func _battle_music_scene() -> String:
 	if eng == null or players.is_empty():
 		return "battle"
+	if game_over:
+		return "battle"
 	var alive := 0
-	var low_hp := false
+	var key_low := false  # 「关键角色」濒临出局：自己、主公/地主；单挑为任一方
+	var me: Dictionary = players[0]
 	for p in players:
 		if not bool(p["alive"]):
 			continue
 		alive += 1
-		if int(p["hp"]) <= 1:
-			low_hp = true
-	# 残局或有人濒临出局时切紧张曲；正常开局仍是对局曲
-	if low_hp or (alive <= 2 and int(eng.round_no) >= 5):
+		if int(p["hp"]) > 1:
+			continue
+		var idn := String(p.get("identity", ""))
+		if p == me or game_mode == "duel" or idn == "主公" or idn == "地主":
+			key_low = true
+	# 关键角色 1 血、或身份场打到最后两人时切紧张曲；其余保持对局曲（音乐层另有最短停留时间防抖）
+	if key_low or (game_mode == "identity" and alive <= 2):
 		return "tense"
 	return "battle"
 

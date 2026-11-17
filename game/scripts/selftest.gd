@@ -6,6 +6,7 @@ extends Node
 #   --uiplay=<局数>  真人路径随机点选（会真的点手牌/目标/技能按钮），结果 /tmp/ask_uiplay.txt
 
 const EngineS = preload("res://scripts/engine.gd")
+const HelpText = preload("res://data/help.gd")
 
 var main_ref = null
 
@@ -2435,7 +2436,7 @@ func _reg_v30() -> void:
 	if main_ref.music != null:
 		main_ref.music.play_scene("battle")
 		await _frames(2)
-		var music_ok := main_ref.music.current_scene == "battle"
+		var music_ok: bool = main_ref.music.current_scene == "battle"
 		main_ref.music.play_scene("tense")
 		await _frames(2)
 		music_ok = music_ok and main_ref.music.current_scene == "tense"
