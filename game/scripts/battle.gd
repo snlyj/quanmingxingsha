@@ -268,6 +268,10 @@ func show_setup() -> void:
 		title_text = "欢乐 2v2 · 4 人同盟排位"
 		config_text = "1·4号位【红方同盟】 vs 2·3号位【蓝方同盟】｜1号位先手首轮摸1张，4号位（你的队友）起手5张；队友手牌相互可见，队友阵亡时存活方摸1张牌"
 		seat_names = ["1号位·你（红方）", "2号位·AI（蓝方）", "3号位·AI（蓝方）", "4号位·队友（红方）"]
+	elif game_mode == "boss":
+		title_text = "魔王挑战 · 3v1 联军讨伐（PVE）"
+		config_text = "1·2·4号位【学园联军】联手迎战 3号位【8体力暴走大魔王】｜魔王自带锁定技「魔威」「星蚀」；联军手牌共享，任一联军阵亡时其余存活队友各摸 1 张牌"
+		seat_names = ["1号位·你（联军）", "2号位·队友（联军）", "3号位·BOSS（魔王·8血）", "4号位·队友（联军）"]
 	elif game_mode == "duel":
 		title_text = "单挑对决 · 1 对 1"
 		config_text = "两人单挑，击杀对手获胜｜先手先出牌、起手 3 张；后手起手 4 张"
@@ -313,6 +317,8 @@ func show_setup() -> void:
 			sub_text = "身份：叫分决定" if i == 0 else "身份：叫分决定"
 		elif game_mode == "twovtwo":
 			sub_text = "阵营：红方（与4号位同队）" if (i == 0 or i == 3) else "阵营：蓝方（敌方同盟）"
+		elif game_mode == "boss":
+			sub_text = "BOSS：8体力+魔威·星蚀" if i == 2 else "阵营：学园联军（3人同队）"
 		elif game_mode == "duel":
 			sub_text = "单挑：先手 / 后手" if i == 0 else "单挑对手"
 		pv.add_child(lbl(sub_text, 26, C_INK_SOFT, false, HORIZONTAL_ALIGNMENT_CENTER))
@@ -536,7 +542,7 @@ func build_table() -> void:
 		add_child(fb)
 		match feat_defs[fi]:
 			"记牌":
-				fb.pressed.connect(func() -> void: open_info_overlay("记牌器", counter_text()))
+				fb.pressed.connect(func() -> void: open_info_overlay("记牌器 · 战场情报", counter_text()))
 			"记录":
 				fb.pressed.connect(func() -> void: open_info_overlay("战况记录", "\n".join(eng.log_lines) if eng != null else ""))
 			"排序":
@@ -1471,6 +1477,8 @@ func equip_name(p: Dictionary, slot: String) -> String:
 
 
 func eff_dist(src: Dictionary, tgt: Dictionary) -> int:
+	if int(src.get("nodist_seat", -1)) == int(tgt["seat"]):
+		return 1
 	var d := dist_between(int(src["seat"]), int(tgt["seat"]))
 	if not (tgt["equip"]["plus"] as Dictionary).is_empty():
 		d += 1
@@ -1595,7 +1603,7 @@ func refresh() -> void:
 				elif scn == "突击":
 					tag_ok = inr and not bool(p.get("dream_guard", false))
 					tag_txt = "星眠免疫" if bool(p.get("dream_guard", false)) else ("攻击可达" if inr else "距离不足")
-			var mate_prefix := "★队友 · " if (game_mode == "twovtwo" and String(p["identity"]) == String(players[0]["identity"])) else ""
+			var mate_prefix := "★队友 · " if ((game_mode == "twovtwo" or game_mode == "boss") and String(p["identity"]) == String(players[0]["identity"])) else ("👑BOSS · " if (game_mode == "boss" and String(p["identity"]) == "魔王") else "")
 			info.text = "%s距 %d · %s" % [mate_prefix, dd, tag_txt]
 			info.modulate = Color(1, 0.96, 0.78, 1) if (not selected_card.is_empty() and tag_ok) else (Color(1, 1, 1, 1) if tag_ok else Color(0.72, 0.72, 0.78, 0.85))
 		else:
@@ -1654,7 +1662,10 @@ func refresh() -> void:
 	for i in int(me["max_hp"]):
 		hearts2 += "♥" if i < int(me["hp"]) else "♡"
 	player_info.text = "%s · %s" % [String(me["char"].get("title", me["char"]["name"])), me["identity"]]
-	me_hp_label.text = "%s %d/%d · 手牌%d" % [hearts2, int(me["hp"]), int(me["max_hp"]), me["hand"].size()]
+	var h_cnt: int = (me["hand"] as Array).size()
+	var h_lim: int = maxi(int(me["hp"]), 0)
+	var over_txt: String = ("（需弃%d）" % (h_cnt - h_lim)) if (h_cnt > h_lim and turn_seat == 0) else ""
+	me_hp_label.text = "%s %d/%d · 手牌 %d/%d%s" % [hearts2, int(me["hp"]), int(me["max_hp"]), h_cnt, h_lim, over_txt]
 	# 自己的体力变化：数值条闪红/闪绿（座位体力槽同理）
 	var me_hp := int(me["hp"])
 	if me_hp_label.has_meta("hp_shown") and int(me_hp_label.get_meta("hp_shown")) != me_hp and not fast and not auto_all:
@@ -3123,7 +3134,7 @@ func start_match(sim: bool) -> void:
 		my_role = "先手"
 		difficulty = 0
 		tut_step = 0
-	match_players = 3 if game_mode == "doudizhu" else (2 if game_mode == "duel" else (4 if game_mode == "twovtwo" else 5))
+	match_players = 3 if game_mode == "doudizhu" else (2 if game_mode == "duel" else (4 if (game_mode == "twovtwo" or game_mode == "boss") else 5))
 	game_over = false
 	round_no = 1
 	log_lines.clear()
@@ -3140,6 +3151,10 @@ func start_match(sim: bool) -> void:
 		n = 4
 		match_players = 4
 		identities = ["红方", "蓝方", "蓝方", "红方"]
+	elif game_mode == "boss":
+		n = 4
+		match_players = 4
+		identities = ["联军", "联军", "魔王", "联军"]
 	elif game_mode == "duel":
 		n = 2
 		match_players = 2
@@ -3217,7 +3232,7 @@ func start_match(sim: bool) -> void:
 	if tutorial:
 		_tut_rig()
 	turn_seat = 0
-	var first_id := "主公" if game_mode == "identity" else ("地主" if game_mode == "doudizhu" else ("红方" if game_mode == "twovtwo" else "先手"))
+	var first_id := "主公" if game_mode == "identity" else ("地主" if game_mode == "doudizhu" else ("红方" if game_mode == "twovtwo" else ("联军" if game_mode == "boss" else "先手")))
 	for p in players:
 		if p["identity"] == first_id:
 			turn_seat = int(p["seat"])
@@ -3226,6 +3241,8 @@ func start_match(sim: bool) -> void:
 		log_msg("对局开始！你执【%s】，角色是【%s】。" % [identities[0], human_char["name"]])
 	elif game_mode == "twovtwo":
 		log_msg("对局开始！欢乐 2v2：你（1号位）与 4号位【%s】同属红方阵营。" % String(players[3]["char_name"]))
+	elif game_mode == "boss":
+		log_msg("对局开始！魔王挑战：你与 2号位【%s】、4号位【%s】组成联军，讨伐 3号位 8血魔王【%s】！" % [String(players[1]["char_name"]), String(players[3]["char_name"]), String(players[2]["char_name"])])
 	elif game_mode == "doudizhu":
 		log_msg("对局开始！你的角色是【%s】，先叫分决定地主。" % human_char["name"])
 	else:
@@ -3250,6 +3267,7 @@ func ask_pick_character(candidates: Array, my_identity: String) -> Dictionary:
 		"先手": "目标：击杀对手。先手出牌，起手 3 张牌。",
 		"后手": "目标：击杀对手。后手出牌，起手 4 张牌。",
 		"红方": "目标：与 4 号位队友合力击败 2·3 号位蓝方两名对手（长按队友头像可看队友手牌，队友阵亡摸 1 张）。",
+		"联军": "目标：与 2·4 号位两名联军队友合力击败 3 号位 8 体力大魔王（长按队友或点「记牌」可看全体队友手牌）。",
 	}
 	var word := "先后手" if game_mode == "duel" else "身份"
 	if game_mode == "doudizhu":
@@ -3392,6 +3410,11 @@ func end_game(text: String) -> void:
 				your_result = "你赢了！" if my_id == "红方" else "你输了。"
 			elif text.contains("蓝方获胜"):
 				your_result = "你赢了！" if my_id == "蓝方" else "你输了。"
+		elif game_mode == "boss":
+			if text.contains("联军获胜"):
+				your_result = "你赢了！" if my_id == "联军" else "你输了。"
+			elif text.contains("魔王获胜"):
+				your_result = "你赢了！" if my_id == "魔王" else "你输了。"
 	if text.contains("未分胜负"):
 		your_result = "平局"
 	log_msg("对局结束：%s %s" % [text, your_result])
@@ -3563,6 +3586,10 @@ func _mvp_info(winner_text: String) -> Array:
 			in_win = idn == "红方"
 		elif winner_text.contains("蓝方获胜"):
 			in_win = idn == "蓝方"
+		elif winner_text.contains("联军获胜"):
+			in_win = idn == "联军"
+		elif winner_text.contains("魔王获胜"):
+			in_win = idn == "魔王"
 		elif game_mode == "duel":
 			in_win = bool(p["alive"])
 		var sc := float(int(p.get("stat_damage", 0))) + 3.0 * float(int(p.get("stat_kills", 0))) + 0.8 * float(int(p.get("stat_heal", 0)))
@@ -4115,10 +4142,20 @@ func counter_text() -> String:
 		key_parts.append("%s ×%d" % [kn, left_n])
 	var lines: Array = [
 		"牌堆剩余 %d 张 · 弃牌堆 %d 张" % [eng.deck.size(), eng.discard_pile.size()],
-		"",
-		"【关键牌剩余速查】",
-		"  ".join(PackedStringArray(key_parts)),
 	]
+	if (game_mode == "twovtwo" or game_mode == "boss") and not players.is_empty():
+		lines.append("")
+		lines.append("【同盟队友实时手牌与状态】")
+		for mp in players:
+			if int(mp["seat"]) != 0 and String(mp["identity"]) == String(players[0]["identity"]):
+				var mh: Array = []
+				for mc in mp["hand"]:
+					mh.append(card_text(mc))
+				var mst := ("存活 ♥%d/%d" % [int(mp["hp"]), int(mp["max_hp"])]) if bool(mp["alive"]) else "已阵亡"
+				lines.append("  · %s（%s）：%s" % [pname(mp), mst, "、".join(PackedStringArray(mh)) if not mh.is_empty() else "（无手牌）"])
+	lines.append("")
+	lines.append("【关键牌剩余速查】")
+	lines.append("  ".join(PackedStringArray(key_parts)))
 	if not eng.discard_pile.is_empty():
 		var rec_cards: Array = []
 		var dsz: int = (eng.discard_pile as Array).size()
@@ -4470,6 +4507,8 @@ const CHAR_LINES := {
 	"mahiru": {"attack": ["翻至阳之卷，星火燎原！", "书页记载的命数，收下吧"], "hurt": ["唔…把书页弄乱了…", "阴与阳的平衡…还在…"], "dying": "借书证…还没到期呢…", "death": "合上书卷…晚安…", "skill": "昼夜轮转，阴阳易位！", "heal": "静下心来，再读一页"},
 	"aya": {"attack": ["一矢中的，破！", "落樱百步，逃不掉的！"], "hurt": ["弓弦未乱，还能再射！", "这点小伤，休想动摇我"], "dying": "弦…要断了吗…", "death": "漂亮的胜负…", "skill": "心眼开阖，神射无双！", "heal": "调息完毕，重挽长弓"},
 	"nana": {"attack": ["尝尝特制星光试剂！", "小心爆炸哦——砰！"], "hurt": ["哇啊！烧杯差点碎了！", "呜…配方算错了吗…"], "dying": "实验…还没写完报告…", "death": "实验室…要先关门啦…", "skill": "催化剂投入，连锁反应开始！", "heal": "喝口营养液，满血复活！"},
+	"rin": {"attack": ["这一手，将军（王手）！", "棋路早已算定，无处可逃！"], "hurt": ["嗯…弃子争先罢了", "这一步，还在计算之内"], "dying": "终盘…还没分出胜负…", "death": "是我输了这局棋…", "skill": "妙算入神，一子定乾坤！", "heal": "复盘重整，再弈一局"},
+	"yukine": {"attack": ["违规预算，予以冻结！", "凝结吧，冰霜之刃！"], "hurt": ["账目…不容许任何差池！", "寒霜会记住这次冒犯"], "dying": "决算报告…还没交接…", "death": "冰雪…终究会融化吗…", "skill": "精算无遗，凛霜反噬！", "heal": "账目核销，状态恢复"},
 }
 
 
@@ -5014,6 +5053,20 @@ func _eng_fx(kind: String, data: Dictionary) -> void:
 		"switch_skill":
 			var sw_st := String(data.get("state", "阳"))
 			fx_float(seat, "☯ 转为【%s】" % sw_st, Color(0.76, 0.54, 1.0), 42, 66.0)
+		"pindian":
+			var s_seat := int(data.get("src_seat", 0))
+			var t_seat := int(data.get("tgt_seat", 1))
+			var sc: Dictionary = data.get("src_card", {})
+			var tc: Dictionary = data.get("tgt_card", {})
+			var spt := int(data.get("src_pt", 0))
+			var tpt := int(data.get("tgt_pt", 0))
+			var pwin := bool(data.get("win", false))
+			if not sc.is_empty():
+				_pz_add(sc, "%s 拼点(%d点)%s" % [_short_name(pname(players[s_seat])), spt, "★胜" if pwin else ""], seat_center(s_seat))
+			if not tc.is_empty():
+				_pz_add(tc, "%s 拼点(%d点)%s" % [_short_name(pname(players[t_seat])), tpt, "★胜" if not pwin else ""], seat_center(t_seat))
+			fx_float(s_seat, "⚡拼点胜！" if pwin else "拼点未赢", Color(1.0, 0.80, 0.22) if pwin else Color(0.70, 0.72, 0.82), 46, 68.0)
+			play_sfx("skill" if pwin else "card")
 
 
 # ---------------- 濒死救援特写 ----------------
@@ -5474,7 +5527,7 @@ func _intro_seat(seat: int) -> Dictionary:
 		st.append("你能突击到TA" if attack_reachable(me, {"name": "突击"}, p) else "不在你的攻击范围内")
 	if bool(p.get("chained", false)):
 		st.append("连环状态")
-	if game_mode == "twovtwo" and seat != 0 and String(p["identity"]) == String(me["identity"]):
+	if (game_mode == "twovtwo" or game_mode == "boss") and seat != 0 and String(p["identity"]) == String(me["identity"]):
 		var mcards: Array = []
 		for mc in p["hand"]:
 			mcards.append(card_text(mc))
@@ -5884,6 +5937,10 @@ func _skill_ui_spec(sid: String) -> Dictionary:
 			return {"card": "any", "card_role": "当作无视距离且强命的「突击」", "targets": ss}
 		"cuihua":
 			return {"card": "none", "targets": all_alive}
+		"wangshou":
+			return {"card": "none", "targets": others_alive.filter(func(s: int) -> bool: return not (players[s]["hand"] as Array).is_empty())}
+		"jingsuan":
+			return {"card": "any", "card_role": "精算置换（弃1摸2，黑色牌且受伤则回1血）", "targets": null}
 	return {"card": "none", "targets": null}
 
 

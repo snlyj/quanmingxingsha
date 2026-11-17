@@ -31,6 +31,12 @@ func register_all(eng) -> void:
 	eng.register_skill("shenshe", {"name": "神射", "text": "出牌阶段限一次。你可以将 1 张手牌当作无距离限制且不可被「闪避」响应的「突击」使用。", "active": {"filter": Callable(self, "_shenshe_filter"), "ai_use": Callable(self, "_shenshe_aiuse"), "content": Callable(self, "_shenshe_content")}})
 	eng.register_skill("cuihua", {"name": "催化", "active": {"filter": Callable(self, "_cuihua_filter"), "ai_use": Callable(self, "_cuihua_aiuse"), "content": Callable(self, "_cuihua_content")}})
 	eng.register_skill("yuzhen", {"name": "余震", "timings": {"damageAfter": {"who": "global", "forced": true, "filter": Callable(self, "_yuzhen_filter"), "content": Callable(self, "_yuzhen_content")}}})
+	eng.register_skill("wangshou", {"name": "王手", "active": {"filter": Callable(self, "_wangshou_filter"), "ai_use": Callable(self, "_wangshou_aiuse"), "content": Callable(self, "_wangshou_content")}})
+	eng.register_skill("miaosuan", {"name": "妙算", "timings": {}})
+	eng.register_skill("jingsuan", {"name": "精算", "active": {"filter": Callable(self, "_hand_ge1"), "ai_use": Callable(self, "_yes"), "content": Callable(self, "_jingsuan_content")}})
+	eng.register_skill("linshuang", {"name": "凛霜", "timings": {"damageAfter": {"who": "player", "filter": Callable(self, "_linshuang_filter"), "ai_decide": Callable(self, "_linshuang_ai"), "content": Callable(self, "_linshuang_content")}}})
+	eng.register_skill("mowei", {"name": "魔威", "text": "魔王技，锁定技。准备阶段摸 1 张牌；摸牌阶段多摸 1 张牌；出牌阶段可使用 2 张「突击」。", "timings": {"phaseZhunbeiStart": {"who": "player", "forced": true, "content": Callable(self, "_mowei_content")}}})
+	eng.register_skill("xingshi", {"name": "星蚀", "text": "魔王技，锁定技。结束阶段开始时，若你已受伤，对一名敌方角色造成 1 点雷电伤害。", "timings": {"phaseJieshuStart": {"who": "player", "forced": true, "filter": Callable(self, "_xingshi_filter"), "content": Callable(self, "_xingshi_content")}}})
 
 
 # ---------- 通用小工具 ----------
@@ -844,3 +850,128 @@ func _yuzhen_content(eng, ctx, p) -> void:
 	(p["round_marks"] as Dictionary)["yuzhen_cnt"] = used_n
 	eng.draw_cards(p, 1)
 	eng.log_msg("「余震」：场上发生%s属性伤害，%s 引发连锁反应摸 1 张牌（本轮 %d/2）。" % [String(ctx.get("nature", "")), eng.pname(p), used_n])
+
+
+# ---------- 早乙女凛（王手 + 妙算） ----------
+func _wangshou_cands(eng, p) -> Array:
+	var out: Array = []
+	for t in eng.players:
+		if t != p and t["alive"] and not (t["hand"] as Array).is_empty():
+			out.append(t)
+	return out
+
+
+func _wangshou_filter(eng, p) -> bool:
+	if (p["hand"] as Array).is_empty():
+		return false
+	return not _wangshou_cands(eng, p).is_empty()
+
+
+func _wangshou_aiuse(eng, p) -> bool:
+	for t in _wangshou_cands(eng, p):
+		if eng.ai_is_enemy(p, t):
+			return true
+	return false
+
+
+func _wangshou_content(eng, p) -> void:
+	var cands: Array = _wangshou_cands(eng, p)
+	if cands.is_empty():
+		return
+	var tgt: Dictionary = await eng.pick_target(p, cands, "「王手」：选择 1 名有手牌的角色进行【拼点】", Callable(self, "_caijue_target"))
+	if tgt.is_empty():
+		return
+	eng.observe_hostile(p, tgt)
+	var res: Dictionary = await eng.pindian(p, tgt, "王手")
+	if res.is_empty():
+		return
+	if bool(res.get("win", false)):
+		eng.draw_cards(p, 1)
+		p["nodist_seat"] = int(tgt["seat"])
+		p["drunk"] = true
+		eng.changed()
+		eng.log_msg("「王手」拼点获胜！%s 摸 1 张牌，本回合对 %s 无距离限制且下一张「突击」伤害 +1！" % [eng.pname(p), eng.pname(tgt)])
+	else:
+		var tc: Dictionary = res.get("tgt_card", {})
+		if not tc.is_empty() and eng.discard_pile.has(tc):
+			eng.discard_pile.erase(tc)
+			eng.gain_card(p, tc)
+			eng.changed()
+			eng.log_msg("「王手」拼点未赢：%s 获得了 %s 的拼点牌 %s。" % [eng.pname(p), eng.pname(tgt), eng.card_text(tc)])
+
+
+# ---------- 天城雪音（精算 + 凛霜） ----------
+func _jingsuan_content(eng, p) -> void:
+	var c: Dictionary = await eng.pick_card(p, {"prompt": "「精算」：弃置 1 张手牌并摸 2 张牌（黑色牌且已受伤则额外回复 1 点体力）", "ai": Callable(self, "_worst_card")})
+	if c.is_empty():
+		return
+	var was_blk: bool = eng.is_black(c)
+	eng.discard_from_hand(p, c)
+	eng.draw_cards(p, 2)
+	if was_blk and int(p["hp"]) < int(p["max_hp"]):
+		eng.heal(p, 1, p)
+		eng.log_msg("「精算」：%s 弃置黑色牌 %s，摸 2 张牌并回复 1 点体力。" % [eng.pname(p), eng.card_text(c)])
+	else:
+		eng.log_msg("「精算」：%s 弃置 %s，摸 2 张牌。" % [eng.pname(p), eng.card_text(c)])
+
+
+func _linshuang_filter(eng, ctx, p) -> bool:
+	var src: Dictionary = ctx.get("source", {})
+	return not src.is_empty() and src != p and bool(src.get("alive", false))
+
+
+func _linshuang_ai(eng, ctx, p) -> bool:
+	var src: Dictionary = ctx.get("source", {})
+	return not eng.ai_is_ally(p, src)
+
+
+func _linshuang_content(eng, ctx, p) -> void:
+	var src: Dictionary = ctx["source"]
+	if (src["hand"] as Array).is_empty():
+		eng.log_msg("「凛霜」：%s 没有手牌，受到 %s 造成的 1 点冰属性伤害！" % [eng.pname(src), eng.pname(p)])
+		await eng.damage(p, src, 1, "凛霜", "冰")
+		return
+	var opts: Array = [
+		{"label": "弃置 1 张手牌", "value": "drop"},
+		{"label": "受到 1 点冰属性伤害", "value": "ice"},
+	]
+	var ai_v := "drop" if (int(src["hp"]) <= 2 or (src["hand"] as Array).size() >= 2) else "ice"
+	var v := String(await eng.pick_option(src, opts, "%s 发动「凛霜」：请选择一项" % eng.pname(p), ai_v))
+	if v == "drop" and not (src["hand"] as Array).is_empty():
+		var dc: Dictionary = {}
+		if eng.is_ai(src):
+			dc = eng.ai_pick_discard(src)
+		elif eng.ui.has("choose_discard"):
+			dc = await (eng.ui["choose_discard"] as Callable).call(src)
+		if dc.is_empty() and not (src["hand"] as Array).is_empty():
+			dc = eng.ai_pick_discard(src)
+		if not dc.is_empty():
+			eng.discard_from_hand(src, dc)
+			eng.log_msg("「凛霜」：%s 选择弃置了 %s。" % [eng.pname(src), eng.card_text(dc)])
+			return
+	eng.log_msg("「凛霜」：%s 选择承受 1 点冰属性伤害！" % eng.pname(src))
+	await eng.damage(p, src, 1, "凛霜", "冰")
+
+
+# ---------- 魔王挑战专属技（魔威 + 星蚀） ----------
+func _mowei_content(eng, ctx, p) -> void:
+	eng.draw_cards(p, 1)
+	eng.log_msg("「魔威」：%s 准备阶段摸 1 张牌。" % eng.pname(p))
+
+
+func _xingshi_filter(eng, ctx, p) -> bool:
+	return int(p["hp"]) < int(p["max_hp"]) and _others_exist(eng, ctx, p)
+
+
+func _xingshi_content(eng, ctx, p) -> void:
+	var foes: Array = []
+	for t in eng.players:
+		if t != p and t["alive"] and eng.ai_is_enemy(p, t):
+			foes.append(t)
+	if foes.is_empty():
+		return
+	var tgt: Dictionary = _enemy_most_cards(eng, p, foes)
+	if tgt.is_empty():
+		tgt = foes[0]
+	eng.log_msg("「星蚀」：魔王 %s 降下星蚀雷罚，攻击 %s！" % [eng.pname(p), eng.pname(tgt)])
+	await eng.damage(p, tgt, 1, "星蚀", "雷")

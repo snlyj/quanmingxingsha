@@ -277,6 +277,8 @@ func concede(p: Dictionary) -> void:
 		winner_text = "农民阵营获胜！" if String(p["identity"]) == "地主" else "地主获胜！"
 	elif mode == "twovtwo":
 		winner_text = "蓝方获胜！" if String(p["identity"]) == "红方" else "红方获胜！"
+	elif mode == "boss":
+		winner_text = "魔王获胜！" if String(p["identity"]) == "联军" else "联军获胜！"
 	elif mode == "duel":
 		var other: Dictionary = players[0] if p == players[1] else players[1]
 		winner_text = "%s 在单挑中获胜！" % pname(other)
@@ -324,6 +326,8 @@ func dist_between(a: int, b: int) -> int:
 
 
 func eff_dist(src: Dictionary, tgt: Dictionary) -> int:
+	if int(src.get("nodist_seat", -1)) == int(tgt["seat"]):
+		return 1
 	var d := dist_between(int(src["seat"]), int(tgt["seat"]))
 	if not (tgt["equip"]["plus"] as Dictionary).is_empty():
 		d += 1
@@ -543,12 +547,16 @@ func setup_game(char_list: Array, identities: Array) -> void:
 		p["identity"] = String(identities[i])
 		p["char_name"] = String(cd["name"])
 		p["char"] = cd.get("char", {})
-		p["max_hp"] = int(cd["hp"]) + (1 if String(identities[i]) == "主公" else 0)
+		p["max_hp"] = 8 if (mode == "boss" and String(identities[i]) == "魔王") else (int(cd["hp"]) + (1 if String(identities[i]) == "主公" else 0))
 		p["hp"] = p["max_hp"]
 		p["hand"] = []
 		p["equip"] = {"weapon": {}, "armor": {}, "minus": {}, "plus": {}, "treasure": {}}
 		p["judge"] = []
 		p["skills"] = (cd.get("skills", []) as Array).duplicate()
+		if mode == "boss" and String(identities[i]) == "魔王":
+			for bsid in ["mowei", "xingshi"]:
+				if not (p["skills"] as Array).has(bsid):
+					(p["skills"] as Array).append(bsid)
 		p["alive"] = true
 		p["used_attack"] = false
 		p["attack_count"] = 0
@@ -580,11 +588,15 @@ func setup_game(char_list: Array, identities: Array) -> void:
 			start_n = 3
 		elif mode == "twovtwo" and int(p["seat"]) == 3:
 			start_n = 5  # 对标手杀欢乐成双 2v2：4 号位末置位起手 5 张牌
+		elif mode == "boss" and String(p["identity"]) == "魔王":
+			start_n = 6
 		draw_cards(p, start_n)
 	if mode == "doudizhu":
 		log_msg("对局开始：斗地主（全员起手 4 张，先叫分决定地主，倍数 1~3 倍）。")
 	elif mode == "twovtwo":
 		log_msg("对局开始：欢乐 2v2（1·4号位红方 vs 2·3号位蓝方；1号位首轮少摸1张，4号位起手5张，队友阵亡摸1张）。")
+	elif mode == "boss":
+		log_msg("对局开始：魔王挑战（3人联军 vs 8体力大魔王；魔王拥有「魔威」「星蚀」，联军阵亡时存活队友各摸1张牌）。")
 	elif mode == "duel":
 		log_msg("对局开始：单挑对决（先手起手 3 张，后手 4 张）。")
 	else:
@@ -608,7 +620,7 @@ func first_player() -> Dictionary:
 		return {}
 	if mode == "duel":
 		return players[duel_first_seat] if players.size() > duel_first_seat else {}
-	if mode == "twovtwo":
+	if mode == "twovtwo" or mode == "boss":
 		return players[0] if not players.is_empty() else {}
 	return lord_player()
 
@@ -1643,7 +1655,7 @@ func die(p: Dictionary, killer: Dictionary) -> void:
 					killer["equip"][slot] = {}
 			log_msg("主公误杀忠臣，弃置所有手牌与装备。")
 	# V0.34 欢乐 2v2 阵亡抚恤（对标手杀排位赛/欢乐成双：队友阵亡时存活队友摸 1 张牌）：
-	if mode == "twovtwo":
+	if mode == "twovtwo" or mode == "boss":
 		check_over()
 		if game_over:
 			return
@@ -1680,6 +1692,24 @@ func die(p: Dictionary, killer: Dictionary) -> void:
 
 
 func check_over() -> void:
+	if mode == "boss":
+		var boss_alive := false
+		var ally_alive := 0
+		for p in players:
+			if bool(p["alive"]):
+				if String(p["identity"]) == "魔王":
+					boss_alive = true
+				else:
+					ally_alive += 1
+		if not boss_alive:
+			game_over = true
+			winner_text = "联军获胜！"
+		elif ally_alive == 0:
+			game_over = true
+			winner_text = "魔王获胜！"
+		if game_over:
+			log_msg("对局结束：%s" % winner_text)
+		return
 	if mode == "twovtwo":
 		var red_alive := 0
 		var blue_alive := 0
@@ -1771,6 +1801,7 @@ func run_turn(p: Dictionary) -> void:
 	p["hammer_used"] = false
 	p["canyue_turn"] = false
 	p["jianxin_dmg_turn"] = false
+	p["nodist_seat"] = -1
 	var base := {"name": "phase", "player": p, "target": p}
 	await fire("phaseBefore", base.duplicate())
 	await fire("phaseBeginStart", base.duplicate())
@@ -1804,6 +1835,8 @@ func run_turn(p: Dictionary) -> void:
 		if mode == "twovtwo" and round_no == 1 and int(p["seat"]) == 0:
 			draw_n = 1
 			log_msg("「先手平衡」：1号位首轮摸牌阶段少摸 1 张牌。")
+		elif mode == "boss" and String(p["identity"]) == "魔王":
+			draw_n = 3
 		if bool(p.get("caomu_less", false)):
 			draw_n = maxi(0, draw_n - 1)
 			log_msg("「草木疑兵」：%s 少摸一张牌。" % pname(p))
@@ -1853,6 +1886,7 @@ func run_turn(p: Dictionary) -> void:
 	p["drunk"] = false
 	p["canyue_turn"] = false
 	p["jianxin_dmg_turn"] = false
+	p["nodist_seat"] = -1
 	# V0.28：「星眠」保护到本回合结束（与设计稿、技能说明一致）
 	if bool(p.get("dream_guard", false)) and not xingmian_legacy:
 		p["dream_guard"] = false
@@ -1985,7 +2019,7 @@ func ai_is_enemy(p: Dictionary, t: Dictionary) -> bool:
 		return false
 	if mode == "duel":
 		return true
-	if mode == "doudizhu" or mode == "twovtwo":
+	if mode == "doudizhu" or mode == "twovtwo" or mode == "boss":
 		return String(p["identity"]) != String(t["identity"])
 	# V0.32：身份场只剩两人且未分胜负时，双方必然敌对（主忠/反贼同阵营两人存活时对局已结束）
 	if bool(p["alive"]) and bool(t["alive"]) and alive_players().size() <= 2:
@@ -2016,7 +2050,7 @@ func ai_is_enemy(p: Dictionary, t: Dictionary) -> bool:
 func ai_is_ally(p: Dictionary, t: Dictionary) -> bool:
 	if mode == "duel":
 		return false
-	if mode == "doudizhu" or mode == "twovtwo":
+	if mode == "doudizhu" or mode == "twovtwo" or mode == "boss":
 		return p != t and String(p["identity"]) == String(t["identity"])
 	if p == t:
 		return true
@@ -2129,9 +2163,9 @@ func ai_target_score(p: Dictionary, t: Dictionary) -> float:
 
 
 func camp_of(identity: String) -> String:
-	if identity == "主公" or identity == "忠臣" or identity == "红方":
+	if identity in ["主公", "忠臣", "红方", "联军"]:
 		return "loyal"
-	if identity == "反贼" or identity == "蓝方":
+	if identity in ["反贼", "蓝方", "魔王"]:
 		return "fan"
 	return "nei"
 
@@ -2631,7 +2665,7 @@ func equip_slot_of(card_name: String) -> String:
 func attack_limit(p: Dictionary) -> int:
 	if has_unlimited_attack(p):
 		return 999
-	if mode == "doudizhu" and String(p["identity"]) == "地主":
+	if (mode == "doudizhu" and String(p["identity"]) == "地主") or has_skill(p, "mowei"):
 		return 2
 	return 1
 
@@ -3839,3 +3873,57 @@ func use_active_skill(p: Dictionary, sid: String) -> void:
 	fx("skill", {"seat": int(p["seat"]), "name": String(def.get("name", sid)), "sid": sid, "big": true})
 	await (def["active"]["content"] as Callable).call(self, p)
 	changed()
+
+
+# ================= V0.35 拼点系统（对照 noname chooseToCompare） =================
+func can_pindian(a: Dictionary, b: Dictionary) -> bool:
+	if a.is_empty() or b.is_empty() or a == b:
+		return false
+	if not bool(a.get("alive", false)) or not bool(b.get("alive", false)):
+		return false
+	return not (a["hand"] as Array).is_empty() and not (b["hand"] as Array).is_empty()
+
+
+func _ai_pindian_high(eng, p: Dictionary, cands: Array) -> Dictionary:
+	var best: Dictionary = cands[0]
+	var best_score := -999.0
+	for c in cands:
+		var pt := float(int(c.get("point", 1)))
+		if String(c.get("name", "")) in ["补给", "特饮"]:
+			pt -= 3.5
+		if pt > best_score:
+			best_score = pt
+			best = c
+	return best
+
+
+func pindian(src: Dictionary, tgt: Dictionary, reason: String = "拼点") -> Dictionary:
+	if not can_pindian(src, tgt):
+		return {}
+	if has_skill(src, "miaosuan"):
+		draw_cards(src, 1)
+		log_msg("「妙算」：%s 进行拼点，从牌堆摸 1 张牌。" % pname(src))
+	if has_skill(tgt, "miaosuan"):
+		draw_cards(tgt, 1)
+		log_msg("「妙算」：%s 进行拼点，从牌堆摸 1 张牌。" % pname(tgt))
+	var c1: Dictionary = await pick_card(src, {"prompt": "【%s】拼点：请选择 1 张手牌亮出（点数大者赢）" % reason, "ai": Callable(self, "_ai_pindian_high")})
+	if c1.is_empty() and not (src["hand"] as Array).is_empty():
+		c1 = _ai_pindian_high(self, src, src["hand"])
+	var c2: Dictionary = await pick_card(tgt, {"prompt": "%s 向你发起【%s】拼点：请选择 1 张手牌亮出" % [pname(src), reason], "ai": Callable(self, "_ai_pindian_high")})
+	if c2.is_empty() and not (tgt["hand"] as Array).is_empty():
+		c2 = _ai_pindian_high(self, tgt, tgt["hand"])
+	if c1.is_empty() or c2.is_empty():
+		return {}
+	discard_from_hand(src, c1)
+	discard_from_hand(tgt, c2)
+	var pt1 := int(c1.get("point", 1))
+	var pt2 := int(c2.get("point", 1))
+	if has_skill(src, "miaosuan"):
+		pt1 = mini(13, pt1 + 3)
+	if has_skill(tgt, "miaosuan"):
+		pt2 = mini(13, pt2 + 3)
+	var win := pt1 > pt2
+	log_msg("⚡【%s】拼点：%s 亮出 %s（%d点） vs %s 亮出 %s（%d点）——%s 拼点%s！" % [reason, pname(src), card_text(c1), pt1, pname(tgt), card_text(c2), pt2, pname(src), "获胜" if win else "未赢"])
+	fx("pindian", {"src_seat": int(src["seat"]), "tgt_seat": int(tgt["seat"]), "src_card": c1, "tgt_card": c2, "src_pt": pt1, "tgt_pt": pt2, "win": win, "reason": reason})
+	await pace(0.45)
+	return {"win": win, "src_card": c1, "tgt_card": c2, "src_pt": pt1, "tgt_pt": pt2}

@@ -362,6 +362,7 @@ func _run_reg_test() -> void:
 	await _reg_v32()
 	await _reg_v33()
 	await _reg_v34()
+	await _reg_v35()
 	_reg_lines.append("REGTEST_DONE tests=%d fails=%d" % [_reg_n, _reg_fails])
 	_write("/tmp/ask_regtest.txt", _reg_lines)
 	print(_reg_lines[_reg_lines.size() - 1])
@@ -2654,4 +2655,67 @@ func _reg_v34() -> void:
 	_ok(e2v2.game_over and e2v2.winner_text == "蓝方获胜！", "V34-4 欢乐 2v2：同队两人全灭后判定对方阵营获胜")
 
 	# V34-5 全部 12 名角色及 CG 资源校验
-	_ok(Characters.LIST.size() == 12 and ResourceLoader.exists("res://assets/cg/mahiru.webp") and ResourceLoader.exists("res://assets/cg/aya.webp") and ResourceLoader.exists("res://assets/cg/nana.webp"), "V34-5 角色池扩充至 12 人且全部 CG 资源齐全")
+	_ok(Characters.LIST.size() >= 12 and ResourceLoader.exists("res://assets/cg/mahiru.webp") and ResourceLoader.exists("res://assets/cg/aya.webp") and ResourceLoader.exists("res://assets/cg/nana.webp"), "V34-5 第二弹新增 3 名角色 CG 资源齐全")
+
+
+# ---------------- V0.35：拼点系统 / 早乙女凛与天城雪音 / 魔王挑战 3v1 模式 / 14 角色全集 ----------------
+func _reg_v35() -> void:
+	# V35-1 早乙女凛（rin）：「妙算」（拼点摸1且点数+3）与「王手」（拼点赢摸1、无视距离且下一张突击伤害+1；未赢获得对方拼点牌）
+	var e = _clean_eng("duel", ["先手", "后手"], 4)
+	var p0: Dictionary = e.players[0]
+	var p1: Dictionary = e.players[1]
+	p0["char_name"] = "早乙女凛"
+	e.add_skill(p0, "wangshou")
+	e.add_skill(p0, "miaosuan")
+	# p0 手牌 9 点（妙算+3=12点） vs p1 手牌 11 点 → p0 赢拼点！
+	_give(e, p0, "闪避", "方块", 9)
+	_give(e, p1, "突击", "黑桃", 11)
+	await e.use_active_skill(p0, "wangshou")
+	_ok(int(p0.get("nodist_seat", -1)) == 1 and bool(p0.get("drunk", false)) and (p0["hand"] as Array).size() == 2, "V35-1 「妙算」+3点助「王手」9点胜11点，共摸2张且对目标无视距离、下一击加伤")
+	p1["equip"]["plus"] = _mk("远行披风", "红桃", 5)
+	_ok(e.eff_dist(p0, p1) == 1, "V35-1 「王手」赢拼点后本回合对目标距离恒视为 1")
+	# 拼点未赢时：获得对方拼点牌
+	p0["turn_used"] = {}
+	(p0["hand"] as Array).clear()
+	(p1["hand"] as Array).clear()
+	var low_c := _give(e, p0, "闪避", "方块", 2)
+	var high_c := _give(e, p1, "补给", "红桃", 13)
+	# 把牌堆顶放一张 1 点牌，使妙算摸到的也是 1 点
+	e.deck.append(_mk("闪避", "方块", 1))
+	await e.use_active_skill(p0, "wangshou")
+	_ok((p0["hand"] as Array).has(high_c) and not e.discard_pile.has(high_c), "V35-1 「王手」拼点未赢时获得对方的拼点牌")
+
+	# V35-2 天城雪音（yukine）：「精算」（弃1摸2，黑牌受伤回1血）与「凛霜」（受伤令来源弃1或受1冰伤）
+	e = _clean_eng("duel", ["先手", "后手"], 3)
+	p0 = e.players[0]
+	p1 = e.players[1]
+	p0["char_name"] = "天城雪音"
+	p0["hp"] = 2
+	e.add_skill(p0, "jingsuan")
+	e.add_skill(p0, "linshuang")
+	_give(e, p0, "突击", "黑桃", 6)
+	await e.use_active_skill(p0, "jingsuan")
+	_ok(int(p0["hp"]) == 3 and (p0["hand"] as Array).size() == 2, "V35-2 「精算」弃置黑色手牌摸 2 张并回复 1 点体力")
+	# p1 无手牌对 p0 造成伤害 → 凛霜反击 1 点冰属性伤害
+	var p1_hp0 := int(p1["hp"])
+	await e.damage(p1, p0, 1, "测试攻击")
+	_ok(int(p1["hp"]) == p1_hp0 - 1, "V35-2 「凛霜」在伤害来源无手牌时对其造成 1 点冰属性伤害")
+
+	# V35-3 魔王挑战模式（boss）：3人联军 vs 8血魔王（带魔威、星蚀）
+	var eboss = EngineS.new()
+	eboss.load_skills()
+	eboss.mode = "boss"
+	eboss.setup_game(make_chars(4, 3), ["联军", "联军", "魔王", "联军"])
+	var boss_p: Dictionary = eboss.players[2]
+	_ok(int(boss_p["max_hp"]) == 8 and int(boss_p["hp"]) == 8 and (boss_p["hand"] as Array).size() == 6 and eboss.has_skill(boss_p, "mowei") and eboss.has_skill(boss_p, "xingshi"), "V35-3 魔王挑战：3号位魔王 8 体力、起手 6 张、自带「魔威」「星蚀」")
+	_ok(eboss.attack_limit(boss_p) == 2 and eboss.ai_is_ally(eboss.players[0], eboss.players[1]) and eboss.ai_is_enemy(eboss.players[0], boss_p), "V35-3 魔王挑战：魔王出杀上限为 2，联军互为盟友并共抗魔王")
+	boss_p["hp"] = 6
+	var ally_hp_sum0 := int(eboss.players[0]["hp"]) + int(eboss.players[1]["hp"]) + int(eboss.players[3]["hp"])
+	await eboss.fire("phaseJieshuStart", {"name": "phase", "player": boss_p, "target": boss_p})
+	var ally_hp_sum1 := int(eboss.players[0]["hp"]) + int(eboss.players[1]["hp"]) + int(eboss.players[3]["hp"])
+	_ok(ally_hp_sum1 == ally_hp_sum0 - 1, "V35-3 魔王「星蚀」在已受伤的结束阶段对一名联军造成 1 点雷电伤害")
+	await eboss.die(boss_p, eboss.players[0])
+	_ok(eboss.game_over and eboss.winner_text == "联军获胜！", "V35-3 击败魔王后判定联军获胜")
+
+	# V35-4 全部 14 名角色及 CG 资源校验
+	_ok(Characters.LIST.size() == 14 and ResourceLoader.exists("res://assets/cg/rin.webp") and ResourceLoader.exists("res://assets/cg/yukine.webp"), "V35-4 角色池扩充至 14 人且全部 CG 资源齐全")

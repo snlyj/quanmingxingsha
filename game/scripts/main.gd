@@ -540,13 +540,27 @@ func show_home() -> void:
 	var sub := Art.halo(lbl("二次元明星大乱斗 · 身份对局", 36, C_INK_SOFT, false, HORIZONTAL_ALIGNMENT_CENTER), 8)
 	vb.add_child(sub)
 
-	# 主页角色卡带（V0.31：完整 CG 卡面）
+	# 主页看板角色卡带（V0.35：支持点击互动换看板角色，长按查看角色详情）
 	var strip := HBoxContainer.new()
 	strip.alignment = BoxContainer.ALIGNMENT_CENTER
 	strip.add_theme_constant_override("separation", 18)
-	for pid in ["rena", "hina", "kaori"]:
-		var cc := Art.cg_card(Characters.by_id(pid), Vector2(200, 264), {"zoom": 0.62, "face_y": 0.34, "title": false, "hp": false, "fs": 22})
-		strip.add_child(cc)
+	if home_showcase_ids.is_empty():
+		home_showcase_ids = ["sena", "hina", "reo"]
+	for slot_i in home_showcase_ids.size():
+		var pid := String(home_showcase_ids[slot_i])
+		var ch_d := Characters.by_id(pid)
+		if ch_d.is_empty():
+			ch_d = Characters.LIST[slot_i % Characters.LIST.size()]
+		var wrap_b := Button.new()
+		wrap_b.flat = true
+		wrap_b.focus_mode = Control.FOCUS_NONE
+		wrap_b.custom_minimum_size = Vector2(200, 264)
+		var cc := Art.cg_card(ch_d, Vector2(200, 264), {"zoom": 0.62, "face_y": 0.34, "title": false, "hp": false, "fs": 22})
+		wrap_b.add_child(cc)
+		wrap_b.set_meta("intro", IntroPop.char_spec(ch_d))
+		var idx_s := slot_i
+		wrap_b.pressed.connect(func() -> void: _on_home_showcase_clicked(idx_s))
+		strip.add_child(wrap_b)
 	vb.add_child(strip)
 
 	var btn_row := HBoxContainer.new()
@@ -564,11 +578,14 @@ func show_home() -> void:
 	vb.add_child(btn_row)
 	var btn_row2 := HBoxContainer.new()
 	btn_row2.alignment = BoxContainer.ALIGNMENT_CENTER
-	btn_row2.add_theme_constant_override("separation", 36)
-	var b_duel := cute_button("单挑对决", "1 对 1 · 先手 3 张 / 后手 4 张", Color(0.45, 0.55, 0.95), Vector2(560, 134))
+	btn_row2.add_theme_constant_override("separation", 24)
+	var b_boss := cute_button("魔王挑战", "3v1 联军讨伐 8 血魔王", Color(0.62, 0.34, 0.86), Vector2(372, 134))
+	b_boss.pressed.connect(func() -> void: show_battle_mode("boss"))
+	btn_row2.add_child(b_boss)
+	var b_duel := cute_button("单挑对决", "1 对 1 · 先手3张 / 后手4张", Color(0.45, 0.55, 0.95), Vector2(372, 134))
 	b_duel.pressed.connect(func() -> void: show_battle_mode("duel"))
 	btn_row2.add_child(b_duel)
-	var b_chars := cute_button("人物图鉴", "查看全 12 名登场角色 · 按系列分类", C_SKY, Vector2(560, 134))
+	var b_chars := cute_button("人物图鉴", "全 14 名登场角色 · 系列分类", C_SKY, Vector2(372, 134))
 	b_chars.pressed.connect(show_gallery)
 	btn_row2.add_child(b_chars)
 	vb.add_child(btn_row2)
@@ -591,7 +608,7 @@ func show_home() -> void:
 	theme_row.add_child(b_theme)
 	vb.add_child(theme_row)
 
-	var foot := lbl("单机版 · 身份场 / 斗地主 / 欢乐2v2 / 单挑 · 全量 197 张牌（斗地主 203 张）· 角色池：第一、二弹共 12 人 · V%s" % String(ProjectSettings.get_setting("application/config/version", "")), 26, C_WHITE, false, HORIZONTAL_ALIGNMENT_CENTER)
+	var foot := lbl("单机版 · 身份场 / 斗地主 / 欢乐2v2 / 魔王挑战 / 单挑 · 全量 197 张牌（斗地主 203 张）· 角色池：第一、二弹共 14 人 · V%s" % String(ProjectSettings.get_setting("application/config/version", "")), 26, C_WHITE, false, HORIZONTAL_ALIGNMENT_CENTER)
 	# V0.24：页脚原为浅灰字直接压在背景图上，看不清；改白字加深色描边
 	foot.add_theme_color_override("font_outline_color", Color(0.30, 0.10, 0.22, 0.85))
 	foot.add_theme_constant_override("outline_size", 8)
@@ -852,7 +869,7 @@ func show_records() -> void:
 	# 战绩汇总（按模式 / 按身份胜率）
 	var sv := _meta_panel(left, "战绩")
 	sv.add_child(lbl("总计：" + Meta.win_rate_text("all"), 26, C_INK, true))
-	for mk in [["identity", "身份场", ["主公", "忠臣", "反贼", "内奸"]], ["doudizhu", "斗地主", ["地主", "农民"]], ["twovtwo", "欢乐2v2", ["红方", "蓝方"]], ["duel", "单挑", ["先手", "后手"]]]:
+	for mk in [["identity", "身份场", ["主公", "忠臣", "反贼", "内奸"]], ["doudizhu", "斗地主", ["地主", "农民"]], ["twovtwo", "欢乐2v2", ["红方", "蓝方"]], ["boss", "魔王挑战", ["联军", "魔王"]], ["duel", "单挑", ["先手", "后手"]]]:
 		sv.add_child(lbl("%s：%s" % [mk[1], Meta.win_rate_text("mode|" + String(mk[0]))], 24, C_INK, true))
 		var parts: Array = []
 		for idn in mk[2]:
@@ -911,7 +928,7 @@ func show_records() -> void:
 	var recs: Array = d["records"]
 	if recs.is_empty():
 		rv.add_child(lbl("还没有对局记录，去打一局吧！", 22, C_INK_SOFT))
-	var mode_cn := {"identity": "身份场", "doudizhu": "斗地主", "twovtwo": "欢乐2v2", "duel": "单挑"}
+	var mode_cn := {"identity": "身份场", "doudizhu": "斗地主", "twovtwo": "欢乐2v2", "boss": "魔王挑战", "duel": "单挑"}
 	var res_cn := {"win": "胜", "lose": "负", "draw": "平"}
 	for i in mini(recs.size(), 12):
 		var r: Dictionary = recs[i]
@@ -1870,3 +1887,18 @@ func _shot_v30(target: String) -> void:
 	await RenderingServer.frame_post_draw
 	get_viewport().get_texture().get_image().save_png("/tmp/ask_shot_%s.png" % target)
 	get_tree().quit()
+
+
+var home_showcase_ids: Array = ["sena", "hina", "reo"]
+
+
+func _on_home_showcase_clicked(slot_idx: int) -> void:
+	if IntroPop.inst != null and IntroPop.inst.swallowing():
+		return
+	var cands: Array = []
+	for c in Characters.LIST:
+		if not home_showcase_ids.has(String(c["id"])):
+			cands.append(String(c["id"]))
+	if not cands.is_empty():
+		home_showcase_ids[slot_idx] = cands[randi() % cands.size()]
+	show_home()
