@@ -280,6 +280,11 @@ func _xingmian_ai(eng, ctx, p) -> bool:
 # V0.30：元气补给——本回合还能出突击且手里有突击时，先出突击；体力只差 1 时不急着回复
 func _yuanqi_ai(eng, p) -> bool:
 	var lost := int(p["max_hp"]) - int(p["hp"])
+	# V0.32：两人残局（第 25 轮起）能进攻时不回复；无法进攻时只在 1 血自救，避免身份场回合上限
+	if int(eng.round_no) >= 25 and eng.alive_players().size() <= 2:
+		if int(p["hp"]) > 1 and eng.ai_has_pressure_attack(p):
+			return false
+		return int(p["hp"]) <= 1
 	# 残局（第 30 轮起）只在 2 血及以下时回复，避免与对手无限拉锯
 	if int(eng.round_no) >= 30:
 		return int(p["hp"]) <= 2

@@ -358,6 +358,7 @@ func _run_reg_test() -> void:
 	await _reg_v27()
 	await _reg_v28()
 	await _reg_v30()
+	await _reg_v32()
 	_reg_lines.append("REGTEST_DONE tests=%d fails=%d" % [_reg_n, _reg_fails])
 	_write("/tmp/ask_regtest.txt", _reg_lines)
 	print(_reg_lines[_reg_lines.size() - 1])
@@ -1975,16 +1976,26 @@ func _reg_v27() -> void:
 		_ok(false, "S10 找不到「长枪突击」按钮")
 	else:
 		var hn10: int = (me["hand"] as Array).size()
+		var spear_a := _give(bs.eng, me, "看破", "黑桃", 3)
+		var spear_b := _give(bs.eng, me, "看破", "黑桃", 4)
+		bs.refresh()
+		await _frames(1)
 		spb.pressed.emit()
 		await _frames(1)
 		var st10: int = int(bs.target_candidates[0])
 		if bs.sel_target != st10:
 			_tap_seat(bs, st10)
 		await _frames(1)
-		_ok(bs.spear_targeting and (me["hand"] as Array).size() == hn10 and bs.interactive and not bs.confirm_btn.disabled, "S10 长枪突击：点目标只选中，未出牌")
+		_ok(bs.spear_targeting and bs.spear_cards.is_empty() and (me["hand"] as Array).size() == hn10 + 2 and bs.interactive and bs.confirm_btn.disabled, "S10 长枪突击：点目标后仍需自选两张手牌，未出牌")
+		_tap_card(bs, spear_a)
+		await _frames(1)
+		_ok(bs.spear_cards.size() == 1 and bs.confirm_btn.disabled, "S10 长枪突击：点第一张手牌只选中，尚未提交")
+		_tap_card(bs, spear_b)
+		await _frames(1)
+		_ok(bs.spear_cards.size() == 2 and not bs.confirm_btn.disabled, "S10 长枪突击：选满两张后「确定」亮起")
 		bs.confirm_btn.pressed.emit()
 		await _wait_interactive(bs)
-		_ok((me["hand"] as Array).size() == hn10 - 2, "S10 「确定」后才用两张手牌拼成突击")
+		_ok(not bs._hand_has(spear_a) and not bs._hand_has(spear_b) and (me["hand"] as Array).size() == hn10, "S10 「确定」后按玩家自选的两张手牌拼成突击")
 	me["equip"]["weapon"] = {}
 	# S11 自动确认：打开后选够即自动提交（出牌 + 响应）
 	await _reach_my_play(bs)
@@ -2241,6 +2252,51 @@ static func player_won(eng, q: Dictionary) -> bool:
 
 
 
+# ---------------- V0.32：残局破僵局 / 合璧长枪自选 / 音乐回归 ----------------
+func _reg_v32() -> void:
+	# V32-1 两人残局：手里有能出的突击且体力大于 1 时，AI 判定应进攻而不是回复
+	var e = _clean_eng("identity", ["主公", "忠臣", "反贼", "反贼", "内奸"])
+	for i in [1, 2, 3]:
+		e.players[i]["alive"] = false
+	var me: Dictionary = e.players[0]
+	var foe: Dictionary = e.players[4]
+	me["hp"] = 3
+	me["max_hp"] = 5
+	e.round_no = 30
+	_give(e, me, "突击", "黑桃", 7)
+	_ok(e.ai_in_stalemate_endgame(me) and e.ai_has_pressure_attack(me), "V32-1 两人残局且能出突击时识别为可进攻局面")
+	var SL32 = load("res://scripts/skill_lib.gd")
+	var sl32 = SL32.new()
+	_ok(not bool(sl32._yuanqi_ai(e, me)), "V32-1 「元气补给」在可进攻残局不再把进攻牌转成回复")
+	me["used_attack"] = true
+	_ok(not e.ai_has_pressure_attack(me), "V32-1 本回合突击已用完时不再视为可进攻")
+	me["used_attack"] = false
+	# V32-2 复现 V0.31 基线 seed=40300 的身份场回合上限：修复后应分出胜负
+	seed(40300)
+	var eng32 = EngineS.new()
+	eng32.load_skills()
+	eng32.mode = "identity"
+	eng32.difficulty = 1
+	var ids32: Array = ["主公", "忠臣", "反贼", "反贼", "内奸"]
+	ids32.shuffle()
+	eng32.setup_game(make_chars(5), ids32)
+	await eng32.run_game()
+	_ok(bool(eng32.game_over) and not String(eng32.winner_text).begins_with("局面上限"), "V32-2 seed=40300 身份场不再拖到回合上限（rounds=%d winner=%s）" % [int(eng32.round_no), String(eng32.winner_text)])
+	_ok(int(eng32.round_no) < 80, "V32-2 seed=40300 在 80 轮内结束（实际 %d 轮）" % int(eng32.round_no))
+	# V32-3 合璧长枪：引擎接受界面传入的两张自选牌，并按其共同颜色生成虚拟突击
+	e = _clean_eng()
+	me = e.players[0]
+	me["equip"]["weapon"] = {"name": "合璧长枪", "suit": "黑桃", "point": 12, "nature": "", "yb": []}
+	var red32 := _give(e, me, "看破", "红桃", 3)
+	var black32 := _give(e, me, "看破", "黑桃", 4)
+	var cap32 := {}
+	e.set_ui({"played": func(c, owner, tname = ""): if String(c.get("name", "")) == "突击": cap32["c"] = c})
+	await e.spear_attack(me, e.players[1], [red32, black32])
+	var vc32: Dictionary = cap32.get("c", {})
+	_ok(not (me["hand"] as Array).has(red32) and not (me["hand"] as Array).has(black32), "V32-3 合璧长枪按玩家自选牌消耗")
+	_ok(String(vc32.get("color", "")) == "无" and not e.is_red(vc32) and not e.is_black(vc32), "V32-3 自选一红一黑拼成的突击为无色")
+
+
 # ---------------- V0.30：AI / 声音 / 局外 / 教学 ----------------
 func _reg_v30() -> void:
 	const MetaT = preload("res://scripts/meta.gd")
@@ -2363,15 +2419,32 @@ func _reg_v30() -> void:
 	_ok(AudioServer.get_bus_index("SFX") >= 0 and AudioServer.get_bus_index("Voice") >= 0 and AudioServer.get_bus_index("Music") >= 0, "V30-C9 SFX/Voice/Music 总线已创建")
 	var old_on = AudioT.get_v("sfx_on")
 	var old_vol = AudioT.get_v("voice_vol")
+	var old_music_on = AudioT.get_v("music_on")
 	AudioT.set_v("sfx_on", false)
 	AudioT.set_v("voice_vol", 0.35)
+	AudioT.set_v("music_on", false)
 	var cf := ConfigFile.new()
 	cf.load("user://settings.cfg")
-	_ok(AudioServer.is_bus_mute(AudioServer.get_bus_index("SFX")) and is_equal_approx(float(cf.get_value("audio", "voice_vol", 0)), 0.35), "V30-C9 关闭音效即静音 SFX 总线，音量写入 settings.cfg")
+	_ok(AudioServer.is_bus_mute(AudioServer.get_bus_index("SFX")) and AudioServer.is_bus_mute(AudioServer.get_bus_index("Music")) and is_equal_approx(float(cf.get_value("audio", "voice_vol", 0)), 0.35), "V30-C9 关闭音效/音乐即静音对应总线，音量写入 settings.cfg")
 	AudioT.set_v("sfx_on", old_on)
 	AudioT.set_v("voice_vol", old_vol)
+	AudioT.set_v("music_on", old_music_on)
 	_ok(AudioT.sfx_stream("hit") != null and AudioT.voice_stream("attack") == null, "V30-C9 音效文件可加载；语音未打包（返回空）")
-	_ok(not DirAccess.dir_exists_absolute("res://assets/bgm") and not DirAccess.dir_exists_absolute("res://assets/music"), "V30-C9 游戏内没有 BGM 资源（候选曲目未接入）")
+	_ok(DirAccess.dir_exists_absolute("res://assets/bgm") and ResourceLoader.exists("res://assets/bgm/home_carefree.mp3") and ResourceLoader.exists("res://assets/bgm/battle_volatile_reaction.mp3") and ResourceLoader.exists("res://assets/bgm/tense_hitman.mp3"), "V30-C9 三首 BGM 已打包进游戏资源")
+	_ok(HelpText.bbcode().find("Kevin MacLeod") >= 0 and HelpText.bbcode().find("creativecommons.org/licenses/by/4.0") >= 0, "V30-C9 新手说明含 CC BY 4.0 音乐署名")
+	if main_ref.music != null:
+		main_ref.music.play_scene("battle")
+		await _frames(2)
+		var music_ok := main_ref.music.current_scene == "battle"
+		main_ref.music.play_scene("tense")
+		await _frames(2)
+		music_ok = music_ok and main_ref.music.current_scene == "tense"
+		main_ref.music.play_scene("home")
+		await _frames(2)
+		music_ok = music_ok and main_ref.music.current_scene == "home"
+		_ok(music_ok, "V30-C9 MusicDirector 可在主页/对局/紧张曲间切换")
+	else:
+		_ok(false, "V30-C9 MusicDirector 未创建")
 	# C10 教学关：固定角色/起手、按步骤推进；设置面板含声音滑条
 	seed(30)
 	main_ref.clear_screen()
@@ -2393,6 +2466,10 @@ func _reg_v30() -> void:
 	for c in tme["hand"]:
 		names.append(String(c["name"]))
 	_ok(String(tme["char_name"]) == "花宫雏" and String(bs.players[1]["char_name"]) == "柚木铃奈" and int(bs.players[1]["hp"]) == 2, "V30-C10 教学关固定花宫雏 vs 柚木铃奈（对手 2 血）")
+	var foe_names: Array = []
+	for c in bs.players[1]["hand"]:
+		foe_names.append(String(c["name"]))
+	_ok(foe_names.has("突击"), "V30-C10 教学关对手首个回合保证有「突击」，可进入响应练习")
 	_ok(names.has("星光长剑") and names.has("突击") and names.has("闪避") and names.has("补给"), "V30-C10 起手含 星光长剑/突击/闪避/补给：%s" % ",".join(PackedStringArray(names)))
 	_ok(bs.tut_step == 0 and bs.tut_panel != null and bs.tut_panel.visible and bs.tut_label.text.begins_with("教学 1/5"), "V30-C10 显示第 1 步提示")
 	var sword: Dictionary = {}
@@ -2423,9 +2500,17 @@ func _reg_v30() -> void:
 		for i in 4:
 			await get_tree().create_timer(0.12).timeout
 		_ok(bool(tme["used_attack"]) and bs.tut_step == 3, "V30-C10 出牌后进入第 4 步（step=%d）" % bs.tut_step)
+	bs.tut_saw_enemy_turn = false
+	bs.turn_seat = 1
+	bs._tut_tick()
+	_ok(bs.tut_step == 3 and bs.tut_saw_enemy_turn and bs.tut_label.text.begins_with("教学 4/5"), "V30-C10 对手回合开始时保持第 4 步，等待真实响应练习")
+	bs.turn_seat = 0
+	bs._tut_tick()
+	_ok(bs.tut_step == 4 and bs.tut_label.text.begins_with("教学 5/5"), "V30-C10 对手回合结束后才进入第 5 步自由练习")
+	bs.tut_step = 3
 	bs.toggle_settings_panel()
 	await _frames(2)
-	_ok(bs.audio_sliders.has("master") and bs.audio_sliders.has("sfx_vol") and bs.audio_sliders.has("voice_vol") and bs.audio_checks.has("sfx_on") and bs.audio_checks.has("voice_on"), "V30-C10 设置面板有 总音量/音效/语音 开关与滑条")
+	_ok(bs.audio_sliders.has("master") and bs.audio_sliders.has("sfx_vol") and bs.audio_sliders.has("voice_vol") and bs.audio_sliders.has("music_vol") and bs.audio_checks.has("sfx_on") and bs.audio_checks.has("voice_on") and bs.audio_checks.has("music_on"), "V30-C10 设置面板有 总音量/音效/语音/背景音乐 开关与滑条")
 	bs.toggle_settings_panel()
 	await _close_battle(bs)
 	MetaT.reset_for_test("user://meta_test.json")

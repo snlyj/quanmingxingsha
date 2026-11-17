@@ -5,6 +5,9 @@ extends RefCounted
 # 技能定义格式：{name, timings={时机:{who, priority, filter, content, forced}}}
 # 本文件只管规则，不碰 UI；一切询问走 ui 回调（键见 set_ui）。
 
+const AI_STALEMATE_ROUND := 25
+const AI_REBEL_LORD_BONUS := 4.5
+
 var players: Array = []
 var deck: Array = []
 var discard_pile: Array = []
@@ -1464,27 +1467,38 @@ func weapon_after_dodge(src: Dictionary, tgt: Dictionary, card: Dictionary, dmg:
 	return false
 
 
-func spear_attack(p: Dictionary, tgt: Dictionary) -> bool:
-	# 合璧长枪：任意两张手牌当作一张「突击」使用
+func spear_attack(p: Dictionary, tgt: Dictionary, chosen: Array = []) -> bool:
+	# 合璧长枪：任意两张手牌当作一张「突击」使用；真人界面可传入自选的两张，AI 缺省自动挑
 	if (p["hand"] as Array).size() < 2:
 		return false
 	if bool(p["used_attack"]) and not has_unlimited_attack(p):
 		return false
-	var c1 := ai_pick_discard(p)
-	if c1.is_empty():
-		return false
-	var rest: Array = (p["hand"] as Array).duplicate()
-	rest.erase(c1)
-	var c2: Dictionary = rest[0]
-	for want in ["落雷", "沉迷游戏", "断粮封锁", "灵感爆发", "突然检查", "悄悄借走", "单挑", "全场乱斗", "弹幕齐射", "物资发放", "全员休整", "特饮", "突击"]:
-		var found := false
-		for c in rest:
-			if String(c["name"]) == want:
+	var c1 := {}
+	var c2 := {}
+	if chosen.size() == 2:
+		for c in p["hand"]:
+			if is_same(c, chosen[0]):
+				c1 = c
+			elif is_same(c, chosen[1]):
 				c2 = c
-				found = true
+		if c1.is_empty() or c2.is_empty() or c1 == c2:
+			return false
+	else:
+		c1 = ai_pick_discard(p)
+		if c1.is_empty():
+			return false
+		var rest: Array = (p["hand"] as Array).duplicate()
+		rest.erase(c1)
+		c2 = rest[0]
+		for want in ["落雷", "沉迷游戏", "断粮封锁", "灵感爆发", "突然检查", "悄悄借走", "单挑", "全场乱斗", "弹幕齐射", "物资发放", "全员休整", "特饮", "突击"]:
+			var found := false
+			for c in rest:
+				if String(c["name"]) == want:
+					c2 = c
+					found = true
+					break
+			if found:
 				break
-		if found:
-			break
 	var virtual := {"name": "突击", "suit": shared_suit([c1, c2]), "point": shared_point([c1, c2]), "color": shared_color([c1, c2]), "nature": "", "yb": [], "virtual": true, "src_cards": [c1, c2]}
 	discard_from_hand(p, c1)
 	discard_from_hand(p, c2)
@@ -1841,6 +1855,20 @@ func ai_find_sha(p: Dictionary, tgt: Dictionary) -> Dictionary:
 	return plain
 
 
+func ai_has_pressure_attack(p: Dictionary) -> bool:
+	# V0.32：残局破僵局用——当前还能对有效敌人出一张「突击」时，优先进攻而不是回复
+	if bool(p["used_attack"]) and not has_unlimited_attack(p):
+		return false
+	var tgt := ai_pick_target(p, true)
+	if tgt.is_empty():
+		return false
+	return not ai_find_sha(p, tgt).is_empty()
+
+
+func ai_in_stalemate_endgame(p: Dictionary) -> bool:
+	return round_no >= AI_STALEMATE_ROUND and alive_players().size() <= 2
+
+
 func ai_pick_discard(p: Dictionary) -> Dictionary:
 	var hand: Array = p["hand"]
 	if hand.is_empty():
@@ -2034,7 +2062,7 @@ func ai_target_score(p: Dictionary, t: Dictionary) -> float:
 	if not ar.is_empty():
 		sc -= 1.5
 	if mode == "identity" and String(p["identity"]) == "反贼" and String(t["identity"]) == "主公":
-		sc += 3.0 if difficulty >= 1 else 1.0
+		sc += AI_REBEL_LORD_BONUS if difficulty >= 1 else AI_REBEL_LORD_BONUS * 0.5
 	return sc
 
 
@@ -2361,7 +2389,9 @@ func ai_try_action(p: Dictionary) -> bool:
 		recast(p, sl)
 		return true
 	# 补给自己（V0.30：残局第 30 轮起只在 2 血及以下时吃，其余留着濒死自救，避免回复拉锯）
-	if int(p["hp"]) < int(p["max_hp"]) and (round_no < 30 or int(p["hp"]) <= 2):
+	# V0.32：两人残局且本回合还能进攻时，除 1 血外不先回复，避免双方互相奶满拖到回合上限
+	var skip_supply_for_attack := ai_in_stalemate_endgame(p) and int(p["hp"]) > 1 and ai_has_pressure_attack(p)
+	if int(p["hp"]) < int(p["max_hp"]) and not skip_supply_for_attack and (round_no < 30 or int(p["hp"]) <= 2):
 		var sup := find_in_hand(p, "补给")
 		if not sup.is_empty():
 			use_supply(p, sup, p)

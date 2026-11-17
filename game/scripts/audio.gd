@@ -1,10 +1,10 @@
 extends RefCounted
-# V0.30 声音设置与总线：Master ← SFX / Voice / Music。
-# 设置存 user://settings.cfg [audio]。BGM 未经确认不加载任何曲目（Music 总线只是预留）。
+# V0.32 声音设置与总线：Master ← SFX / Voice / Music。
+# 设置存 user://settings.cfg [audio]。BGM 由 scripts/music.gd 播放，曲目为 CC BY 4.0 授权（署名见 data/help.gd）。
 # 语音文件放在 res://assets/voice/<事件>.ogg，当前版本没有打包语音（授权不明，见 voice_candidates/SOURCES.md）。
 
 const SETTINGS_PATH := "user://settings.cfg"
-const DEFAULTS := {"master": 0.8, "sfx_on": true, "sfx_vol": 0.8, "voice_on": true, "voice_vol": 0.8, "music_vol": 0.6}
+const DEFAULTS := {"master": 0.8, "sfx_on": true, "sfx_vol": 0.8, "voice_on": true, "voice_vol": 0.8, "music_on": true, "music_vol": 0.6}
 const SFX_FILES := ["hit", "heal", "dodge", "draw", "skill", "win", "lose", "dying", "click", "play", "turn", "card"]
 
 static var _inited := false
@@ -65,6 +65,7 @@ static func apply() -> void:
 	var mu := AudioServer.get_bus_index("Music")
 	if mu >= 0:
 		AudioServer.set_bus_volume_db(mu, _db(float(_cfg["music_vol"])))
+		AudioServer.set_bus_mute(mu, not bool(_cfg["music_on"]) or float(_cfg["music_vol"]) <= 0.001)
 
 
 # 文件音效（assets/sfx/*.ogg，程序合成，见 art_src/sfx/gen_sfx.py）

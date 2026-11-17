@@ -351,6 +351,7 @@ const SPEEDS := [1.0, 1.5, 2.0]
 var skip_tap_ms := -1  # 点空白桌面跳过当前等待（AI 出牌间隔/动画停顿）
 var targeting: bool = false
 var spear_targeting: bool = false
+var spear_cards: Array = []  # V0.32：合璧长枪由玩家自选的两张手牌
 var muniu_targeting: bool = false
 var game_mode: String = "identity"
 var my_role: String = ""
@@ -1961,6 +1962,7 @@ func _sync_hand() -> void:
 			hand_row.move_child(ordered[i], i)
 	# 选择状态随手牌变化校正
 	discard_sel = discard_sel.filter(func(c: Dictionary) -> bool: return _hand_has(c))
+	spear_cards = spear_cards.filter(func(c: Dictionary) -> bool: return _hand_has(c))
 	if not selected_card.is_empty() and not _hand_has(selected_card):
 		selected_card = {}
 		sel_target = -1
@@ -1983,6 +1985,11 @@ func _is_lifted(w: Control) -> bool:
 		return true
 	if skill_mode != "":
 		return not skill_card.is_empty() and is_same(skill_card, c)
+	if spear_targeting:
+		for sc in spear_cards:
+			if is_same(sc, c):
+				return true
+		return false
 	return not selected_card.is_empty() and is_same(selected_card, c)
 
 
@@ -2045,6 +2052,8 @@ func _tween_card(w: Control, pos: Vector2, rot: float, animate: bool) -> void:
 func _card_state_key(c: Dictionary) -> String:
 	if discard_mode:
 		return "d"
+	if spear_targeting and not asking:
+		return "r1"
 	if not pick_cards.is_empty():
 		for pc in pick_cards:
 			if is_same(pc, c):
@@ -2346,6 +2355,7 @@ func _on_end_play_btn() -> void:
 	if not selected_card.is_empty() or targeting or skill_mode != "":
 		targeting = false
 		spear_targeting = false
+		spear_cards = []
 		muniu_targeting = false
 		selected_card = {}
 		target_candidates = []
@@ -3332,6 +3342,7 @@ func start_match(sim: bool) -> void:
 		if p["identity"] == "主公":
 			log_msg("主公是 %s。" % pname(p))
 	refresh()
+	_update_music_scene()
 	await wait(0.8)
 	run_game()
 
@@ -3769,6 +3780,7 @@ func end_game(text: String) -> void:
 # 固定花宫雏（先手）对柚木铃奈（简单 AI，体力 2），起手发好「星光长剑/突击/闪避/补给」，
 # 按步骤提示：装备 → 选突击 → 选目标 → 确定 → 结束回合 → 对手回合响应 → 自由练习。完成（分出胜负）记「新手毕业」。
 var tut_step := 0
+var tut_saw_enemy_turn := false  # V0.32：教学第 4 步保持到对手回合响应结束，不再只闪一句文字
 var tut_panel: PanelContainer = null
 var tut_label: Label = null
 var tut_timer: Timer = null
@@ -3776,7 +3788,7 @@ const TUT_TEXT := [
 	"教学 1/5：点手牌里的「星光长剑」选中它，再点「确定」装备（装备后攻击范围变大）。",
 	"教学 2/5：点「突击」选中，然后点对手的头像，把她选为目标。",
 	"教学 3/5：点「确定」出牌。对手没有「闪避」就会受到 1 点伤害。",
-	"教学 4/5：没有要出的牌了，点「结束」结束回合。对手回合里如果对你出「突击」，选中「闪避」再点「确定」就能抵挡。",
+	"教学 4/5：没有要出的牌了，点「结束」结束回合。对手回合里如果对你出「突击」，点亮的「闪避」会提示你抵挡：点它选中，再点「确定」。",
 	"教学 5/5：自由练习！击败对手就能毕业。长按任意牌或角色可以看说明。",
 ]
 
@@ -3801,6 +3813,19 @@ func _tut_rig() -> void:
 				break
 	var foe: Dictionary = players[1]
 	foe["hp"] = 2
+	# V0.32：保证首个对手回合有「突击」，第 4 步能真正进入一次响应练习
+	var foe_has_attack := false
+	for c in foe["hand"]:
+		if String(c["name"]) == "突击":
+			foe_has_attack = true
+	if not foe_has_attack and not (foe["hand"] as Array).is_empty():
+		var back: Dictionary = (foe["hand"] as Array).pop_back()
+		eng.deck.append(back)
+		for c in eng.deck:
+			if String(c["name"]) == "突击":
+				eng.deck.erase(c)
+				(foe["hand"] as Array).append(c)
+				break
 	if tut_timer == null:
 		tut_timer = Timer.new()
 		tut_timer.wait_time = 0.3
@@ -3857,7 +3882,11 @@ func _tut_tick() -> void:
 			if bool(me["used_attack"]):
 				_tut_show(3)
 		3:
-			if turn_seat == 1:
+			if turn_seat == 1 and not tut_saw_enemy_turn:
+				tut_saw_enemy_turn = true
+				_tut_show(3)
+		4:
+			if turn_seat == 0 and tut_saw_enemy_turn:
 				_tut_show(4)
 
 
@@ -4519,6 +4548,7 @@ func candidates_for(me: Dictionary, card: Dictionary) -> Array:
 func cancel_targeting() -> void:
 	targeting = false
 	spear_targeting = false
+	spear_cards = []
 	muniu_targeting = false
 	selected_card = {}
 	target_candidates = []
@@ -4562,8 +4592,10 @@ func _on_hand_card_clicked(card: Dictionary) -> void:
 	if skill_mode != "":
 		_skill_card_tap(card)
 		return
-	if spear_targeting or muniu_targeting:
-		spear_targeting = false
+	if spear_targeting:
+		_toggle_spear_card(card)
+		return
+	if muniu_targeting:
 		muniu_targeting = false
 		targeting = false
 		target_candidates = []
@@ -4694,6 +4726,9 @@ func _on_spear_button() -> void:
 		cancel_targeting()
 		return
 	var me: Dictionary = players[0]
+	if (me["hand"] as Array).size() < 2:
+		show_hint("「合璧长枪」需要两张手牌")
+		return
 	target_candidates = []
 	for p in candidates_for(me, {"name": "突击"}):
 		target_candidates.append(int(p["seat"]))
@@ -4701,6 +4736,7 @@ func _on_spear_button() -> void:
 		show_hint("攻击范围内没有目标")
 		return
 	selected_card = {}
+	spear_cards = []
 	sel_target = -1
 	extra_target = -1
 	skill_mode = ""
@@ -4710,6 +4746,23 @@ func _on_spear_button() -> void:
 	targeting = true
 	if target_candidates.size() == 1:
 		sel_target = int(target_candidates[0])
+	_show_sel_hint()
+	refresh()
+
+
+func _toggle_spear_card(card: Dictionary) -> void:
+	for i in spear_cards.size():
+		if is_same(spear_cards[i], card):
+			spear_cards.remove_at(i)
+			_show_sel_hint()
+			refresh()
+			return
+	if spear_cards.size() >= 2:
+		show_hint("「合璧长枪」最多选两张手牌；再点已选的牌可取消")
+		_nudge_card(card)
+		return
+	spear_cards.append(card)
+	play_sfx("draw")
 	_show_sel_hint()
 	refresh()
 	_maybe_auto_confirm()
@@ -5319,7 +5372,32 @@ func _eng_changed() -> void:
 		if eng.phase_text != "":
 			set_phase("%s · %s" % [eng.phase_text, pname(eng.turn_player)])
 	round_no = eng.round_no
+	_update_music_scene()
 	_queue_refresh()
+
+
+func _update_music_scene() -> void:
+	var director := get_tree().get_first_node_in_group("music_director") as MusicDirector
+	if director == null:
+		return
+	director.play_scene(_battle_music_scene())
+
+
+func _battle_music_scene() -> String:
+	if eng == null or players.is_empty():
+		return "battle"
+	var alive := 0
+	var low_hp := false
+	for p in players:
+		if not bool(p["alive"]):
+			continue
+		alive += 1
+		if int(p["hp"]) <= 1:
+			low_hp = true
+	# 残局或有人濒临出局时切紧张曲；正常开局仍是对局曲
+	if low_hp or (alive <= 2 and int(eng.round_no) >= 5):
+		return "tense"
+	return "battle"
 
 
 var _refresh_pending := false
@@ -5370,6 +5448,12 @@ func _eng_ask_respond(p: Dictionary, card_name: String, reason: String) -> bool:
 	# V0.25：响应时手里能打出的牌亮起（其余置灰），可直接点那张牌作答；限时作答，超时视为不出
 	respond_name = card_name
 	resp_pref_card = {}
+	if tutorial and tut_step == 3 and card_name == "闪避" and not players.is_empty() and p == players[0]:
+		# V0.32：教学第 4 步的响应练习：面板改为当前情境提示，并保留到玩家作答
+		if tut_panel != null and is_instance_valid(tut_panel) and tut_label != null:
+			tut_panel.visible = true
+			tut_label.text = "教学 4/5：对手对你出「突击」了！点手牌里亮起的「闪避」选中，再点「确定」抵挡；点「不出」会受到 1 点伤害。"
+			move_child(tut_panel, get_child_count() - 1)
 	var v: Variant = await ask("是否打出「%s」？（%s）" % [card_name, reason], [{"label": "打出「%s」" % card_name, "value": true}, {"label": "不出", "value": false}], Callable(), "respond")
 	respond_name = ""
 	_queue_refresh()
@@ -5500,6 +5584,7 @@ func _eng_play_phase(eng_ref, p: Dictionary) -> void:
 	in_play_phase = false
 	targeting = false
 	spear_targeting = false
+	spear_cards = []
 	muniu_targeting = false
 	selected_card = {}
 	sel_target = -1
@@ -6699,7 +6784,7 @@ func _build_settings_panel() -> void:
 	desc.custom_minimum_size = Vector2(520, 0)
 	desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	vb.add_child(desc)
-	# V0.30 声音设置：总音量、音效开关+音量、语音开关+音量（BGM 未接入）
+	# V0.32 声音设置：总音量、音效/语音/背景音乐开关与音量
 	var at := lbl("声音", 26, C_PINK_DEEP, true)
 	vb.add_child(at)
 	build_audio_rows(vb)
@@ -6725,7 +6810,7 @@ var audio_checks := {}   # key -> CheckButton（测试用）
 
 func build_audio_rows(vb: VBoxContainer) -> void:
 	AudioCfg.ensure()
-	for row in [["总音量", "", "master"], ["音效", "sfx_on", "sfx_vol"], ["语音", "voice_on", "voice_vol"]]:
+	for row in [["总音量", "", "master"], ["音效", "sfx_on", "sfx_vol"], ["语音", "voice_on", "voice_vol"], ["背景音乐", "music_on", "music_vol"]]:
 		var hb := HBoxContainer.new()
 		hb.add_theme_constant_override("separation", 12)
 		vb.add_child(hb)
@@ -6760,7 +6845,7 @@ func build_audio_rows(vb: VBoxContainer) -> void:
 		sl.drag_ended.connect(func(_c: bool) -> void: play_sfx("click"))
 		hb.add_child(sl)
 		audio_sliders[vol_key] = sl
-	var note := lbl("背景音乐：候选曲目待确认，暂未接入。语音：本版未打包配音。", 19, C_INK_SOFT)
+	var note := lbl("背景音乐：Kevin MacLeod（CC BY 4.0，署名见新手说明）。语音：本版未打包配音。", 19, C_INK_SOFT)
 	note.custom_minimum_size = Vector2(520, 0)
 	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	vb.add_child(note)
@@ -6787,7 +6872,7 @@ func _can_confirm() -> bool:
 			return false
 		return true
 	if spear_targeting or muniu_targeting:
-		return sel_target >= 0 and target_candidates.has(sel_target)
+		return sel_target >= 0 and target_candidates.has(sel_target) and (muniu_targeting or spear_cards.size() == 2)
 	if selected_card.is_empty() or not _hand_has(selected_card):
 		return false
 	if unusable_reason(players[0], selected_card) != "":
@@ -6839,8 +6924,10 @@ func _sel_hint_text() -> String:
 		return "%s发动「%s」——点「确定」发动" % [" ".join(parts) + " " if not parts.is_empty() else "", nm]
 	if spear_targeting:
 		if sel_target < 0:
-			return "「合璧长枪」：请选择 1 名目标（两张手牌拼成突击）"
-		return "对 %s 使用「合璧长枪」突击——点「确定」出牌" % _tgt_name(sel_target)
+			return "「合璧长枪」：请选择 1 名目标，再点选两张要拼的手牌"
+		if spear_cards.size() < 2:
+			return "对 %s 使用「合璧长枪」：请再点选 %d 张手牌（已选 %d/2）" % [_tgt_name(sel_target), 2 - spear_cards.size(), spear_cards.size()]
+		return "对 %s 使用 %s 与 %s 拼成突击——点「确定」出牌" % [_tgt_name(sel_target), card_text(spear_cards[0]), card_text(spear_cards[1])]
 	if muniu_targeting:
 		if sel_target < 0:
 			return "「木牛流马」：请选择 1 名要转交的角色"
@@ -6863,15 +6950,19 @@ func _sel_hint_text() -> String:
 
 
 func _commit_spear() -> void:
+	if spear_cards.size() != 2:
+		return
 	var seat := sel_target
+	var chosen: Array = spear_cards.duplicate()
 	spear_targeting = false
+	spear_cards = []
 	targeting = false
 	target_candidates = []
 	sel_target = -1
 	hide_prompt()
 	interactive = false
 	_update_action_bar()
-	await eng.spear_attack(players[0], players[seat])
+	await eng.spear_attack(players[0], players[seat], chosen)
 	if not game_over and is_inside_tree():
 		interactive = true
 		maybe_restore_hint()

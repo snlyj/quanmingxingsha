@@ -3,6 +3,7 @@ const HelpText = preload("res://data/help.gd")
 const CardDefsM = preload("res://data/cards.gd")
 const Art = preload("res://scripts/art.gd")
 const Meta = preload("res://scripts/meta.gd")
+const MusicDirector = preload("res://scripts/music.gd")
 
 # 《全明星杀》V0.1 单机版外壳：
 # 主页（5人身份场入口 + 人物图鉴入口）/ 人物图鉴（按系列分类）/ 角色详情 / 对战占位页
@@ -31,6 +32,7 @@ var petal_far: CPUParticles2D
 var petal_near: CPUParticles2D
 var theme_night := false
 var bg_tex_ref: TextureRect
+var music: MusicDirector
 
 
 class PetalBG:
@@ -122,6 +124,10 @@ func _ready() -> void:
 	# V0.26 长按说明卡（全局唯一、复用）
 	if IntroPop.inst == null:
 		add_child(IntroPop.new())
+	# V0.32：常驻背景音乐（Music 总线；主页/对局/紧张残局切换，详见 scripts/music.gd）
+	music = MusicDirector.new()
+	add_child(music)
+	music.play_scene("home")
 	_fit_wide()
 	get_tree().root.size_changed.connect(_fit_wide)
 	if OS.get_cmdline_user_args().has("--night"):
@@ -514,6 +520,8 @@ func page_margin() -> MarginContainer:
 # ---------------- 主页 ----------------
 
 func show_home() -> void:
+	if music != null:
+		music.play_scene("home")
 	clear_screen()
 	var m := page_margin()
 	var vb := VBoxContainer.new()
@@ -760,6 +768,8 @@ func show_detail(c: Dictionary) -> void:
 # ---------------- 对战（V0.2 起接入 BattleScreen） ----------------
 
 func show_battle() -> void:
+	if music != null:
+		music.play_scene("battle")
 	clear_screen()
 	var bs := BattleScreen.new()
 	bs.set_anchors_preset(Control.PRESET_FULL_RECT)
@@ -769,6 +779,8 @@ func show_battle() -> void:
 
 
 func show_battle_mode(m: String) -> void:
+	if music != null:
+		music.play_scene("battle")
 	clear_screen()
 	var bs := BattleScreen.new()
 	bs.game_mode = m
@@ -779,6 +791,8 @@ func show_battle_mode(m: String) -> void:
 
 
 func show_tutorial() -> void:
+	if music != null:
+		music.play_scene("battle")
 	clear_screen()
 	var bs := BattleScreen.new()
 	bs.tutorial = true
