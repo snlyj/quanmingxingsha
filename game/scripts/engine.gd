@@ -669,6 +669,8 @@ func damage(src: Dictionary, tgt: Dictionary, num: int, cause: String, nature: S
 	observe_damage(src, tgt, lost)
 	log_msg("%s 受到 %s 的 %d 点伤害（%s），体力剩余 %d。" % [pname(tgt), pname(src), num, cause, maxi(int(tgt["hp"]), 0)])
 	fx("damage", {"seat": int(tgt["seat"]), "num": num, "src_seat": int(src["seat"]) if not src.is_empty() else -1, "nature": nature})
+	if num >= 2 and not spread:
+		fx("heavy_hit", {"seat": int(src["seat"]) if not src.is_empty() else int(tgt["seat"]), "tgt_seat": int(tgt["seat"]), "num": num})
 	changed()
 	# 羁绊锁链（对照 noname 连环规则）：处于连环状态的角色受到属性伤害时重置，其后其他连环角色依次受到同等属性伤害
 	# V0.24 修复：旧版受伤后不重置连环状态，锁链永久有效，之后每次属性伤害都会反复传导
@@ -875,6 +877,7 @@ func nullify_window(trick: String, user: Dictionary, victim: Dictionary, trick_c
 	if CardDefs.kind_of(trick) == "锦囊牌" and await jinchan_negate(victim, user, trick):
 		return true
 	var negated := false
+	var resp_target: Dictionary = trick_card if not trick_card.is_empty() else {"name": trick}
 	var guard := 0
 	while guard < 12:
 		guard += 1
@@ -904,7 +907,8 @@ func nullify_window(trick: String, user: Dictionary, victim: Dictionary, trick_c
 		if ui.has("played"):
 			(ui["played"] as Callable).call(c, pname(actor))
 		discard_from_hand(actor, c)
-		await yb_response_effects(actor, c, trick_card if not trick_card.is_empty() else {"name": trick})
+		await yb_response_effects(actor, c, resp_target)
+		resp_target = c
 		negated = not negated
 		if negated:
 			log_msg("%s 打出「看破」：%s 的「%s」被看破！" % [pname(actor), pname(user), trick])
@@ -1200,8 +1204,9 @@ func use_attack(src: Dictionary, tgt: Dictionary, card: Dictionary, counts := tr
 	var nature := String(card.get("nature", ""))
 	log_msg("%s 对 %s 使用「%s突击」。" % [pname(src), pname(tgt), (nature + "·") if nature != "" else ""])
 	fx("attack", {"src_seat": int(src["seat"]), "tgt_seat": int(tgt["seat"]), "nature": nature})
-	var ctx := {"name": "useCard", "player": src, "source": src, "target": tgt, "card": card, "cancelled": false}
+	var ctx := {"name": "useCard", "player": src, "source": src, "target": tgt, "card": card, "cancelled": false, "dmg_bonus": 0}
 	await fire("useCardBegin", ctx)
+	dmg += int(ctx.get("dmg_bonus", 0))
 	# V0.24 修复：「猫步」等只令此「突击」对该目标无效（对照 noname 的 excluded：仅排除该目标），
 	# 旧版直接 return，导致「应变·目标+」「星月画戟」追加的其他目标也一并作废
 	var primary_cancelled := bool(ctx.get("cancelled", false))
@@ -1596,6 +1601,8 @@ func die(p: Dictionary, killer: Dictionary) -> void:
 	p["alive"] = false
 	if not killer.is_empty() and killer != p:
 		killer["stat_kills"] = int(killer.get("stat_kills", 0)) + 1
+		if bool(killer.get("alive", false)):
+			fx("kill_spree", {"seat": int(killer["seat"]), "kills": int(killer["stat_kills"]), "name": String(killer["char_name"])})
 	if String(p["identity"]) == "反贼":
 		revealed_fan_dead += 1
 	fx("death", {"seat": int(p["seat"])})
@@ -1725,6 +1732,8 @@ func run_turn(p: Dictionary) -> void:
 	p["used_attack"] = false
 	p["attack_count"] = 0
 	p["hammer_used"] = false
+	p["canyue_turn"] = false
+	p["jianxin_dmg_turn"] = false
 	var base := {"name": "phase", "player": p, "target": p}
 	await fire("phaseBefore", base.duplicate())
 	await fire("phaseBeginStart", base.duplicate())
@@ -1802,6 +1811,8 @@ func run_turn(p: Dictionary) -> void:
 	await fire("phaseJieshu", base.duplicate())
 	await fire("phaseJieshuEnd", base.duplicate())
 	p["drunk"] = false
+	p["canyue_turn"] = false
+	p["jianxin_dmg_turn"] = false
 	# V0.28：「星眠」保护到本回合结束（与设计稿、技能说明一致）
 	if bool(p.get("dream_guard", false)) and not xingmian_legacy:
 		p["dream_guard"] = false
@@ -2066,8 +2077,14 @@ func ai_target_score(p: Dictionary, t: Dictionary) -> float:
 	var ar: Dictionary = t["equip"]["armor"]
 	if not ar.is_empty():
 		sc -= 1.5
-	if mode == "identity" and String(p["identity"]) == "反贼" and String(t["identity"]) == "主公":
-		sc += AI_REBEL_LORD_BONUS if difficulty >= 1 else AI_REBEL_LORD_BONUS * 0.5
+	if mode == "identity":
+		if String(p["identity"]) == "反贼" and String(t["identity"]) == "主公":
+			var bonus := AI_REBEL_LORD_BONUS if difficulty >= 1 else AI_REBEL_LORD_BONUS * 0.5
+			if int(t["hp"]) <= 2:
+				bonus += 1.2
+			sc += bonus
+		elif String(p["identity"]) == "主公" and absf(belief_of(p, t)) < 0.8:
+			sc -= 1.5
 	return sc
 
 
@@ -2197,12 +2214,16 @@ func ai_try_action(p: Dictionary) -> bool:
 			continue
 		if bool((p["turn_used"] as Dictionary).get(sid, false)):
 			continue
+		if bool(sdef.get("limited", false)) and bool(p.get("limited_used_" + String(sid), false)):
+			continue
 		var act: Dictionary = sdef["active"]
 		if act.has("filter") and not bool((act["filter"] as Callable).call(self, p)):
 			continue
 		if act.has("ai_use") and not bool((act["ai_use"] as Callable).call(self, p)):
 			continue
 		p["turn_used"][sid] = true
+		if bool(sdef.get("limited", false)):
+			p["limited_used_" + String(sid)] = true
 		await (act["content"] as Callable).call(self, p)
 		return true
 	# 洞烛先机：对自己使用（卜算＋摸 2，恒有益）
@@ -2576,6 +2597,8 @@ func attack_limit(p: Dictionary) -> int:
 
 
 func has_unlimited_attack(p: Dictionary) -> bool:
+	if bool(p.get("canyue_turn", false)):
+		return true
 	var w: Dictionary = p["equip"]["weapon"]
 	return not w.is_empty() and String(w["name"]) == "魔导连弩"
 
@@ -3194,10 +3217,12 @@ func play_card(p: Dictionary, card: Dictionary, tgt: Dictionary, forced_entry: D
 				log_msg("「应变·强命」：%s 的 %s 满足【%s】，此次使用不可被看破。" % [pname(p), card_text(card), "·".join(PackedStringArray(ybq["conds"]))])
 				fx("yingbian", {"seat": int(p["seat"]), "text": "应变·强命"})
 			(p["hand"] as Array).insert(hidx, card)
-	# V0.24 修复：延时锦囊在使用（放入判定区）时不开看破窗口，改为在其判定阶段生效前开窗（对照 noname phaseJudge：延时锦囊于判定前可被无懈可击）
-	if not yb_no_window and (nm in ["突然检查", "悄悄借走", "单挑", "借力打力", "火焰试炼", "羁绊锁链", "声东击西", "增兵减灶", "弃甲曳兵", "逐近弃远", "出其不意", "洞烛先机", "继往开来"]):
-		if await nullify_window(nm, p, tgt, card):
-			discard_from_hand(p, card)
+	# V0.24/V0.33 修复：单目标普通锦囊在声明使用后即离手进入弃牌堆/处理区，再开看破窗口——
+	# 这样看破【空巢·反甲】在窗口期即可从弃牌堆获得该锦囊实体牌（对齐无名杀原版时序）
+	var single_win_tricks := ["突然检查", "悄悄借走", "单挑", "借力打力", "火焰试炼", "羁绊锁链", "声东击西", "增兵减灶", "弃甲曳兵", "逐近弃远", "出其不意", "洞烛先机", "继往开来"]
+	if nm in single_win_tricks:
+		discard_from_hand(p, card)
+		if not yb_no_window and await nullify_window(nm, p, tgt, card):
 			log_msg("%s 的「%s」被看破，未生效。" % [pname(p), nm])
 			return
 	if kind == "延时锦囊":
@@ -3243,7 +3268,6 @@ func play_card(p: Dictionary, card: Dictionary, tgt: Dictionary, forced_entry: D
 			else:
 				await effect_wugu(p, card, "物资发放")
 		"继往开来":
-			discard_from_hand(p, card)
 			var jw_tgt: Dictionary = tgt if not tgt.is_empty() else p
 			if (jw_tgt["hand"] as Array).is_empty():
 				log_msg("「继往开来」：%s 没有手牌，不生效。" % pname(jw_tgt))
@@ -3263,7 +3287,6 @@ func play_card(p: Dictionary, card: Dictionary, tgt: Dictionary, forced_entry: D
 				else:
 					await jiwang_use_as_trick(jw_tgt)
 		"出其不意":
-			discard_from_hand(p, card)
 			if (tgt["hand"] as Array).is_empty():
 				log_msg("「出其不意」：%s 已没有手牌，不生效。" % pname(tgt))
 			else:
@@ -3284,7 +3307,6 @@ func play_card(p: Dictionary, card: Dictionary, tgt: Dictionary, forced_entry: D
 				else:
 					log_msg("花色相同（%s），「出其不意」未造成伤害。" % String(card["suit"]))
 		"洞烛先机":
-			discard_from_hand(p, card)
 			var dz_tgt: Dictionary = tgt if not tgt.is_empty() else p
 			await do_guanxing(dz_tgt, 2)
 			draw_cards(dz_tgt, 2)
@@ -3297,24 +3319,20 @@ func play_card(p: Dictionary, card: Dictionary, tgt: Dictionary, forced_entry: D
 				draw_cards(p, 2)
 				log_msg("%s 使用「灵感爆发」，摸 2 张牌。" % pname(p))
 		"突然检查":
-			discard_from_hand(p, card)
 			var taken: Dictionary = forced_entry if owns_card(tgt, forced_entry) else pick_card_from(tgt, p)
 			if not taken.is_empty():
 				remove_card_anywhere(tgt, taken)
 				discard_pile.append(taken)
 				log_msg("%s「突然检查」：弃置 %s 的 %s。" % [pname(p), pname(tgt), card_text(taken)])
 		"悄悄借走":
-			discard_from_hand(p, card)
 			var taken2: Dictionary = forced_entry if owns_card(tgt, forced_entry) else pick_card_from(tgt, p)
 			if not taken2.is_empty():
 				remove_card_anywhere(tgt, taken2)
 				gain_card(p, taken2)
 				log_msg("%s「悄悄借走」：拿走 %s 的 %s。" % [pname(p), pname(tgt), card_text(taken2)])
 		"单挑":
-			discard_from_hand(p, card)
 			await resolve_duel(p, tgt)
 		"借力打力":
-			discard_from_hand(p, card)
 			var a := tgt
 			var cands: Array = []
 			# V0.24 修复：排除处于「星眠」保护（不能成为突击目标）的角色——旧版选中后突击被拦下，借刀既不出杀也不交武器
@@ -3362,7 +3380,6 @@ func play_card(p: Dictionary, card: Dictionary, tgt: Dictionary, forced_entry: D
 					changed()
 					log_msg("%s 未出「突击」，其武器 %s 归 %s 所有。" % [pname(a), card_text(w), pname(p)])
 		"火焰试炼":
-			discard_from_hand(p, card)
 			var thand: Array = (tgt["hand"] as Array).duplicate()
 			var reveal: Dictionary = {}
 			if not thand.is_empty():
@@ -3398,7 +3415,6 @@ func play_card(p: Dictionary, card: Dictionary, tgt: Dictionary, forced_entry: D
 					log_msg("%s 弃置 %s，「火焰试炼」命中！" % [pname(p), card_text(use_c)])
 					await damage(p, tgt, 1, "火焰试炼", "火")
 		"羁绊锁链":
-			discard_from_hand(p, card)
 			toggle_chain(tgt)
 			var cands2: Array = []
 			for t in players:
@@ -3450,7 +3466,6 @@ func play_card(p: Dictionary, card: Dictionary, tgt: Dictionary, forced_entry: D
 					continue
 				await shuiyan_resolve(p, t)
 		"逐近弃远":
-			discard_from_hand(p, card)
 			var zj_extra := await yb_trick_extra(p, card, tgt)
 			zhujin_resolve(p, tgt, forced_entry)
 			if not zj_extra.is_empty() and bool(zj_extra["alive"]) and p["alive"] and not game_over:
@@ -3459,7 +3474,6 @@ func play_card(p: Dictionary, card: Dictionary, tgt: Dictionary, forced_entry: D
 				else:
 					zhujin_resolve(p, zj_extra)
 		"声东击西":
-			discard_from_hand(p, card)
 			if alive_players().size() <= 2:
 				draw_cards(p, 1)
 				log_msg("「声东击西」只剩两名角色，改为重铸：%s 摸 1 张牌。" % pname(p))
@@ -3508,7 +3522,6 @@ func play_card(p: Dictionary, card: Dictionary, tgt: Dictionary, forced_entry: D
 				log_msg("%s 将 %d 张牌交给 %s。" % [pname(tgt), moved_n, pname(recv)])
 				changed()
 		"增兵减灶":
-			discard_from_hand(p, card)
 			draw_cards(tgt, 3)
 			log_msg("「增兵减灶」：%s 摸 3 张牌。" % pname(tgt))
 			var nonbasic: Array = []
@@ -3550,7 +3563,6 @@ func play_card(p: Dictionary, card: Dictionary, tgt: Dictionary, forced_entry: D
 					discard_from_hand(tgt, dc2)
 					log_msg("%s 弃置了 %s。" % [pname(tgt), card_text(dc2)])
 		"弃甲曳兵":
-			discard_from_hand(p, card)
 			var cntA := 0
 			var cntB := 0
 			for c in tgt["hand"]:
@@ -3768,6 +3780,8 @@ func active_options(p: Dictionary) -> Array:
 			continue
 		if bool((p["turn_used"] as Dictionary).get(sid, false)):
 			continue
+		if bool(def.get("limited", false)) and bool(p.get("limited_used_" + String(sid), false)):
+			continue
 		var act: Dictionary = def["active"]
 		if act.has("filter") and not bool((act["filter"] as Callable).call(self, p)):
 			continue
@@ -3780,6 +3794,8 @@ func use_active_skill(p: Dictionary, sid: String) -> void:
 	if def.is_empty() or not def.has("active"):
 		return
 	p["turn_used"][sid] = true
+	if bool(def.get("limited", false)):
+		p["limited_used_" + String(sid)] = true
 	fx("skill", {"seat": int(p["seat"]), "name": String(def.get("name", sid)), "sid": sid, "big": true})
 	await (def["active"]["content"] as Callable).call(self, p)
 	changed()

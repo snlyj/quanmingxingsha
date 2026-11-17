@@ -360,6 +360,7 @@ func _run_reg_test() -> void:
 	await _reg_v28()
 	await _reg_v30()
 	await _reg_v32()
+	await _reg_v33()
 	_reg_lines.append("REGTEST_DONE tests=%d fails=%d" % [_reg_n, _reg_fails])
 	_write("/tmp/ask_regtest.txt", _reg_lines)
 	print(_reg_lines[_reg_lines.size() - 1])
@@ -705,7 +706,7 @@ func _reg_skills() -> void:
 
 # 崩溃回归：真人点手牌「突击」后 refresh() 重建手牌行。旧代码在 pressed 信号回调中途 free() 正在发信号的按钮（安卓 release 闪退）
 func _reg_ui_crash() -> void:
-	var bs = _new_battle("identity", 7)
+	var bs = _new_battle("identity", 13)
 	var tries := 0
 	var done := false
 	while tries < 3000 and not done:
@@ -719,6 +720,11 @@ func _reg_ui_crash() -> void:
 			me["used_attack"] = false
 			me["attack_count"] = 0
 			(me["hand"] as Array).append(sha)
+			if bs.candidates_for(me, sha).is_empty():
+				for q in bs.players:
+					if q != me and bool(q["alive"]):
+						q["dream_guard"] = false
+						q["equip"]["plus"] = {}
 			bs.refresh()
 			if bs.candidates_for(me, sha).is_empty():
 				(me["hand"] as Array).erase(sha)
@@ -2431,7 +2437,7 @@ func _reg_v30() -> void:
 	AudioT.set_v("voice_vol", old_vol)
 	AudioT.set_v("music_on", old_music_on)
 	_ok(AudioT.sfx_stream("hit") != null and AudioT.voice_stream("attack") == null, "V30-C9 音效文件可加载；语音未打包（返回空）")
-	_ok(DirAccess.dir_exists_absolute("res://assets/bgm") and ResourceLoader.exists("res://assets/bgm/home_carefree.mp3") and ResourceLoader.exists("res://assets/bgm/battle_volatile_reaction.mp3") and ResourceLoader.exists("res://assets/bgm/tense_hitman.mp3"), "V30-C9 三首 BGM 已打包进游戏资源")
+	_ok(DirAccess.dir_exists_absolute("res://assets/bgm") and ResourceLoader.exists("res://assets/bgm/home_carefree.ogg") and ResourceLoader.exists("res://assets/bgm/battle_volatile_reaction.ogg") and ResourceLoader.exists("res://assets/bgm/tense_hitman.ogg"), "V30-C9 三首 OGG BGM 已打包进游戏资源")
 	_ok(HelpText.bbcode().find("Kevin MacLeod") >= 0 and HelpText.bbcode().find("creativecommons.org/licenses/by/4.0") >= 0, "V30-C9 新手说明含 CC BY 4.0 音乐署名")
 	if main_ref.music != null:
 		main_ref.music.play_scene("battle")
@@ -2515,3 +2521,65 @@ func _reg_v30() -> void:
 	bs.toggle_settings_panel()
 	await _close_battle(bs)
 	MetaT.reset_for_test("user://meta_test.json")
+
+
+# ---------------- V0.33：看破反甲单目标锦囊 / 第二弹新角色与限定技 / 连破高伤播报 / 记牌器与自由点将 ----------------
+func _reg_v33() -> void:
+	# V33-1 看破【空巢·反甲】响应单目标锦囊（突然检查）时，可从弃牌堆获得该锦囊实体牌
+	var e = _clean_eng("duel", ["先手", "后手"])
+	var p0: Dictionary = e.players[0]
+	var p1: Dictionary = e.players[1]
+	var ck := _give(e, p0, "突然检查", "黑桃", 3)
+	_give(e, p0, "闪避", "方块", 5)
+	var kp_fanjia := {"name": "看破", "suit": "红桃", "point": 13, "nature": "", "yb": ["空巢", "反甲"]}
+	(p1["hand"] as Array).append(kp_fanjia)
+	await e.play_card(p0, ck, p1)
+	_ok((p1["hand"] as Array).has(ck) and not e.discard_pile.has(ck), "V33-1 看破【空巢·反甲】成功获得所响应的单目标锦囊「突然检查」")
+
+	# V33-2 新角色白石星奈（sena）：「星轨」观星+摸1，「裁决」弃1令对方交牌或受1点雷伤
+	e = _clean_eng("duel", ["先手", "后手"])
+	p0 = e.players[0]
+	p1 = e.players[1]
+	p0["char_name"] = "白石星奈"
+	e.add_skill(p0, "xinggui")
+	e.add_skill(p0, "caijue")
+	var deck_n0: int = (e.deck as Array).size()
+	await e.fire("phaseZhunbeiStart", {"name": "phase", "player": p0, "target": p0})
+	_ok((p0["hand"] as Array).size() == 1 and e.deck.size() == deck_n0 - 1, "V33-2 白石星奈「星轨」准备阶段卜算 2 并摸 1 张牌")
+	# 对方无手牌时裁决直接造成 1 点雷电伤害
+	var hp_b := int(p1["hp"])
+	await e.use_active_skill(p0, "caijue")
+	_ok(int(p1["hp"]) == hp_b - 1 and (p0["hand"] as Array).is_empty(), "V33-2 白石星奈「裁决」对无手牌目标造成 1 点雷电伤害")
+
+	# V33-3 新角色黑泽玲央（reo）：锁定技「剑心」摸牌与加伤、限定技「奥义·残月」回血摸牌与无限出杀
+	e = _clean_eng("duel", ["先手", "后手"], 4)
+	p0 = e.players[0]
+	p1 = e.players[1]
+	p0["char_name"] = "黑泽玲央"
+	p0["hp"] = 3
+	p1["hp"] = 4
+	e.add_skill(p0, "jianxin")
+	e.add_skill(p0, "canyue")
+	_ok(e.active_options(p0).size() == 1 and String(e.active_options(p0)[0]["sid"]) == "canyue", "V33-3 黑泽玲央受伤时可发动限定技「奥义·残月」")
+	await e.use_active_skill(p0, "canyue")
+	_ok(int(p0["hp"]) == 4 and (p0["hand"] as Array).size() == 2 and bool(p0.get("canyue_turn", false)) and e.has_unlimited_attack(p0), "V33-3 「奥义·残月」摸 2 回 1 且本回合突击无次数限制")
+	_ok(e.active_options(p0).is_empty() and bool(p0.get("limited_used_canyue", false)), "V33-3 限定技「奥义·残月」发动后本局不可再次发动")
+	p0["turn_used"] = {}
+	p0["hp"] = 2
+	_ok(e.active_options(p0).is_empty(), "V33-3 下回合即使受伤，已发动的限定技仍不可再发动")
+	var fx_events: Array = []
+	e.set_ui({"fx": func(k: String, d: Dictionary) -> void: fx_events.append(k)})
+	(p0["hand"] as Array).clear()
+	(p1["hand"] as Array).clear()
+	var sha1 := _give(e, p0, "突击", "黑桃", 8)
+	var sha2 := _give(e, p0, "突击", "红桃", 9)
+	await e.use_attack(p0, p1, sha1)
+	_ok(int(p1["hp"]) == 2 and (p0["hand"] as Array).size() == 2 and fx_events.has("heavy_hit"), "V33-3 「剑心」对高血少牌目标摸 1 张且伤害 +1（单次 2 伤触发 heavy_hit 播报）")
+	await e.use_attack(p0, p1, sha2)
+	_ok(int(p1["hp"]) == 1 and not bool(p0["used_attack"]), "V33-3 「剑心」加伤每回合限一次，且「奥义·残月」回合内连出第二张突击后仍可继续出突击")
+	var sha3 := _give(e, p0, "突击", "梅花", 10)
+	await e.use_attack(p0, p1, sha3)
+	_ok(not bool(p1["alive"]) and fx_events.has("kill_spree"), "V33-3 击杀目标时触发 kill_spree 连破横幅事件")
+
+	# V33-4 角色池扩充至 9 人（含第二弹 2 人且 CG 资源齐全）
+	_ok(Characters.LIST.size() == 9 and ResourceLoader.exists("res://assets/cg/sena.webp") and ResourceLoader.exists("res://assets/cg/reo.webp"), "V33-4 角色池共 9 名角色且新角色 CG 资源齐全")

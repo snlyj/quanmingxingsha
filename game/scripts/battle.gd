@@ -659,8 +659,8 @@ func build_table() -> void:
 	action_bar = HBoxContainer.new()
 	action_bar.alignment = BoxContainer.ALIGNMENT_CENTER
 	action_bar.add_theme_constant_override("separation", 18)
-	action_bar.position = Vector2(bar_cx - 340, 682)
-	action_bar.size = Vector2(680, 66)
+	action_bar.position = Vector2(bar_cx - 430, 682)
+	action_bar.size = Vector2(860, 66)
 	action_bar.visible = false
 	add_child(action_bar)
 	confirm_btn = _make_action_btn("确定", C_GOLD, Color(0.25, 0.16, 0.05))
@@ -674,6 +674,11 @@ func build_table() -> void:
 	recast_btn.pressed.connect(_on_recast_pressed)
 	recast_btn.visible = false
 	action_bar.add_child(recast_btn)
+	# V0.33：手气卡（对标手杀开局换牌，首轮未出牌前最多换 2 次）
+	luck_btn = _make_action_btn("手气卡×2", Color(0.95, 0.56, 0.72), C_WHITE)
+	luck_btn.pressed.connect(_on_luck_pressed)
+	luck_btn.visible = false
+	action_bar.add_child(luck_btn)
 	# 选将层
 	draft_layer = HBoxContainer.new()
 	draft_layer.position = Vector2(vw * 0.5 - 624, 262)
@@ -686,8 +691,8 @@ func build_table() -> void:
 	diff_layer = Control.new()
 	diff_layer.visible = false
 	add_child(diff_layer)
-	diff_layer.position = Vector2(vw * 0.5 - 300, 756)
-	diff_layer.size = Vector2(600, 56)
+	diff_layer.position = Vector2(vw * 0.5 - 460, 756)
+	diff_layer.size = Vector2(920, 56)
 	var dl := lbl("AI 难度", 24, C_PINK_DEEP, true)
 	dl.autowrap_mode = TextServer.AUTOWRAP_OFF
 	dl.position = Vector2(0, 8)
@@ -700,12 +705,23 @@ func build_table() -> void:
 		db.add_theme_font_override("font", font_bold)
 		db.add_theme_font_size_override("font_size", 24)
 		diff_layer.add_child(db)
-		db.position = Vector2(122 + di * 122, 0)
-		db.size = Vector2(110, 52)
+		db.position = Vector2(118 + di * 118, 0)
+		db.size = Vector2(108, 52)
 		var dv := di
 		db.pressed.connect(func() -> void: _on_difficulty(dv))
 		diff_btns.append(db)
 	refresh_diff_buttons()
+	# V0.33：选将支持「换一批」与「自由点将」（对标手杀换将卡/无名杀自由点将）
+	var rbtn := plain_btn("🔄 换一批", Color(1, 1, 1, 0.94), C_PINK_DEEP, 23)
+	rbtn.position = Vector2(500, 0)
+	rbtn.size = Vector2(170, 52)
+	rbtn.pressed.connect(_on_reshuffle_draft)
+	diff_layer.add_child(rbtn)
+	var fpbtn := plain_btn("★ 自由点将", C_GOLD, Color(0.24, 0.14, 0.05), 23)
+	fpbtn.position = Vector2(686, 0)
+	fpbtn.size = Vector2(190, 52)
+	fpbtn.pressed.connect(_open_free_pick)
+	diff_layer.add_child(fpbtn)
 	# 左下：自己的角色牌
 	var me_panel := Panel.new()
 	me_panel_ref = me_panel
@@ -1550,12 +1566,26 @@ func refresh() -> void:
 		gbtn.visible = game_mode == "identity" and bool(p["alive"]) and idt.begins_with("？")
 		gbtn.text = gm if gm != "" else "猜"
 		var info: Label = panel.get_node("Info")
-		# V0.25 距离徽标：攻击范围内白字，范围外置灰（对照无名杀距离提示）
+		# V0.25/V0.33 距离与可达性动态角标（随当前选中的牌实时提示：突击/顺手/断粮/逐近弃远）
 		if p["alive"]:
 			var dd := eff_dist(players[0], p)
-			var inr: bool = bool(players[0]["alive"]) and dd <= weapon_range(players[0])
-			info.text = "距 %d · %s" % [dd, "可攻击" if inr else "够不着"]
-			info.modulate = Color(1, 1, 1, 1) if inr else Color(0.72, 0.72, 0.78, 0.85)
+			var wr := weapon_range(players[0])
+			var inr: bool = bool(players[0]["alive"]) and dd <= wr
+			var tag_txt := "可攻击" if inr else "够不着(范围%d)" % wr
+			var tag_ok := inr
+			if not selected_card.is_empty():
+				var scn := String(selected_card.get("name", ""))
+				if scn == "悄悄借走" or scn == "断粮封锁":
+					tag_ok = dd <= 1
+					tag_txt = "距离1可达" if tag_ok else "需距离1"
+				elif scn == "逐近弃远":
+					tag_ok = true
+					tag_txt = "近距·获得1张" if dd <= 1 else "远距·弃置1张"
+				elif scn == "突击":
+					tag_ok = inr and not bool(p.get("dream_guard", false))
+					tag_txt = "星眠免疫" if bool(p.get("dream_guard", false)) else ("攻击可达" if inr else "距离不足")
+			info.text = "距 %d · %s" % [dd, tag_txt]
+			info.modulate = Color(1, 0.96, 0.78, 1) if (not selected_card.is_empty() and tag_ok) else (Color(1, 1, 1, 1) if tag_ok else Color(0.72, 0.72, 0.78, 0.85))
 		else:
 			info.text = "已阵亡 · %s" % idt
 			info.modulate = Color(1, 1, 1, 1)
@@ -2252,6 +2282,11 @@ func _update_action_bar() -> void:
 		var rc_ok: bool = skill_mode == "" and not spear_targeting and not muniu_targeting and not selected_card.is_empty() and eng != null and eng.can_recast(selected_card) and _hand_has(selected_card)
 		recast_btn.visible = rc_ok
 		recast_btn.disabled = not (rc_ok and interactive)
+	if luck_btn != null:
+		var lk_ok: bool = not tutorial and round_no <= 1 and luck_left > 0 and not players.is_empty() and not (players[0]["hand"] as Array).is_empty() and int(players[0].get("attack_count", 0)) == 0 and (players[0]["turn_used"] as Dictionary).is_empty()
+		luck_btn.visible = lk_ok
+		luck_btn.disabled = not (lk_ok and interactive)
+		luck_btn.text = "手气卡×%d" % luck_left
 	cancel_btn.disabled = not interactive or (selected_card.is_empty() and not targeting and skill_mode == "")
 	end_play_btn.disabled = not interactive
 
@@ -2721,7 +2756,7 @@ func unusable_reason(me: Dictionary, c: Dictionary) -> String:
 			if bool(me.get("drink_used", false)) or bool(me.get("drunk", false)):
 				return "「特饮」每回合只能使用一次"
 		"突击":
-			if bool(me.get("used_attack", false)) and equip_name(me, "weapon") != "魔导连弩":
+			if bool(me.get("used_attack", false)) and equip_name(me, "weapon") != "魔导连弩" and not bool(me.get("canyue_turn", false)):
 				return "本回合已经使用过一张「突击」了"
 			var has_t := false
 			for p in alive_players():
@@ -2930,12 +2965,16 @@ func _skill_entries() -> Array:
 			continue
 		var nm := String(def.get("name", sid))
 		if def.has("active"):
-			var st := "ready" if avail.has(sid) else ("used" if bool((me["turn_used"] as Dictionary).get(sid, false)) else "idle")
+			var is_lim := bool(def.get("limited", false))
+			var lim_used := is_lim and bool(me.get("limited_used_" + String(sid), false))
+			var st := "ready" if avail.has(sid) else ("used" if (lim_used or bool((me["turn_used"] as Dictionary).get(sid, false))) else "idle")
 			if st == "ready" and skill_mode == String(sid):
 				st = "sel"
-			var tx := "✦ " + nm if st != "used" else "✓ %s 已用" % nm
+			var pref := "★限定 " if is_lim else "✦ "
+			var tx := (pref + nm) if st != "used" else ("✓ %s 已发动" % nm if lim_used else "✓ %s 已用" % nm)
+			var bcol: Color = Color(0.88, 0.32, 0.28) if is_lim else C_PLATE
 			var sid_c := String(sid)
-			out.append({"key": "a:" + sid_c, "sid": sid_c, "kind": "active", "state": st, "text": tx, "color": C_PLATE, "cb": func() -> void: _on_skill_button(sid_c)})
+			out.append({"key": "a:" + sid_c, "sid": sid_c, "kind": "active", "state": st, "text": tx, "color": bcol, "cb": func() -> void: _on_skill_button(sid_c)})
 		else:
 			out.append({"key": "p:" + String(sid), "kind": "passive", "name": nm, "text": nm, "desc": String(texts.get(sid, "（被动技能，满足条件时自动触发或询问你是否发动）"))})
 	if not can_act:
@@ -3089,10 +3128,17 @@ func start_match(sim: bool) -> void:
 		match_players = 5
 		identities = ["主公", "忠臣", "反贼", "反贼", "内奸"]
 		identities.shuffle()
+	luck_left = 2
+	lord_pre_char = {}
 	var pool: Array = Characters.LIST.duplicate()
 	pool.shuffle()
-	var human_candidates: Array = [pool[0], pool[1], pool[2]]
-	var rest: Array = pool.slice(3)
+	if game_mode == "identity" and String(identities[0]) != "主公":
+		lord_pre_char = pool[0]
+	var cand_pool: Array = []
+	for c in pool:
+		if lord_pre_char.is_empty() or String(c["id"]) != String(lord_pre_char.get("id", "")):
+			cand_pool.append(c)
+	var human_candidates: Array = cand_pool.slice(0, mini(3, cand_pool.size()))
 	var human_char: Dictionary
 	if tutorial:
 		human_char = _char_by_name("花宫雏")
@@ -3100,10 +3146,19 @@ func start_match(sim: bool) -> void:
 		human_char = human_candidates[0]
 	else:
 		human_char = await ask_pick_character(human_candidates, String(identities[0]))
+	var rest: Array = []
+	for c in pool:
+		if String(c["id"]) != String(human_char["id"]) and (lord_pre_char.is_empty() or String(c["id"]) != String(lord_pre_char.get("id", ""))):
+			rest.append(c)
 	rest.shuffle()
 	var seat_chars: Array = [human_char]
-	for i in n - 1:
-		seat_chars.append(rest[i])
+	var r_idx := 0
+	for i in range(1, n):
+		if game_mode == "identity" and String(identities[i]) == "主公" and not lord_pre_char.is_empty():
+			seat_chars.append(lord_pre_char)
+		else:
+			seat_chars.append(rest[r_idx % rest.size()])
+			r_idx += 1
 	if tutorial:
 		seat_chars = [human_char, _char_by_name("柚木铃奈")]
 	var char_list: Array = []
@@ -3176,13 +3231,33 @@ func ask_pick_character(candidates: Array, my_identity: String) -> Dictionary:
 	if game_mode == "doudizhu":
 		draft_banner.text = "斗地主：开局叫分决定地主\n轮流叫 1~3 倍，价高者成为地主（先手、起手 5 张，带「飞扬」「跋扈」「地契」）；两名农民合力围攻地主。"
 	else:
-		draft_banner.text = "你的%s：【%s】\n%s" % [word, my_identity, String(goals.get(my_identity, ""))]
+		var lord_line := ""
+		if game_mode == "identity" and my_identity != "主公" and not lord_pre_char.is_empty():
+			lord_line = "　｜　主公将面：【%s】（%d体力）" % [String(lord_pre_char["name"]), int(lord_pre_char["hp"]) + 1]
+		draft_banner.text = "你的%s：【%s】%s\n%s" % [word, my_identity, lord_line, String(goals.get(my_identity, ""))]
 	draft_banner.visible = true
+	draft_my_identity = my_identity
 	for n in table_nodes:
 		(n as Control).visible = false
 	turn_label.text = "开局选将"
 	draft_layer.visible = true
 	diff_layer.visible = true
+	_populate_draft_cards(candidates, my_identity)
+	var picked: Variant = await decided
+	if free_pick_overlay != null and is_instance_valid(free_pick_overlay):
+		free_pick_overlay.visible = false
+	draft_layer.visible = false
+	diff_layer.visible = false
+	draft_banner.visible = false
+	for n in table_nodes:
+		(n as Control).visible = true
+	for ch in draft_layer.get_children():
+		draft_layer.remove_child(ch)
+		ch.queue_free()
+	return picked
+
+
+func _populate_draft_cards(candidates: Array, my_identity: String) -> void:
 	for ch in draft_layer.get_children():
 		draft_layer.remove_child(ch)
 		ch.queue_free()
@@ -3243,16 +3318,6 @@ func ask_pick_character(candidates: Array, my_identity: String) -> Dictionary:
 		var tin := create_tween().bind_node(b)
 		tin.tween_interval(0.09 * idx_now)
 		tin.tween_property(b, "modulate:a", 1.0, 0.28)
-	var picked: Variant = await decided
-	draft_layer.visible = false
-	diff_layer.visible = false
-	draft_banner.visible = false
-	for n in table_nodes:
-		(n as Control).visible = true
-	for ch in draft_layer.get_children():
-		draft_layer.remove_child(ch)
-		ch.queue_free()
-	return picked
 
 
 # ---------------- 对局主循环 ----------------
@@ -4008,7 +4073,29 @@ func counter_text() -> String:
 					seen[String(eq["name"])] = int(seen.get(String(eq["name"]), 0)) + 1
 			for jc in p["judge"]:
 				seen[String(jc["name"])] = int(seen.get(String(jc["name"]), 0)) + 1
-	var lines: Array = ["牌堆剩余 %d 张 · 弃牌堆 %d 张" % [eng.deck.size(), eng.discard_pile.size()], "以下按已出现的牌推算未见张数：", ""]
+	# 统计关键牌剩余
+	var key_names := ["突击", "闪避", "补给", "特饮", "看破", "单挑", "突然检查", "悄悄借走", "全场乱斗", "弹幕齐射"]
+	var key_parts: Array = []
+	for kn in key_names:
+		var total_n := int((CardDefs.DEFS.get(kn, {}) as Dictionary).get("n", 0))
+		var left_n := maxi(0, total_n - int(seen.get(kn, 0)))
+		key_parts.append("%s ×%d" % [kn, left_n])
+	var lines: Array = [
+		"牌堆剩余 %d 张 · 弃牌堆 %d 张" % [eng.deck.size(), eng.discard_pile.size()],
+		"",
+		"【关键牌剩余速查】",
+		"  ".join(PackedStringArray(key_parts)),
+	]
+	if not eng.discard_pile.is_empty():
+		var rec_cards: Array = []
+		var dsz: int = (eng.discard_pile as Array).size()
+		for i in range(dsz - 1, maxi(-1, dsz - 13), -1):
+			rec_cards.append(card_text(eng.discard_pile[i]))
+		lines.append("")
+		lines.append("【最近弃牌堆明细（最新在前，共 %d 张）】" % dsz)
+		lines.append("  ".join(PackedStringArray(rec_cards)))
+	lines.append("")
+	lines.append("以下按已出现的牌推算未见张数：")
 	var kind_order := ["基本牌", "锦囊牌", "延时锦囊", "武器", "防具", "饰品"]
 	for kind in kind_order:
 		var parts: Array = []
@@ -4345,6 +4432,8 @@ const CHAR_LINES := {
 	"shizuha": {"attack": ["呜…茶要凉了啦", "别打扰我睡觉…"], "hurt": ["好困…被打醒了…", "呜…好痛…"], "dying": "星星…好远啊…", "death": "呼啊…睡着了…", "skill": "呼啊…我去看星星了哦", "heal": "嗯…热茶暖暖的…"},
 	"hibiki": {"attack": ["听好了，练习曲开始！", "这一击，用琴音！"], "hurt": ["笨、笨蛋，轻一点…", "呜…琴弦要断了…"], "dying": "琴弦…断了…", "death": "演奏…结束了…", "skill": "吵死了，都安静！", "heal": "哼…还算你识相"},
 	"koume": {"attack": ["请恕我失礼了", "这、这一杯请您收下！"], "hurt": ["呜…围裙要脏了…", "对不起，我没躲开…"], "dying": "茶…还没泡好…", "death": "今天…打烊了…", "skill": "请让我来招待您吧", "heal": "感谢您的温柔"},
+	"sena": {"attack": ["按学生会章程，予以肃清！", "这一步，也在星轨推算之中。"], "hurt": ["唔…推算偏了一分吗…", "学生会长绝不会退缩！"], "dying": "星轨…还没有走到尽头…", "death": "会长室的灯…先熄了…", "skill": "星辰轨迹，尽在掌握！", "heal": "重整态势，继续推演"},
+	"reo": {"attack": ["看剑！一刀两断！", "我的竹刀，绝不迟疑！"], "hurt": ["好刀法…再战！", "这点伤，连热身都不算！"], "dying": "剑道…还没有登顶…", "death": "胜负已分…佩服…", "skill": "秘剑·残月——斩！", "heal": "气息调匀，剑锋重燃！"},
 }
 
 
@@ -4868,6 +4957,18 @@ func _eng_fx(kind: String, data: Dictionary) -> void:
 			fx_float(seat, "传导！", Color(1.0, 0.52, 0.16), 44, 60.0)
 			fx_target_ring(seat, Color(1.0, 0.52, 0.16))
 			play_sfx("hit")
+		"heavy_hit":
+			var hnum := int(data.get("num", 2))
+			var htitle := "万夫莫敌 · 无双乱舞！" if hnum >= 3 else "雷霆万钧 · 癫狂屠戮！"
+			fx_spree_banner(htitle, "单次造成 %d 点高额伤害" % hnum, false)
+			fx_screen_shake()
+		"kill_spree":
+			var kcnt := int(data.get("kills", 1))
+			var knm := String(data.get("name", ""))
+			var ktitles := {1: "一破 · 卧龙出山", 2: "双连 · 一战成名", 3: "三连 · 举世皆惊"}
+			var ktitle := String(ktitles.get(kcnt, "四连 · 天下无双"))
+			fx_spree_banner(ktitle, "%s 已累计击杀 %d 人" % [knm, kcnt], true)
+			fx_screen_shake()
 
 
 # ---------------- 濒死救援特写 ----------------
@@ -5717,6 +5818,10 @@ func _skill_ui_spec(sid: String) -> Dictionary:
 			return {"card": "red", "card_role": "当作「突击」", "targets": qs}
 		"shifeng":
 			return {"card": "any", "card_role": "交给对方", "targets": others_alive}
+		"caijue":
+			return {"card": "any", "card_role": "作为代价弃置", "targets": others_alive}
+		"canyue":
+			return {"card": "none", "targets": null}
 	return {"card": "none", "targets": null}
 
 
@@ -5977,3 +6082,157 @@ func _on_recast_pressed() -> void:
 	interactive = true
 	maybe_restore_hint()
 	refresh()
+
+
+# ================= V0.33 手杀风连破/高伤横幅、开局手气卡、换将与自由点将 =================
+var luck_btn: Button = null
+var luck_left := 2
+var lord_pre_char: Dictionary = {}
+var draft_my_identity := "主公"
+var free_pick_overlay: Control = null
+
+
+func fx_spree_banner(title_text: String, sub_text: String, is_kill: bool) -> void:
+	if fx_root == null or fast or auto_all:
+		return
+	var box := PanelContainer.new()
+	box.mouse_filter = MOUSE_FILTER_IGNORE
+	var bg_col := Color(0.52, 0.08, 0.16, 0.94) if is_kill else Color(0.45, 0.18, 0.06, 0.94)
+	var bd_col := Color(1.0, 0.82, 0.32) if is_kill else Color(1.0, 0.64, 0.22)
+	box.add_theme_stylebox_override("panel", style(bg_col, 24, bd_col, 4, true))
+	var vb := VBoxContainer.new()
+	vb.mouse_filter = MOUSE_FILTER_IGNORE
+	vb.alignment = BoxContainer.ALIGNMENT_CENTER
+	vb.add_theme_constant_override("separation", 2)
+	var tl := lbl(title_text, 44, Color(1.0, 0.94, 0.72), true, HORIZONTAL_ALIGNMENT_CENTER)
+	tl.add_theme_constant_override("outline_size", 8)
+	tl.add_theme_color_override("font_outline_color", Color(0.22, 0.04, 0.08, 0.95))
+	vb.add_child(tl)
+	var sl := lbl(sub_text, 22, Color(1.0, 0.92, 0.88), false, HORIZONTAL_ALIGNMENT_CENTER)
+	vb.add_child(sl)
+	box.add_child(vb)
+	box.size = Vector2(620, 108)
+	box.position = Vector2(vw * 0.5 - 310, 128 if is_kill else 242)
+	box.pivot_offset = box.size * 0.5
+	box.scale = Vector2(0.45, 0.45)
+	box.modulate.a = 0.0
+	fx_root.add_child(box)
+	var tw := create_tween().bind_node(box)
+	tw.set_parallel(true)
+	tw.tween_property(box, "scale", Vector2.ONE, 0.24).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	tw.tween_property(box, "modulate:a", 1.0, 0.16)
+	tw.chain().tween_interval(1.05)
+	tw.chain().tween_property(box, "modulate:a", 0.0, 0.30)
+	tw.chain().tween_callback(func() -> void:
+		if is_instance_valid(box):
+			box.queue_free())
+
+
+func _on_luck_pressed() -> void:
+	if not interactive or asking or turn_seat != 0 or game_over or luck_left <= 0 or eng == null or players.is_empty():
+		return
+	var me: Dictionary = players[0]
+	var hand: Array = me["hand"]
+	if hand.is_empty():
+		return
+	cancel_targeting()
+	luck_left -= 1
+	var cnt := hand.size()
+	for c in hand.duplicate():
+		hand.erase(c)
+		eng.deck.insert(0, c)
+	eng.deck.shuffle()
+	eng.draw_cards(me, cnt)
+	log_msg("「手气卡」：你更换了 %d 张起手牌（本局剩余 %d 次）。" % [cnt, luck_left])
+	show_hint("已使用手气卡重新摸取 %d 张手牌（剩余 %d 次）" % [cnt, luck_left])
+	refresh()
+
+
+func _on_reshuffle_draft() -> void:
+	if draft_layer == null or not draft_layer.visible:
+		return
+	var pool: Array = []
+	for c in Characters.LIST:
+		if lord_pre_char.is_empty() or String(c["id"]) != String(lord_pre_char.get("id", "")):
+			pool.append(c)
+	pool.shuffle()
+	play_sfx("card")
+	_populate_draft_cards(pool.slice(0, mini(3, pool.size())), draft_my_identity)
+
+
+func _open_free_pick() -> void:
+	if draft_layer == null or not draft_layer.visible:
+		return
+	if free_pick_overlay != null and is_instance_valid(free_pick_overlay):
+		free_pick_overlay.queue_free()
+	var ov := Control.new()
+	ov.name = "FreePickOverlay"
+	ov.set_anchors_preset(Control.PRESET_FULL_RECT)
+	add_child(ov)
+	free_pick_overlay = ov
+	var dim := ColorRect.new()
+	dim.color = Color(0.08, 0.04, 0.12, 0.72)
+	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_extend_cover(dim, dim.color)
+	ov.add_child(dim)
+	var pc := PanelContainer.new()
+	pc.position = Vector2(vw * 0.5 - 760, 76)
+	pc.size = Vector2(1520, 920)
+	pc.add_theme_stylebox_override("panel", style(Color(1.0, 0.97, 0.95, 0.98), 28, C_GOLD, 4, true))
+	ov.add_child(pc)
+	var vb := VBoxContainer.new()
+	vb.add_theme_constant_override("separation", 14)
+	pc.add_child(vb)
+	var top := HBoxContainer.new()
+	var ttl := lbl("★ 自由点将（点击任意角色立即出战）", 36, C_PINK_DEEP, true)
+	ttl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	top.add_child(ttl)
+	var close_b := plain_btn("关闭", Color(1, 1, 1, 0.95), C_PINK_DEEP, 26)
+	close_b.custom_minimum_size = Vector2(140, 54)
+	close_b.pressed.connect(func() -> void:
+		if is_instance_valid(ov):
+			ov.queue_free())
+	top.add_child(close_b)
+	vb.add_child(top)
+	var sc := ScrollContainer.new()
+	sc.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	sc.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	vb.add_child(sc)
+	var grid := GridContainer.new()
+	grid.columns = 5
+	grid.add_theme_constant_override("h_separation", 18)
+	grid.add_theme_constant_override("v_separation", 18)
+	sc.add_child(grid)
+	var hp_bonus := 1 if draft_my_identity == "主公" else 0
+	for c in Characters.LIST:
+		if not lord_pre_char.is_empty() and String(c["id"]) == String(lord_pre_char.get("id", "")):
+			continue
+		var cb := Button.new()
+		cb.focus_mode = Control.FOCUS_NONE
+		cb.custom_minimum_size = Vector2(276, 360)
+		cb.add_theme_stylebox_override("normal", style(Color(1, 1, 1, 0.95), 20, C_GOLD, 2, true))
+		cb.add_theme_stylebox_override("hover", style(Color(1, 0.96, 0.98, 1.0), 20, C_PINK_DEEP, 3, true))
+		var cvb := VBoxContainer.new()
+		cvb.mouse_filter = MOUSE_FILTER_IGNORE
+		cvb.set_anchors_preset(Control.PRESET_FULL_RECT)
+		cvb.offset_left = 10
+		cvb.offset_right = -10
+		cvb.offset_top = 8
+		var cdisp: Dictionary = (c as Dictionary).duplicate()
+		cdisp["hp"] = int(c["hp"]) + hp_bonus
+		var ccard := Art.cg_card(cdisp, Vector2(252, 260), {"zoom": 0.62, "face_y": 0.32, "fs": 24})
+		cvb.add_child(ccard)
+		var sks: Array = []
+		for s in c["skills"]:
+			sks.append("【%s】" % String(s["name"]))
+		var slb := lbl(" ".join(PackedStringArray(sks)), 18, C_INK, true, HORIZONTAL_ALIGNMENT_CENTER)
+		slb.mouse_filter = MOUSE_FILTER_IGNORE
+		cvb.add_child(slb)
+		cb.add_child(cvb)
+		var cref: Dictionary = c
+		cb.set_meta("intro", IntroPop.char_spec(c))
+		cb.pressed.connect(func() -> void:
+			if is_instance_valid(ov):
+				ov.queue_free()
+			_on_decided(cref))
+		grid.add_child(cb)

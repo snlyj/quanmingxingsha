@@ -20,6 +20,10 @@ func register_all(eng) -> void:
 	eng.register_skill("nuhe", {"name": "怒喝", "timings": {"attackDodged": {"who": "source", "filter": Callable(self, "_nuhe_filter"), "ai_decide": Callable(self, "_nuhe_ai"), "content": Callable(self, "_nuhe_content")}}})
 	eng.register_skill("shifeng", {"name": "侍奉", "active": {"filter": Callable(self, "_shifeng_filter"), "ai_use": Callable(self, "_shifeng_aiuse"), "content": Callable(self, "_shifeng_content")}})
 	eng.register_skill("maobu", {"name": "猫步", "timings": {"useCardBegin": {"who": "target", "priority": 10, "filter": Callable(self, "_maobu_filter"), "ai_decide": Callable(self, "_maobu_ai"), "content": Callable(self, "_maobu_content")}}})
+	eng.register_skill("xinggui", {"name": "星轨", "timings": {"phaseZhunbeiStart": {"who": "player", "content": Callable(self, "_xinggui_content")}}})
+	eng.register_skill("caijue", {"name": "裁决", "active": {"filter": Callable(self, "_caijue_filter"), "ai_use": Callable(self, "_caijue_aiuse"), "content": Callable(self, "_caijue_content")}})
+	eng.register_skill("jianxin", {"name": "剑心", "timings": {"useCardBegin": {"who": "source", "forced": true, "priority": 5, "filter": Callable(self, "_jianxin_filter"), "content": Callable(self, "_jianxin_content")}}})
+	eng.register_skill("canyue", {"name": "奥义·残月", "limited": true, "active": {"filter": Callable(self, "_canyue_filter"), "ai_use": Callable(self, "_canyue_aiuse"), "content": Callable(self, "_canyue_content")}})
 
 
 # ---------- 通用小工具 ----------
@@ -531,3 +535,118 @@ func _weakest(eng, p, cands) -> Dictionary:
 			bh = int(t["hp"])
 			best = t
 	return best
+
+
+# ---------- 白石星奈 ----------
+func _xinggui_content(eng, ctx, p) -> void:
+	await eng.do_guanxing(p, 2)
+	eng.draw_cards(p, 1)
+	eng.log_msg("「星轨」：%s 观星整理牌堆顶，并摸 1 张牌。" % eng.pname(p))
+
+
+func _caijue_filter(eng, p) -> bool:
+	if (p["hand"] as Array).is_empty():
+		return false
+	return _others_exist_p(eng, p)
+
+
+func _caijue_aiuse(eng, p) -> bool:
+	var has_foe := false
+	for t in eng.players:
+		if t != p and t["alive"] and eng.ai_is_enemy(p, t):
+			has_foe = true
+			if int(t["hp"]) <= 1 or (t["hand"] as Array).is_empty():
+				return true
+	return has_foe and (p["hand"] as Array).size() >= 2
+
+
+func _caijue_target(eng, p, cands) -> Dictionary:
+	var foes: Array = []
+	for t in cands:
+		if eng.ai_is_enemy(p, t):
+			foes.append(t)
+	return _weakest(eng, p, foes if not foes.is_empty() else cands)
+
+
+func _caijue_content(eng, p) -> void:
+	var cost: Dictionary = await eng.pick_card(p, {"prompt": "「裁决」：弃置 1 张手牌作为代价", "ai": Callable(self, "_worst_card")})
+	if cost.is_empty():
+		return
+	eng.discard_from_hand(p, cost)
+	var cands: Array = []
+	for t in eng.players:
+		if t != p and t["alive"]:
+			cands.append(t)
+	var tgt: Dictionary = await eng.pick_target(p, cands, "「裁决」：选择一名角色接受裁决", Callable(self, "_caijue_target"))
+	if tgt.is_empty():
+		return
+	eng.observe_hostile(p, tgt)
+	if (tgt["hand"] as Array).is_empty():
+		eng.log_msg("「裁决」：%s 没有手牌，受到 %s 造成的 1 点雷电伤害！" % [eng.pname(tgt), eng.pname(p)])
+		await eng.damage(p, tgt, 1, "裁决", "雷")
+		return
+	var opts: Array = [
+		{"label": "交给 %s 1 张手牌" % eng.pname(p), "value": "give"},
+		{"label": "受到 1 点雷电伤害", "value": "dmg"},
+	]
+	var ai_v := "give" if (int(tgt["hp"]) <= 2 or (tgt["hand"] as Array).size() >= 3) else "dmg"
+	var choice := String(await eng.pick_option(tgt, opts, "%s 发动「裁决」：请选择一项" % eng.pname(p), ai_v))
+	if choice == "give" and not (tgt["hand"] as Array).is_empty():
+		var gc: Dictionary = await eng.pick_card(tgt, {"prompt": "「裁决」：选择 1 张手牌交给 %s" % eng.pname(p), "ai": Callable(self, "_worst_card")})
+		if gc.is_empty() and not (tgt["hand"] as Array).is_empty():
+			gc = (tgt["hand"] as Array)[0]
+		if not gc.is_empty():
+			(tgt["hand"] as Array).erase(gc)
+			eng.gain_card(p, gc)
+			eng.changed()
+			eng.log_msg("「裁决」：%s 将 1 张手牌交给 %s。" % [eng.pname(tgt), eng.pname(p)])
+			return
+	eng.log_msg("「裁决」：%s 选择承受 1 点雷电伤害！" % eng.pname(tgt))
+	await eng.damage(p, tgt, 1, "裁决", "雷")
+
+
+# ---------- 黑泽玲央 ----------
+func _jianxin_filter(eng, ctx, p) -> bool:
+	var card: Dictionary = ctx.get("card", {})
+	var tgt: Dictionary = ctx.get("target", {})
+	if card.is_empty() or String(card.get("name", "")) != "突击" or tgt.is_empty() or not bool(tgt.get("alive", false)):
+		return false
+	var c_draw := (tgt["hand"] as Array).size() <= int(p["hp"])
+	var c_dmg := int(tgt["hp"]) >= int(p["hp"]) and not bool(p.get("jianxin_dmg_turn", false))
+	return c_draw or c_dmg
+
+
+func _jianxin_content(eng, ctx, p) -> void:
+	var tgt: Dictionary = ctx["target"]
+	if (tgt["hand"] as Array).size() <= int(p["hp"]):
+		eng.draw_cards(p, 1)
+		eng.log_msg("「剑心」：%s 手牌数不大于 %s 的体力，%s 摸 1 张牌。" % [eng.pname(tgt), eng.pname(p), eng.pname(p)])
+	if int(tgt["hp"]) >= int(p["hp"]) and not bool(p.get("jianxin_dmg_turn", false)):
+		p["jianxin_dmg_turn"] = true
+		ctx["dmg_bonus"] = int(ctx.get("dmg_bonus", 0)) + 1
+		eng.log_msg("「剑心」：%s 体力不小于 %s，此「突击」伤害 +1！" % [eng.pname(tgt), eng.pname(p)])
+
+
+func _canyue_filter(eng, p) -> bool:
+	if bool(p.get("limited_used_canyue", false)):
+		return false
+	return int(p["hp"]) < int(p["max_hp"])
+
+
+func _canyue_aiuse(eng, p) -> bool:
+	if int(p["hp"]) <= 2:
+		return true
+	var sha_cnt := 0
+	for c in p["hand"]:
+		if String(c["name"]) == "突击":
+			sha_cnt += 1
+	return sha_cnt >= 2 and not eng.ai_pick_target(p, true).is_empty()
+
+
+func _canyue_content(eng, p) -> void:
+	p["limited_used_canyue"] = true
+	p["canyue_turn"] = true
+	p["used_attack"] = false
+	eng.draw_cards(p, 2)
+	eng.heal(p, 1, p)
+	eng.log_msg("★限定技「奥义·残月」：%s 摸 2 张牌、回复 1 点体力，本回合使用「突击」无次数限制！" % eng.pname(p))

@@ -588,7 +588,7 @@ func show_home() -> void:
 	theme_row.add_child(b_theme)
 	vb.add_child(theme_row)
 
-	var foot := lbl("单机版 · 身份场 / 斗地主 / 单挑 · 全量 197 张牌（斗地主 203 张）· 当前角色包：《星樱坂学园》7 人 · V%s" % String(ProjectSettings.get_setting("application/config/version", "")), 26, C_WHITE, false, HORIZONTAL_ALIGNMENT_CENTER)
+	var foot := lbl("单机版 · 身份场 / 斗地主 / 单挑 · 全量 197 张牌（斗地主 203 张）· 角色池：《星樱坂学园》第一、二弹共 9 人 · V%s" % String(ProjectSettings.get_setting("application/config/version", "")), 26, C_WHITE, false, HORIZONTAL_ALIGNMENT_CENTER)
 	# V0.24：页脚原为浅灰字直接压在背景图上，看不清；改白字加深色描边
 	foot.add_theme_color_override("font_outline_color", Color(0.30, 0.10, 0.22, 0.85))
 	foot.add_theme_constant_override("outline_size", 8)

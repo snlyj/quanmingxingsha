@@ -4,9 +4,9 @@ extends Node
 # 场景背景音乐：主页 / 对局 / 紧张残局。
 # 曲目均来自 Kevin MacLeod (incompetech.com)，CC BY 4.0；署名见 data/help.gd。
 const TRACKS := {
-	"home": "res://assets/bgm/home_carefree.mp3",
-	"battle": "res://assets/bgm/battle_volatile_reaction.mp3",
-	"tense": "res://assets/bgm/tense_hitman.mp3",
+	"home": "res://assets/bgm/home_carefree.ogg",
+	"battle": "res://assets/bgm/battle_volatile_reaction.ogg",
+	"tense": "res://assets/bgm/tense_hitman.ogg",
 }
 const FADE_SEC := 0.75
 const FADE_DB := -34.0
@@ -109,4 +109,6 @@ func _stream_for(scene: String) -> AudioStream:
 	var stream: AudioStream = load(path)
 	if stream is AudioStreamMP3:
 		(stream as AudioStreamMP3).loop = true
+	elif stream is AudioStreamOggVorbis:
+		(stream as AudioStreamOggVorbis).loop = true
 	return stream
