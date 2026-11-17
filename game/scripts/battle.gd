@@ -32,8 +32,6 @@ var font_bold: Font
 var go_home: Callable
 
 var players: Array = []
-var deck: Array = []
-var discard_pile: Array = []
 var eng = null # 新引擎实例（engine.gd）
 var me_panel_ref: Control = null
 var fx_root: Control = null
@@ -57,14 +55,11 @@ var round_no: int = 1
 var game_over: bool = false
 var auto_all: bool = false # 全AI模拟模式（自测用）
 var fast: bool = false
-var attacks_used: int = 0
-var turn_flags: Dictionary = {}
 var interactive: bool = false # 是否处于真人出牌阶段
 var pending_target_for: Dictionary = {} # {card=..., kind="attack"} 等待点选目标
 var rng := RandomNumberGenerator.new()
 
 # UI 节点
-var root_vb: VBoxContainer
 var turn_label: Label
 var deck_label: Label
 var disc_label: Label
@@ -80,7 +75,6 @@ var info_title: Label
 var info_text: RichTextLabel
 var me_hp_label: Label
 var me_chips: HBoxContainer
-var seats_row: HBoxContainer
 var seat_panels: Array = []
 var log_label: Label
 var prompt_label: Label
@@ -90,7 +84,6 @@ var player_info: Label
 var player_portrait: TextureRect
 var skill_btns: VBoxContainer
 var end_play_btn: Button
-var center_area: VBoxContainer
 var log_lines: Array = []
 
 const SUITS := ["红桃", "方块", "梅花", "黑桃"]
@@ -328,13 +321,11 @@ func show_setup() -> void:
 	vb.add_child(row)
 
 
-
 # 新增 UI 成员（V0.3 桌面布局）
 var phase_label: Label
 var announce_label: Label
 var prompt_panel: PanelContainer
 var draft_layer: HBoxContainer
-var player_equip_label: Label
 var log_panel: PanelContainer
 var in_play_phase: bool = false
 var selected_card: Dictionary = {}
@@ -366,7 +357,6 @@ var burst_node: Control = null
 var burst_tween: Tween = null
 var settlement_layer: Control = null
 var target_candidates: Array = []
-var announce_tween: Tween
 var draft_banner: Label
 var seat_table_label: Label
 var seat_table_panel: PanelContainer
@@ -379,9 +369,6 @@ var showcase_plate: Panel
 var showcase_top: Label
 var showcase_name: Label
 var showcase_kind: Label
-var showcase_tween: Tween
-var hand_scroll_ref: ScrollContainer
-var hand_drag_px: float = 0.0
 var table_nodes: Array = []
 # ---- V0.25 出牌手感 ----
 const CARD_W := 172.0
@@ -415,18 +402,6 @@ var drag_press := {}  # {wrap, pos, offset}
 var drag_hover_seat := -1
 var drag_line: Line2D
 var drag_end_ms := 0
-
-
-func announce(text: String) -> void:
-	if announce_label == null:
-		return
-	announce_label.text = text
-	if announce_tween and announce_tween.is_valid():
-		announce_tween.kill()
-	announce_label.modulate = Color(1, 1, 1, 1)
-	announce_tween = create_tween()
-	announce_tween.tween_interval(1.5)
-	announce_tween.tween_property(announce_label, "modulate:a", 0.0, 0.8)
 
 
 func show_played_card(card: Dictionary, owner: String, from_seat: int = -1) -> void:
@@ -522,6 +497,7 @@ func build_table() -> void:
 	add_child(turn_label)
 	var pill_defs := [[vw - 520, 156], [vw - 352, 140], [vw - 200, 152]]
 	var pill_lbls: Array = []
+	var pill_init := ["牌堆 --", "弃牌 0", "选将中"]  # 开局前（选将/叫分）不留空白胶囊
 	for pd in pill_defs:
 		var pill := Panel.new()
 		pill.position = Vector2(pd[0], 24)
@@ -529,7 +505,7 @@ func build_table() -> void:
 		pill.mouse_filter = MOUSE_FILTER_IGNORE
 		pill.add_theme_stylebox_override("panel", style(Color(1, 1, 1, 0.85), 26, Color(1, 1, 1, 0.7), 1, true))
 		add_child(pill)
-		var pl := lbl("", 23, C_INK, true, HORIZONTAL_ALIGNMENT_CENTER)
+		var pl := lbl(String(pill_init[pill_lbls.size()]), 23, C_INK, true, HORIZONTAL_ALIGNMENT_CENTER)
 		pl.position = Vector2(pd[0], 36)
 		pl.size = Vector2(pd[1], 32)
 		pl.autowrap_mode = TextServer.AUTOWRAP_OFF
@@ -1425,8 +1401,6 @@ func _build_guess_popup() -> void:
 	add_child(guess_popup)
 
 
-
-# ---------------- 基础工具 ----------------
 # ---------------- 基础工具 ----------------
 
 func card_text(c: Dictionary) -> String:
@@ -1436,49 +1410,6 @@ func card_text(c: Dictionary) -> String:
 
 func is_red(c: Dictionary) -> bool:
 	return RED_SUITS.has(c["suit"])
-
-
-func find_card(p: Dictionary, card_name: String) -> Dictionary:
-	for c in p["hand"]:
-		if c["name"] == card_name:
-			return c
-	return {}
-
-
-func find_cards(p: Dictionary, card_name: String) -> Array:
-	var out: Array = []
-	for c in p["hand"]:
-		if c["name"] == card_name:
-			out.append(c)
-	return out
-
-
-func has_card(p: Dictionary, card_name: String) -> bool:
-	return not find_card(p, card_name).is_empty()
-
-
-func give_card(p: Dictionary, c: Dictionary) -> void:
-	p["hand"].append(c)
-
-
-func remove_card(p: Dictionary, c: Dictionary) -> void:
-	p["hand"].erase(c)
-	discard_pile.append(c)
-
-
-func draw_cards(p: Dictionary, n: int) -> Array:
-	var got: Array = []
-	for i in n:
-		if deck.is_empty():
-			deck = discard_pile.duplicate()
-			discard_pile.clear()
-			deck.shuffle()
-			if deck.is_empty():
-				break
-		var c: Dictionary = deck.pop_back()
-		p["hand"].append(c)
-		got.append(c)
-	return got
 
 
 func alive_players() -> Array:
@@ -1500,7 +1431,6 @@ func dist_between(a: int, b: int) -> int:
 	var n := alive_seats.size()
 	var d := absi(ia - ib)
 	return mini(d, n - d)
-
 
 
 const DELAYED_NAMES := ["落雷", "沉迷游戏", "断粮封锁", "草木疑兵", "浮雷"]
@@ -1550,19 +1480,6 @@ func all_target_cards(tgt: Dictionary) -> Array:
 	return out
 
 
-func remove_from_zone(tgt: Dictionary, entry: Dictionary, to_discard: bool = true) -> void:
-	var zone := String(entry["zone"])
-	var c: Dictionary = entry["card"]
-	if zone == "hand":
-		tgt["hand"].erase(c)
-	elif zone == "delayed":
-		tgt["judge"].erase(c)
-	else:
-		tgt["equip"][zone] = {}
-	if to_discard:
-		discard_pile.append(c)
-
-
 func pname(p: Dictionary) -> String:
 	if int(p["seat"]) == 0:
 		return "你（%s）" % p["char"]["name"]
@@ -1575,15 +1492,6 @@ func identity_visible(p: Dictionary) -> String:
 	if int(p["seat"]) == 0 or p["identity"] == "主公" or not p["alive"]:
 		return p["identity"]
 	return "？？"
-
-
-func camp_of(identity: String) -> String:
-	match identity:
-		"主公", "忠臣":
-			return "主公阵营"
-		"反贼":
-			return "反贼阵营"
-	return "内奸"
 
 
 # ---------------- 界面刷新 ----------------
@@ -1611,36 +1519,6 @@ func _seat_cg(pn: Control, tr: TextureRect, ch: Dictionary, aspect: float, plate
 		pn.move_child(pl, idx)
 
 
-func equip_parts(p: Dictionary) -> Array:
-	var parts: Array = []
-	var w := equip_name(p, "weapon")
-	if w != "":
-		parts.append("武·%s" % w)
-	var a := equip_name(p, "armor")
-	if a != "":
-		parts.append("防·%s" % a)
-	if equip_name(p, "minus") != "":
-		parts.append("靴·疾行")
-	if equip_name(p, "plus") != "":
-		parts.append("披·远行")
-	var tq := equip_name(p, "treasure")
-	if tq != "":
-		if tq == "木牛流马":
-			parts.append("宝·木牛（粮%d）" % ((p["equip"]["treasure"] as Dictionary).get("stored", []) as Array).size())
-		else:
-			parts.append("宝·%s" % tq)
-	var dnames: Array = []
-	for c in p["judge"]:
-		dnames.append(String(c["name"]))
-	if dnames.size() > 0:
-		parts.append("判定·%s" % "/".join(dnames))
-	return parts
-
-
-func equip_summary(p: Dictionary) -> String:
-	return "  ".join(equip_parts(p))
-
-
 # V0.24 闪退修复（交接说明「安卓 15 选突击目标时应用自行关闭」的根因）：
 # 旧版 refresh() 重建手牌行/技能按钮时对旧节点直接调用 free()。点击手牌「突击」进入选目标、点技能按钮、点装备牌时，
 # 按钮的 pressed 信号处理函数会同步调用 refresh()，于是正在发射信号的按钮（及其父节点）在信号回调中途被立即释放，
@@ -1653,10 +1531,6 @@ func refresh() -> void:
 	if eng != null:
 		deck_label.text = "牌堆 %d" % eng.deck.size()
 		disc_label.text = "弃牌 %d" % eng.discard_pile.size()
-		round_label.text = "第 %d 轮" % round_no
-	else:
-		deck_label.text = "牌堆 %d" % deck.size()
-		disc_label.text = "弃牌 %d" % discard_pile.size()
 		round_label.text = "第 %d 轮" % round_no
 	if turn_seat >= 0 and turn_seat < players.size():
 		turn_label.text = "当前回合：%s" % pname(players[turn_seat])
@@ -3170,24 +3044,6 @@ func ask(prompt: String, options: Array, on_built: Callable = Callable(), mode: 
 	return result
 
 
-func ask_choose_card(p: Dictionary, prompt: String, filter_names: Array = [], red_only: bool = false, black_only: bool = false, allow_cancel: bool = true) -> Dictionary:
-	var options: Array = []
-	for c in p["hand"]:
-		if not filter_names.is_empty() and not filter_names.has(c["name"]):
-			continue
-		if red_only and not is_red(c):
-			continue
-		if black_only and is_red(c):
-			continue
-		options.append({"label": card_text(c), "value": c})
-	if options.is_empty():
-		return {}
-	if allow_cancel:
-		options.append({"label": "取消", "value": {}})
-	var picked: Variant = await ask(prompt, options)
-	return picked if picked is Dictionary else {}
-
-
 func ask_choose_target(prompt: String, candidates: Array, allow_cancel: bool = true) -> int:
 	var options: Array = []
 	for p in candidates:
@@ -3203,48 +3059,6 @@ func ask_choose_target(prompt: String, candidates: Array, allow_cancel: bool = t
 
 
 # ---------------- 牌堆与开局 ----------------
-
-func build_deck() -> void:
-	deck.clear()
-	discard_pile.clear()
-	var comp := {}
-	for card_name in CardDefs.DEFS:
-		comp[card_name] = int(CardDefs.DEFS[card_name]["n"])
-	var k := 0
-	for card_name in comp:
-		for i in int(comp[card_name]):
-			var c := {}
-			c["name"] = card_name
-			c["suit"] = SUITS[k % 4]
-			c["point"] = (k % 13) + 1
-			deck.append(c)
-			k += 1
-	deck.shuffle()
-
-
-func make_player(seat_idx: int, identity: String) -> Dictionary:
-	var p := {}
-	p["seat"] = seat_idx
-	p["identity"] = identity
-	p["char"] = {}
-	p["hp"] = 0
-	p["max_hp"] = 0
-	p["hand"] = []
-	p["alive"] = true
-	p["wine"] = false
-	p["dream_protected"] = false
-	p["dreaming"] = false
-	p["round_marks"] = {}
-	var eq := {}
-	eq["weapon"] = {}
-	eq["armor"] = {}
-	eq["minus"] = {}
-	eq["plus"] = {}
-	p["equip"] = eq
-	p["judge"] = []
-	p["hammer_round"] = -1
-	return p
-
 
 func start_match(sim: bool) -> void:
 	auto_all = sim
@@ -3459,281 +3273,7 @@ func run_game() -> void:
 	end_game(eng.winner_text)
 
 
-func next_alive_seat(from_seat: int) -> int:
-	for step in range(1, 6):
-		var s := (from_seat + step) % 5
-		if players[s]["alive"]:
-			return s
-	return from_seat
-
-
-func has_skill(p: Dictionary, sid: String) -> bool:
-	if p.is_empty() or not p.has("char"):
-		return false
-	for s in p["char"]["skills"]:
-		if String((s as Dictionary).get("sid", "")) == sid:
-			return true
-	return false
-
-
-func mark_round_skill(p: Dictionary, key: String) -> bool:
-	return int(p["round_marks"].get(key, -1)) == round_no
-
-
-func use_round_skill(p: Dictionary, key: String) -> void:
-	p["round_marks"][key] = round_no
-
-
-func judge_top() -> Dictionary:
-	if deck.is_empty():
-		deck = discard_pile.duplicate()
-		discard_pile.clear()
-		deck.shuffle()
-	if deck.is_empty():
-		return {}
-	var c: Dictionary = deck.pop_back()
-	discard_pile.append(c)
-	return c
-
-
-func heal(p: Dictionary, n: int) -> void:
-	if not p["alive"] or n <= 0:
-		return
-	var before := int(p["hp"])
-	p["hp"] = mini(int(p["max_hp"]), before + n)
-	if int(p["hp"]) > before:
-		log_msg("%s 回复 %d 点体力（当前 %d/%d）。" % [pname(p), int(p["hp"]) - before, int(p["hp"]), int(p["max_hp"])])
-	refresh()
-
-
-func is_ai(p: Dictionary) -> bool:
-	return auto_all or int(p["seat"]) != 0
-
-
-func run_turn(p: Dictionary) -> void:
-	turn_flags.clear()
-	attacks_used = 0
-	p["dream_protected"] = false
-	p["dreaming"] = false
-	turn_label.text = "当前回合：%s" % pname(p)
-	log_msg("—— %s 的回合 ——" % pname(p))
-	refresh()
-	await wait(0.5)
-	if not p["alive"] or game_over:
-		return
-	set_phase("准备阶段 · %s" % pname(p))
-	if has_skill(p, "xinqu"):
-		await skill_read_mind(p)
-	if has_skill(p, "xingmian"):
-		var want := false
-		if is_ai(p):
-			want = int(p["hp"]) <= 2 or p["hand"].size() <= 2
-		else:
-			var ans: Variant = await ask("%s 是否发动「星眠」？（跳过出牌阶段，结束时摸 3 张并回复 1 点；本回合结束前不能成为「突击」的目标）" % pname(p), [{"label": "发动星眠", "value": true}, {"label": "不发动", "value": false}])
-			want = bool(ans)
-		if want:
-			p["dreaming"] = true
-			p["dream_protected"] = true
-			log_msg("%s 进星眠境，本回合跳过出牌阶段。" % pname(p))
-	set_phase("判定阶段 · %s" % pname(p))
-	var skip_draw := false
-	var skip_play := false
-	if p["alive"] and not game_over:
-		var flags := await resolve_judgments(p)
-		skip_draw = bool(flags.get("skip_draw", false))
-		skip_play = bool(flags.get("skip_play", false))
-	if not p["alive"] or game_over:
-		return
-	set_phase("摸牌阶段 · %s" % pname(p))
-	if skip_draw:
-		log_msg("%s 的摸牌阶段被「断粮封锁」跳过了。" % pname(p))
-	else:
-		draw_cards(p, 2)
-		log_msg("%s 摸了 2 张牌。" % pname(p))
-	refresh()
-	await wait(0.4)
-	set_phase("出牌阶段 · %s" % pname(p))
-	if skip_play:
-		log_msg("%s 的出牌阶段被「沉迷游戏」跳过了。" % pname(p))
-	if not p["dreaming"] and not skip_play and p["alive"] and not game_over:
-		if is_ai(p):
-			await ai_play_turn(p)
-		else:
-			interactive = true
-			end_play_btn.disabled = false
-			refresh()
-			show_hint("你的出牌阶段：点牌选中后点「确定」，或把牌拖到目标上；灰色牌暂时用不了")
-			in_play_phase = true
-			refresh()
-			await end_play_pressed
-			in_play_phase = false
-			targeting = false
-			selected_card = {}
-			hide_prompt()
-			interactive = false
-			end_play_btn.disabled = true
-			pending_target_for.clear()
-			refresh()
-	if p["alive"] and not game_over:
-		var limit := maxi(int(p["hp"]), 0)
-		set_phase("弃牌阶段 · %s" % pname(p))
-		while p["hand"].size() > limit:
-			if is_ai(p):
-				remove_card(p, ai_choose_discard(p))
-			else:
-				var picked := await ask_choose_card(p, "弃牌阶段：手牌 %d 张超过上限 %d，请选择要弃置的牌" % [p["hand"].size(), limit], [], false, false, false)
-				if picked.is_empty():
-					picked = p["hand"][0]
-				remove_card(p, picked)
-				log_msg("你弃置了 %s。" % card_text(picked))
-			refresh()
-	set_phase("结束阶段 · %s" % pname(p))
-	p["wine"] = false
-	if p["dreaming"] and p["alive"]:
-		draw_cards(p, 3)
-		heal(p, 1)
-		log_msg("%s 从星眠中醒来，摸 3 张牌并回复体力。" % pname(p))
-	refresh()
-	await wait(0.3)
-
-
-# ---------------- 伤害 / 濒死 / 阵亡 / 胜负 ----------------
-
-func deal_damage(src: Dictionary, tgt: Dictionary, amount: int, cause: String) -> void:
-	if not tgt["alive"] or game_over:
-		return
-	if has_skill(tgt, "linghu"):
-		var reds: Array = []
-		for c in tgt["hand"]:
-			if is_red(c):
-				reds.append(c)
-		if not reds.is_empty():
-			var prevent := false
-			var chosen: Dictionary = {}
-			if not is_ai(tgt):
-				var ans: Variant = await ask("「铃护」：弃置 1 张红色手牌，防止这次 %d 点伤害？" % amount, [{"label": "发动铃护", "value": "yes"}, {"label": "不发动", "value": "no"}])
-				if String(ans) == "yes":
-					var rc := await ask_choose_card(tgt, "「铃护」：选择一张红色手牌弃置", [], true, false, true)
-					if not rc.is_empty():
-						chosen = rc
-						prevent = true
-			elif int(tgt["hp"]) - amount <= 0 or tgt["hand"].size() >= 4:
-				chosen = reds[0]
-				prevent = true
-			if prevent and not chosen.is_empty():
-				tgt["hand"].erase(chosen)
-				discard_pile.append(chosen)
-				log_msg("「铃护」：%s 弃置 %s，防止了这次伤害。" % [pname(tgt), card_text(chosen)])
-				refresh()
-				await wait(0.4)
-				return
-	tgt["hp"] = int(tgt["hp"]) - amount
-	log_msg("%s 受到 %s 的 %d 点伤害（%s），体力剩余 %d。" % [pname(tgt), pname(src) if not src.is_empty() else "规则", amount, cause, maxi(int(tgt["hp"]), 0)])
-	refresh()
-	await wait(0.5)
-	if int(tgt["hp"]) > 0:
-		if has_skill(tgt, "huayu") and int(tgt["hp"]) < int(tgt["max_hp"]) and not mark_round_skill(tgt, "huayu"):
-			use_round_skill(tgt, "huayu")
-			var jc := judge_top()
-			if not jc.is_empty():
-				log_msg("「花愈」判定为 %s。" % card_text(jc))
-				if is_red(jc):
-					heal(tgt, 1)
-		if has_skill(tgt, "buqu"):
-			draw_cards(tgt, 1)
-			log_msg("「不屈」：%s 摸 1 张牌。" % pname(tgt))
-			refresh()
-	else:
-		await handle_dying(tgt, src)
-
-
-func ai_should_save(rescuer: Dictionary, dying: Dictionary) -> bool:
-	if int(rescuer["seat"]) == int(dying["seat"]):
-		return true
-	var rc := camp_of(rescuer["identity"])
-	var dc := camp_of(dying["identity"])
-	if rescuer["identity"] == "内奸":
-		return false
-	return rc == dc
-
-
-func handle_dying(tgt: Dictionary, src: Dictionary) -> void:
-	log_msg("%s 濒临阵亡，全场依次求救！" % pname(tgt))
-	var order: Array = []
-	for step in 5:
-		var s := (turn_seat + step) % 5
-		if players[s]["alive"]:
-			order.append(players[s])
-	for r in order:
-		while int(tgt["hp"]) <= 0 and tgt["alive"]:
-			var use_card: Dictionary = {}
-			var heal_card := find_card(r, "补给")
-			var wine_card: Dictionary = find_card(r, "特饮") if int(r["seat"]) == int(tgt["seat"]) else {}
-			if not heal_card.is_empty():
-				use_card = heal_card
-			elif not wine_card.is_empty():
-				use_card = wine_card
-			if use_card.is_empty():
-				break
-			var do_use := false
-			if is_ai(r):
-				do_use = ai_should_save(r, tgt)
-			else:
-				var ans: Variant = await ask("%s 濒临阵亡，你是否使用 %s 救援？" % [pname(tgt), card_text(use_card)], [{"label": "使用救援", "value": true}, {"label": "不救", "value": false}])
-				do_use = bool(ans)
-			if not do_use:
-				break
-			remove_card(r, use_card)
-			tgt["hp"] = int(tgt["hp"]) + 1
-			log_msg("%s 使用 %s 救回 %s（体力 %d）。" % [pname(r), use_card["name"], pname(tgt), int(tgt["hp"])])
-			refresh()
-			await wait(0.4)
-		if int(tgt["hp"]) > 0:
-			break
-	if int(tgt["hp"]) <= 0 and tgt["alive"]:
-		await handle_death(tgt, src)
-
-
-func handle_death(tgt: Dictionary, killer: Dictionary) -> void:
-	tgt["alive"] = false
-	while not tgt["hand"].is_empty():
-		var c: Dictionary = tgt["hand"].pop_back()
-		discard_pile.append(c)
-	log_msg("%s 阵亡，身份是【%s】！" % [pname(tgt), tgt["identity"]])
-	refresh()
-	await wait(0.6)
-	if not killer.is_empty() and killer["alive"] and int(killer["seat"]) != int(tgt["seat"]):
-		if tgt["identity"] == "反贼":
-			draw_cards(killer, 3)
-			log_msg("%s 击杀反贼，摸 3 张牌作为奖励。" % pname(killer))
-		if killer["identity"] == "主公" and tgt["identity"] == "忠臣":
-			while not killer["hand"].is_empty():
-				var c2: Dictionary = killer["hand"].pop_back()
-				discard_pile.append(c2)
-			log_msg("主公误杀忠臣，弃置全部手牌作为惩罚！")
-	refresh()
-	check_win()
-
-
-func check_win() -> void:
-	var lord: Dictionary = {}
-	for p in players:
-		if p["identity"] == "主公":
-			lord = p
-	if not lord["alive"]:
-		var survivors := alive_players()
-		if survivors.size() == 1 and survivors[0]["identity"] == "内奸":
-			end_game("内奸 %s 笑到最后，内奸获胜！" % pname(survivors[0]))
-		else:
-			end_game("主公阵亡，反贼阵营获胜！")
-		return
-	var threat := false
-	for p in alive_players():
-		if p["identity"] in ["反贼", "内奸"]:
-			threat = true
-	if not threat:
-		end_game("反贼与内奸全部阵亡，主公阵营获胜！")
-
+# ---------------- 对局结束 ----------------
 
 func end_game(text: String) -> void:
 	if game_over:
@@ -4083,393 +3623,8 @@ func _extend_cover(layer: Control, col: Color) -> void:
 		layer.add_theme_stylebox_override("panel", StyleBoxEmpty.new())
 
 
-# ---------------- 攻击结算 ----------------
-
-
-
-func resolve_judgments(p: Dictionary) -> Dictionary:
-	var flags := {"skip_draw": false, "skip_play": false}
-	var list: Array = p["judge"].duplicate()
-	list.reverse()
-	for c in list:
-		if not p["alive"] or game_over:
-			break
-		if not p["judge"].has(c):
-			continue
-		var n := String(c["name"])
-		if n == "落雷":
-			var jc := judge_top()
-			log_msg("%s 的「落雷」判定为 %s。" % [pname(p), card_text(jc)])
-			announce("落雷判定 %s" % card_text(jc))
-			refresh()
-			await wait(0.5)
-			if not jc.is_empty() and String(jc["suit"]) == "黑桃" and int(jc["point"]) >= 2 and int(jc["point"]) <= 9:
-				p["judge"].erase(c)
-				discard_pile.append(c)
-				log_msg("落雷命中！%s 受到 3 点雷电伤害！" % pname(p))
-				await deal_damage({}, p, 3, "落雷")
-			else:
-				p["judge"].erase(c)
-				var nxt := next_alive_seat(int(p["seat"]))
-				if nxt != int(p["seat"]):
-					players[nxt]["judge"].append(c)
-					log_msg("落雷未命中，转移到 %s 身上。" % pname(players[nxt]))
-				else:
-					discard_pile.append(c)
-		elif n == "沉迷游戏":
-			p["judge"].erase(c)
-			discard_pile.append(c)
-			var jc2 := judge_top()
-			log_msg("%s 的「沉迷游戏」判定为 %s。" % [pname(p), card_text(jc2)])
-			refresh()
-			await wait(0.5)
-			if not jc2.is_empty() and String(jc2["suit"]) != "红桃":
-				flags["skip_play"] = true
-				log_msg("判定未通过，%s 本回合跳过出牌阶段。" % pname(p))
-			else:
-				log_msg("判定通过，%s 可以正常出牌。" % pname(p))
-		elif n == "断粮封锁":
-			p["judge"].erase(c)
-			discard_pile.append(c)
-			var jc3 := judge_top()
-			log_msg("%s 的「断粮封锁」判定为 %s。" % [pname(p), card_text(jc3)])
-			refresh()
-			await wait(0.5)
-			if not jc3.is_empty() and String(jc3["suit"]) != "梅花":
-				flags["skip_draw"] = true
-				log_msg("判定未通过，%s 本回合跳过摸牌阶段。" % pname(p))
-			else:
-				log_msg("判定通过，%s 可以正常摸牌。" % pname(p))
-		refresh()
-	return flags
-
-
-func play_equip(src: Dictionary, card: Dictionary) -> void:
-	var kind := card_kind(card)
-	var slot := "weapon"
-	if kind == "防具":
-		slot = "armor"
-	elif kind == "饰品":
-		slot = "minus" if String(card["name"]) == "疾行之靴" else "plus"
-	src["hand"].erase(card)
-	var old: Dictionary = src["equip"][slot]
-	if not old.is_empty():
-		discard_pile.append(old)
-		log_msg("%s 替换下旧装备 %s。" % [pname(src), card_text(old)])
-	show_played_card(card, pname(src))
-	src["equip"][slot] = card
-	log_msg("%s 装备了「%s」。" % [pname(src), card["name"]])
-	announce("%s 装备 %s" % [pname(src), card["name"]])
-	refresh()
-	await wait(0.3)
-
-
-func play_delayed(src: Dictionary, card: Dictionary, tgt: Dictionary) -> void:
-	src["hand"].erase(card)
-	show_played_card(card, pname(src))
-	tgt["judge"].append(card)
-	log_msg("%s 在 %s 面前放下了「%s」。" % [pname(src), pname(tgt), card["name"]])
-	announce("%s → %s：%s" % [pname(src), pname(tgt), card["name"]])
-	refresh()
-	await wait(0.3)
-
-
-func attack_targets(src: Dictionary) -> Array:
-	var out: Array = []
-	for p in alive_players():
-		if int(p["seat"]) == int(src["seat"]):
-			continue
-		if p.get("dream_protected", false):
-			continue
-		if eff_dist(src, p) <= weapon_range(src):
-			out.append(p)
-	return out
-
-
-func play_attack(src: Dictionary, card: Dictionary, tgt: Dictionary, count_use: bool = true) -> void:
-	show_played_card(card, pname(src))
-	remove_card(src, card)
-	if count_use:
-		attacks_used += 1
-	var dmg := 1
-	if src["wine"]:
-		dmg += 1
-		src["wine"] = false
-		log_msg("%s 的「特饮」生效，这张「突击」伤害 +1！" % pname(src))
-	if equip_name(src, "weapon") == "战锤" and tgt["hand"].size() <= src["hand"].size() and int(src["hammer_round"]) != round_no:
-		src["hammer_round"] = round_no
-		dmg += 1
-		log_msg("「战锤」：对方手牌不比你多，这张「突击」伤害 +1！")
-	log_msg("%s 对 %s 使用「突击」。" % [pname(src), pname(tgt)])
-	announce("%s ⚔ %s" % [pname(src), pname(tgt)])
-	refresh()
-	await wait(0.3)
-	# 音波炮：先看目标手牌
-	if equip_name(src, "weapon") == "音波炮" and not is_ai(src):
-		var names: Array = []
-		for c in tgt["hand"]:
-			names.append(card_text(c))
-		log_msg("「音波炮」：%s 的手牌是：%s。" % [pname(tgt), "、".join(names) if names.size() > 0 else "（无）"])
-	# 防护立场：黑色突击无效（破甲光剑可无视）
-	if equip_name(tgt, "armor") == "防护立场" and not is_red(card) and equip_name(src, "weapon") != "破甲光剑":
-		log_msg("「防护立场」：黑色「突击」被 %s 的防具挡下了。" % pname(tgt))
-		refresh()
-		await wait(0.3)
-		return
-	# 目标应对：闪避 / 结界手环 / 猫步 / 承受
-	var dodge_card := find_card(tgt, "闪避")
-	var ring_ok := equip_name(tgt, "armor") == "结界手环"
-	var has_black := false
-	for hc in tgt["hand"]:
-		if not is_red(hc):
-			has_black = true
-	var cat_ok := has_skill(tgt, "maobu") and not mark_round_skill(tgt, "maobu") and has_black
-	var action := "none"
-	if is_ai(tgt):
-		if not dodge_card.is_empty():
-			action = "dodge"
-		elif ring_ok:
-			action = "ring"
-		elif cat_ok and int(tgt["hp"]) <= dmg:
-			action = "cat"
-	else:
-		var options: Array = []
-		if not dodge_card.is_empty():
-			options.append({"label": "打出「闪避」", "value": "dodge"})
-		if ring_ok:
-			options.append({"label": "「结界手环」判定（红色=闪避）", "value": "ring"})
-		if cat_ok:
-			options.append({"label": "发动「猫步」弃一张黑色牌", "value": "cat"})
-		options.append({"label": "承受伤害", "value": "none"})
-		action = String(await ask("%s 对你使用「突击」，你如何应对？" % pname(src), options))
-	if action == "ring":
-		var jc := judge_top()
-		log_msg("「结界手环」判定为 %s。" % card_text(jc))
-		if not jc.is_empty() and is_red(jc):
-			action = "dodge"
-			log_msg("判定成功，视为 %s 打出了「闪避」！" % pname(tgt))
-		else:
-			action = "none"
-		refresh()
-		await wait(0.3)
-	if action == "dodge":
-		if not dodge_card.is_empty():
-			show_played_card(dodge_card, pname(tgt))
-			remove_card(tgt, dodge_card)
-		log_msg("%s 闪避开了攻击。" % pname(tgt))
-		refresh()
-		await wait(0.3)
-		if has_skill(src, "nuhe") and not tgt["hand"].is_empty():
-			var stolen: Dictionary = tgt["hand"][rng.randi_range(0, tgt["hand"].size() - 1)]
-			remove_card(tgt, stolen)
-			log_msg("「怒喝」：%s 弃置了 %s 的一张牌（%s）。" % [pname(src), pname(tgt), card_text(stolen)])
-			refresh()
-		return
-	if action == "cat":
-		use_round_skill(tgt, "maobu")
-		var black_card: Dictionary = {}
-		if is_ai(tgt):
-			for c in tgt["hand"]:
-				if not is_red(c):
-					black_card = c
-					break
-		else:
-			black_card = await ask_choose_card(tgt, "「猫步」：选择一张黑色手牌弃置", [], false, true, false)
-		if not black_card.is_empty():
-			remove_card(tgt, black_card)
-		log_msg("「猫步」：%s 身形一闪，这张「突击」落空了。" % pname(tgt))
-		refresh()
-		await wait(0.3)
-		return
-	await deal_damage(src, tgt, dmg, "突击")
-	# 武器命中效果
-	if src["alive"] and not game_over:
-		if equip_name(src, "weapon") == "双生短刃":
-			draw_cards(src, 1)
-			log_msg("「双生短刃」：%s 摸 1 张牌。" % pname(src))
-			refresh()
-		if equip_name(src, "weapon") == "雷霆法杖" and tgt["alive"] and not tgt["hand"].is_empty():
-			var victim: Dictionary = tgt["hand"][rng.randi_range(0, tgt["hand"].size() - 1)]
-			remove_card(tgt, victim)
-			log_msg("「雷霆法杖」：%s 的 %s 被击落了。" % [pname(tgt), card_text(victim)])
-			refresh()
-
-
-# ---------------- 锦囊与基本牌的通用结算 ----------------
-
-func play_heal_card(src: Dictionary, card: Dictionary, tgt: Dictionary) -> void:
-	show_played_card(card, pname(src))
-	remove_card(src, card)
-	log_msg("%s 对 %s 使用「%s」。" % [pname(src), pname(tgt), card["name"]])
-	heal(tgt, 1)
-	await wait(0.3)
-
-
-func play_draw2(src: Dictionary, card: Dictionary) -> void:
-	show_played_card(card, pname(src))
-	remove_card(src, card)
-	draw_cards(src, 2)
-	log_msg("%s 使用「灵感爆发」，摸 2 张牌。" % pname(src))
-	refresh()
-	await wait(0.3)
-
-
-
-func pick_entry_ai(tgt: Dictionary) -> Dictionary:
-	var entries := all_target_cards(tgt)
-	if entries.is_empty():
-		return {}
-	var non_hand: Array = entries.filter(func(e: Dictionary) -> bool: return String(e["zone"]) != "hand")
-	var pool: Array = non_hand if not non_hand.is_empty() else entries
-	return pool[rng.randi_range(0, pool.size() - 1)]
-
-
 func zone_label(zone: String) -> String:
 	return {"hand": "手牌", "weapon": "武器", "armor": "防具", "minus": "饰品·疾行之靴", "plus": "饰品·远行披风", "treasure": "宝物", "delayed": "判定区"}.get(zone, zone)
-
-
-func play_remove_card(src: Dictionary, card: Dictionary, tgt: Dictionary) -> void:
-	show_played_card(card, pname(src))
-	remove_card(src, card)
-	var entry := pick_entry_ai(tgt)
-	if entry.is_empty():
-		log_msg("%s 使用「突然检查」，但 %s 身上没有任何牌。" % [pname(src), pname(tgt)])
-	else:
-		remove_from_zone(tgt, entry, true)
-		log_msg("%s 使用「突然检查」，弃置了 %s 的%s %s。" % [pname(src), pname(tgt), zone_label(String(entry["zone"])), card_text(entry["card"])])
-	refresh()
-	await wait(0.3)
-
-
-func play_steal(src: Dictionary, card: Dictionary, tgt: Dictionary) -> void:
-	show_played_card(card, pname(src))
-	remove_card(src, card)
-	var entry := pick_entry_ai(tgt)
-	if entry.is_empty():
-		log_msg("%s 使用「悄悄借走」，但 %s 身上没有任何牌。" % [pname(src), pname(tgt)])
-	else:
-		remove_from_zone(tgt, entry, false)
-		src["hand"].append(entry["card"])
-		log_msg("%s 使用「悄悄借走」，从 %s 那里拿走了一张牌。" % [pname(src), pname(tgt)])
-	refresh()
-	await wait(0.3)
-
-
-func must_play_or_damage(p: Dictionary, card_name: String, src: Dictionary, cause: String) -> void:
-	var c := find_card(p, card_name)
-	var use := false
-	if not c.is_empty():
-		if is_ai(p):
-			use = true
-		else:
-			var ans: Variant = await ask("%s 需要打出一张「%s」，否则受到 1 点伤害。" % [cause, card_name], [
-				{"label": "打出「%s」" % card_name, "value": true}, {"label": "承受伤害", "value": false}])
-			use = bool(ans)
-	if use:
-		show_played_card(c, pname(p))
-		remove_card(p, c)
-		log_msg("%s 打出了「%s」。" % [pname(p), card_name])
-		refresh()
-		await wait(0.25)
-	else:
-		await deal_damage(src, p, 1, cause)
-
-
-func play_duel(src: Dictionary, card: Dictionary, tgt: Dictionary) -> void:
-	show_played_card(card, pname(src))
-	remove_card(src, card)
-	log_msg("%s 对 %s 发起「单挑」！" % [pname(src), pname(tgt)])
-	refresh()
-	await wait(0.3)
-	var responder: Dictionary = tgt
-	var other: Dictionary = src
-	while responder["alive"] and other["alive"] and not game_over:
-		var c := find_card(responder, "突击")
-		var play := false
-		if not c.is_empty():
-			if is_ai(responder):
-				play = true
-			else:
-				var ans: Variant = await ask("单挑中：你需要打出一张「突击」，否则受到 1 点伤害。", [
-					{"label": "打出「突击」", "value": true}, {"label": "不出", "value": false}])
-				play = bool(ans)
-		if play:
-			remove_card(responder, c)
-			log_msg("%s 打出一张「突击」。" % pname(responder))
-			refresh()
-			await wait(0.25)
-			var tmp := responder
-			responder = other
-			other = tmp
-		else:
-			await deal_damage(other, responder, 1, "单挑")
-			break
-
-
-func play_aoe(src: Dictionary, card: Dictionary, need_name: String) -> void:
-	show_played_card(card, pname(src))
-	remove_card(src, card)
-	log_msg("%s 使用「%s」！" % [pname(src), card["name"]])
-	refresh()
-	await wait(0.3)
-	var order: Array = []
-	for step in range(1, 5):
-		var s := (int(src["seat"]) + step) % 5
-		if players[s]["alive"]:
-			order.append(players[s])
-	for p in order:
-		if not p["alive"] or game_over:
-			continue
-		await must_play_or_damage(p, need_name, src, card["name"])
-
-
-func play_all_heal(src: Dictionary, card: Dictionary) -> void:
-	show_played_card(card, pname(src))
-	remove_card(src, card)
-	log_msg("%s 使用「全员休整」。" % pname(src))
-	for p in alive_players():
-		heal(p, 1)
-	await wait(0.3)
-
-
-func play_harvest(src: Dictionary, card: Dictionary) -> void:
-	show_played_card(card, pname(src))
-	remove_card(src, card)
-	var n := alive_players().size()
-	var pool_cards: Array = []
-	for i in n:
-		if deck.is_empty():
-			break
-		pool_cards.append(deck.pop_back())
-	log_msg("%s 使用「物资发放」，亮出 %d 张牌依次领取。" % [pname(src), pool_cards.size()])
-	var order: Array = []
-	for step in 5:
-		var s := (int(src["seat"]) + step) % 5
-		if players[s]["alive"]:
-			order.append(players[s])
-	for p in order:
-		if pool_cards.is_empty():
-			break
-		var picked: Dictionary
-		if is_ai(p):
-			picked = pool_cards[0]
-			for c in pool_cards:
-				if c["name"] == "补给" and int(p["hp"]) < int(p["max_hp"]):
-					picked = c
-					break
-		else:
-			var options: Array = []
-			for c in pool_cards:
-				options.append({"label": card_text(c), "value": c})
-			var v: Variant = await ask("物资发放：请选择一张牌拿走", options)
-			picked = v
-		pool_cards.erase(picked)
-		p["hand"].append(picked)
-		log_msg("%s 拿走了 %s。" % [pname(p), card_text(picked)])
-		refresh()
-		await wait(0.25)
-	while not pool_cards.is_empty():
-		discard_pile.append(pool_cards.pop_back())
 
 
 # ---------------- 真人出牌操作 ----------------
@@ -4817,435 +3972,6 @@ func _on_skill_button(skill_id: String) -> void:
 		return
 	cancel_targeting()
 	_enter_skill_mode(skill_id)
-
-
-func human_use_skill(me: Dictionary, skill_id: String) -> void:
-	var key := "skill_" + skill_id
-	match skill_id:
-		"yingyuan":
-			var cost := await ask_choose_card(me, "「樱愿」：选择一张手牌作为代价弃置")
-			if cost.is_empty():
-				return
-			var cands: Array = alive_players()
-			var t := await ask_choose_target("「樱愿」：选择要帮助的角色", cands)
-			if t < 0:
-				return
-			remove_card(me, cost)
-			turn_flags[key] = true
-			await apply_wish(me, players[t])
-		"fengji":
-			var cands2: Array = []
-			for p in alive_players():
-				if int(p["seat"]) != 0 and not p["hand"].is_empty():
-					cands2.append(p)
-			if cands2.is_empty():
-				prompt_label.text = "没有可检查的目标"
-				return
-			var t2 := await ask_choose_target("「风纪」：选择要检查的角色（可看其手牌）", cands2)
-			if t2 < 0:
-				return
-			var tgt: Dictionary = players[t2]
-			var options: Array = []
-			for c in tgt["hand"]:
-				options.append({"label": "弃置 " + card_text(c), "value": c})
-			var v: Variant = await ask("「风纪」：%s 的手牌如上，选择弃置一张" % pname(tgt), options)
-			if v is Dictionary and not (v as Dictionary).is_empty():
-				remove_card(tgt, v)
-				turn_flags[key] = true
-				log_msg("「风纪」：你弃置了 %s 的 %s。" % [pname(tgt), card_text(v)])
-			refresh()
-		"gesheng":
-			var cands3: Array = []
-			for p in alive_players():
-				if int(p["seat"]) != 0:
-					cands3.append(p)
-			var t3 := await ask_choose_target("「歌声」：选择一名其他角色，与你各摸 1 张牌", cands3)
-			if t3 < 0:
-				return
-			turn_flags[key] = true
-			draw_cards(me, 1)
-			draw_cards(players[t3], 1)
-			log_msg("「歌声」：你与 %s 各摸 1 张牌。" % pname(players[t3]))
-			refresh()
-		"yuanqi":
-			if int(me["hp"]) >= int(me["max_hp"]):
-				prompt_label.text = "体力没有损失，不能发动「元气补给」"
-				return
-			var bc := await ask_choose_card(me, "「元气补给」：选择一张黑色手牌当作「补给」", [], false, true)
-			if bc.is_empty():
-				return
-			remove_card(me, bc)
-			turn_flags[key] = true
-			log_msg("「元气补给」：你把 %s 当作「补给」使用。" % card_text(bc))
-			heal(me, 1)
-		"chahui":
-			var cands4: Array = []
-			for p in alive_players():
-				if int(p["seat"]) != 0 and int(p["hp"]) < int(p["max_hp"]):
-					cands4.append(p)
-			if cands4.is_empty():
-				prompt_label.text = "没有已受伤的其他角色"
-				return
-			var cost2 := await ask_choose_card(me, "「茶会」：选择一张手牌作为代价弃置")
-			if cost2.is_empty():
-				return
-			var t4 := await ask_choose_target("「茶会」：选择要回复体力的角色", cands4)
-			if t4 < 0:
-				return
-			remove_card(me, cost2)
-			turn_flags[key] = true
-			log_msg("「茶会」：你请 %s 喝了一杯热茶。" % pname(players[t4]))
-			heal(players[t4], 1)
-		"qinyin":
-			var cands5 := attack_targets(me)
-			if cands5.is_empty():
-				prompt_label.text = "攻击范围内没有目标"
-				return
-			var rc := await ask_choose_card(me, "「琴音」：选择一张红色手牌当作「突击」", [], true, false)
-			if rc.is_empty():
-				return
-			var t5 := await ask_choose_target("「琴音」：选择「突击」的目标", cands5)
-			if t5 < 0:
-				return
-			turn_flags[key] = true
-			await play_attack(me, rc, players[t5], false)
-		"shifeng":
-			if me["hand"].is_empty():
-				return
-			var give := await ask_choose_card(me, "「侍奉」：选择一张手牌交给别人")
-			if give.is_empty():
-				return
-			var cands6: Array = []
-			for p in alive_players():
-				if int(p["seat"]) != 0:
-					cands6.append(p)
-			var t6 := await ask_choose_target("「侍奉」：把牌交给谁", cands6)
-			if t6 < 0:
-				return
-			me["hand"].erase(give)
-			players[t6]["hand"].append(give)
-			turn_flags[key] = true
-			draw_cards(me, 2)
-			log_msg("「侍奉」：你把 %s 交给 %s，然后摸 2 张牌。" % [card_text(give), pname(players[t6])])
-			refresh()
-
-
-func apply_wish(src: Dictionary, tgt: Dictionary) -> void:
-	var injured := int(tgt["hp"]) < int(tgt["max_hp"])
-	var do_heal := false
-	if injured:
-		if is_ai(tgt):
-			do_heal = int(tgt["hp"]) <= 2
-		elif int(tgt["seat"]) == int(src["seat"]) and not is_ai(src):
-			var ans: Variant = await ask("「樱愿」：选择执行的一项", [
-				{"label": "摸 2 张牌", "value": false}, {"label": "回复 1 点体力", "value": true}])
-			do_heal = bool(ans)
-		else:
-			do_heal = int(tgt["hp"]) <= 2
-	if do_heal:
-		log_msg("「樱愿」：%s 选择回复体力。" % pname(tgt))
-		heal(tgt, 1)
-	else:
-		draw_cards(tgt, 2)
-		log_msg("「樱愿」：%s 选择摸 2 张牌。" % pname(tgt))
-	refresh()
-	await wait(0.3)
-
-
-func skill_read_mind(p: Dictionary) -> void:
-	var others: Array = []
-	for o in alive_players():
-		if int(o["seat"]) != int(p["seat"]):
-			others.append(o)
-	if others.is_empty():
-		return
-	var tgt: Dictionary
-	if is_ai(p):
-		tgt = others[rng.randi_range(0, others.size() - 1)]
-	else:
-		var t := await ask_choose_target("「心曲」：选择一名角色，观看其全部手牌", others, false)
-		tgt = players[t]
-	var names: Array = []
-	for c in tgt["hand"]:
-		names.append(card_text(c))
-	if not is_ai(p):
-		log_msg("「心曲」：%s 的手牌是：%s。" % [pname(tgt), "、".join(names)])
-	else:
-		log_msg("%s 发动「心曲」，看穿了一名角色的心思。" % pname(p))
-	if has_card(tgt, "突击"):
-		draw_cards(p, 1)
-		log_msg("「心曲」：对方手中有「突击」，%s 摸 1 张牌。" % pname(p))
-	refresh()
-	await wait(0.4)
-
-
-# ---------------- AI 逻辑 ----------------
-
-func ai_allies(p: Dictionary) -> Array:
-	var out: Array = []
-	for o in alive_players():
-		if int(o["seat"]) == int(p["seat"]):
-			continue
-		if p["identity"] != "内奸" and camp_of(o["identity"]) == camp_of(p["identity"]):
-			out.append(o)
-	return out
-
-
-func ai_enemies(p: Dictionary) -> Array:
-	var out: Array = []
-	var allies := ai_allies(p)
-	for o in alive_players():
-		if int(o["seat"]) == int(p["seat"]):
-			continue
-		if p["identity"] == "内奸":
-			# 内奸：先打反贼（借主公阵营之手），只剩主公阵营时挑最弱的非主公，最后才是主公
-			out.append(o)
-		elif camp_of(o["identity"]) != camp_of(p["identity"]):
-			out.append(o)
-	return out
-
-
-func ai_pick_enemy(p: Dictionary, candidates: Array) -> Dictionary:
-	if candidates.is_empty():
-		return {}
-	if p["identity"] == "反贼":
-		for o in candidates:
-			if o["identity"] == "主公":
-				return o
-	if p["identity"] == "内奸":
-		var rebels: Array = candidates.filter(func(o: Dictionary) -> bool: return o["identity"] == "反贼")
-		if not rebels.is_empty():
-			return rebels[rng.randi_range(0, rebels.size() - 1)]
-		var non_lord: Array = candidates.filter(func(o: Dictionary) -> bool: return o["identity"] != "主公")
-		if not non_lord.is_empty():
-			non_lord.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return int(a["hp"]) < int(b["hp"]))
-			return non_lord[0]
-	candidates.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return int(a["hp"]) < int(b["hp"]))
-	# 阵营敌人里挑体力最低的，但带一点随机性避免行为完全可预测
-	var weakest_hp := int(candidates[0]["hp"])
-	var weakest: Array = candidates.filter(func(o: Dictionary) -> bool: return int(o["hp"]) == weakest_hp)
-	return weakest[rng.randi_range(0, weakest.size() - 1)]
-
-
-func ai_choose_discard(p: Dictionary) -> Dictionary:
-	var order := ["物资发放", "全员休整", "单挑", "悄悄借走", "突然检查", "灵感爆发", "特饮", "补给", "闪避", "突击"]
-	for n in order:
-		var c := find_card(p, n)
-		if not c.is_empty():
-			# 闪避和补给尽量留：手牌超限不多时优先弃其他类
-			if n in ["闪避", "补给"] and p["hand"].size() > int(p["hp"]) + 1:
-				continue
-			return c
-	return p["hand"][0]
-
-
-func ai_worst_card(p: Dictionary) -> Dictionary:
-	return ai_choose_discard(p)
-
-
-func ai_play_turn(p: Dictionary) -> void:
-	var guard := 0
-	while p["alive"] and not game_over and guard < 14:
-		guard += 1
-		refresh()
-		await wait(0.45)
-		if await ai_try_one_action(p):
-			continue
-		break
-	refresh()
-
-
-func ai_try_one_action(p: Dictionary) -> bool:
-	var cid := String(p["char"]["id"])
-	var enemies := ai_enemies(p)
-	var allies := ai_allies(p)
-	# 1. 自救补给
-	var heal_card := find_card(p, "补给")
-	if not heal_card.is_empty() and int(p["hp"]) <= 2 and int(p["hp"]) < int(p["max_hp"]):
-		await play_heal_card(p, heal_card, p)
-		return true
-	# 2. 灵感爆发
-	var draw_card := find_card(p, "灵感爆发")
-	if not draw_card.is_empty():
-		await play_draw2(p, draw_card)
-		return true
-	# 3. 角色主动技能（每回合一次，用 turn_flags 记）
-	if has_skill(p, "fengji") and not turn_flags.get("skill_fengji", false):
-		var cands: Array = enemies.filter(func(o: Dictionary) -> bool: return not o["hand"].is_empty())
-		if not cands.is_empty():
-			var tgt := ai_pick_enemy(p, cands)
-			turn_flags["skill_fengji"] = true
-			var victim: Dictionary = tgt["hand"][rng.randi_range(0, tgt["hand"].size() - 1)]
-			remove_card(tgt, victim)
-			log_msg("「风纪」：%s 弃置了 %s 的 %s。" % [pname(p), pname(tgt), card_text(victim)])
-			refresh()
-			await wait(0.3)
-			return true
-	if has_skill(p, "gesheng") and not turn_flags.get("skill_gesheng", false) and p["hand"].size() <= 3:
-		turn_flags["skill_gesheng"] = true
-		var tgt2: Dictionary = p
-		if not allies.is_empty():
-			tgt2 = allies[0]
-		draw_cards(p, 1)
-		if int(tgt2["seat"]) != int(p["seat"]):
-			draw_cards(tgt2, 1)
-		log_msg("「歌声」：%s 与 %s 各摸 1 张牌。" % [pname(p), pname(tgt2)])
-		refresh()
-		await wait(0.3)
-		return true
-	if has_skill(p, "yingyuan") and not turn_flags.get("skill_yingyuan", false) and p["hand"].size() >= 3:
-		var hurt_allies: Array = allies.filter(func(o: Dictionary) -> bool: return int(o["hp"]) < int(o["max_hp"]))
-		hurt_allies.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return int(a["hp"]) < int(b["hp"]))
-		turn_flags["skill_yingyuan"] = true
-		remove_card(p, ai_worst_card(p))
-		if not hurt_allies.is_empty():
-			log_msg("「樱愿」：%s 为 %s 许愿回复。" % [pname(p), pname(hurt_allies[0])])
-			heal(hurt_allies[0], 1)
-		else:
-			draw_cards(p, 2)
-			log_msg("「樱愿」：%s 为自己许愿，摸 2 张牌。" % pname(p))
-		refresh()
-		await wait(0.3)
-		return true
-	if has_skill(p, "yuanqi") and not turn_flags.get("skill_yuanqi", false) and int(p["hp"]) < int(p["max_hp"]):
-		for c in p["hand"]:
-			if not is_red(c) and c["name"] != "闪避":
-				turn_flags["skill_yuanqi"] = true
-				remove_card(p, c)
-				log_msg("「元气补给」：%s 把 %s 当作「补给」使用。" % [pname(p), card_text(c)])
-				heal(p, 1)
-				return true
-	if has_skill(p, "chahui") and not turn_flags.get("skill_chahui", false):
-		var hurt2: Array = allies.filter(func(o: Dictionary) -> bool: return int(o["hp"]) < int(o["max_hp"]) and int(o["hp"]) <= 2)
-		if not hurt2.is_empty() and p["hand"].size() >= 2:
-			turn_flags["skill_chahui"] = true
-			remove_card(p, ai_worst_card(p))
-			log_msg("「茶会」：%s 请 %s 喝热茶回复体力。" % [pname(p), pname(hurt2[0])])
-			heal(hurt2[0], 1)
-			return true
-	if has_skill(p, "shifeng") and not turn_flags.get("skill_shifeng", false) and p["hand"].size() >= 4 and not allies.is_empty():
-		turn_flags["skill_shifeng"] = true
-		var give := ai_worst_card(p)
-		p["hand"].erase(give)
-		allies[0]["hand"].append(give)
-		draw_cards(p, 2)
-		log_msg("「侍奉」：%s 把一张牌交给 %s 并摸 2 张牌。" % [pname(p), pname(allies[0])])
-		refresh()
-		await wait(0.3)
-		return true
-	# 4. 突击（含特饮强化与琴音追加）
-	var atk := find_card(p, "突击")
-	var in_range: Array = []
-	for o in attack_targets(p):
-		if enemies.has(o):
-			in_range.append(o)
-	if not atk.is_empty() and attacks_used < 1 and not in_range.is_empty():
-		var tgt3 := ai_pick_enemy(p, in_range)
-		var wine := find_card(p, "特饮")
-		if not wine.is_empty() and int(tgt3["hp"]) >= 2:
-			remove_card(p, wine)
-			p["wine"] = true
-			log_msg("%s 喝下「特饮」。" % pname(p))
-		await play_attack(p, atk, tgt3)
-		return true
-	if has_skill(p, "qinyin") and not turn_flags.get("skill_qinyin", false) and not in_range.is_empty():
-		for c in p["hand"]:
-			if is_red(c) and c["name"] not in ["突击", "闪避", "补给"]:
-				turn_flags["skill_qinyin"] = true
-				var tgt4 := ai_pick_enemy(p, in_range)
-				log_msg("「琴音」：%s 把 %s 当作「突击」使用。" % [pname(p), card_text(c)])
-				await play_attack(p, c, tgt4, false)
-				return true
-	# 4.5 装备：有就装，武器只换更远的
-	for c in (p["hand"] as Array).duplicate():
-		var kind := card_kind(c)
-		var slot := ""
-		if kind == "武器":
-			slot = "weapon"
-		elif kind == "防具":
-			slot = "armor"
-		elif kind == "饰品":
-			slot = "minus" if String(c["name"]) == "疾行之靴" else "plus"
-		if slot == "":
-			continue
-		var cur: Dictionary = p["equip"][slot]
-		var take := false
-		if cur.is_empty():
-			take = true
-		elif slot == "weapon" and CardDefs.weapon_range_of(String(c["name"])) > CardDefs.weapon_range_of(String(cur["name"])):
-			take = true
-		if take:
-			await play_equip(p, c)
-			return true
-	# 4.6 延时锦囊：给敌人放判定牌
-	for c in (p["hand"] as Array).duplicate():
-		if not DELAYED_NAMES.has(String(c["name"])):
-			continue
-		var cands_d: Array = []
-		for o in enemies:
-			var dup := false
-			for d in o["judge"]:
-				if String(d["name"]) == String(c["name"]):
-					dup = true
-			if not dup:
-				cands_d.append(o)
-		if not cands_d.is_empty():
-			await play_delayed(p, c, ai_pick_enemy(p, cands_d))
-			return true
-	# 5. 锦囊
-	var check := find_card(p, "突然检查")
-	if not check.is_empty():
-		var cands2: Array = enemies.filter(func(o: Dictionary) -> bool: return not all_target_cards(o).is_empty())
-		if not cands2.is_empty():
-			await play_remove_card(p, check, ai_pick_enemy(p, cands2))
-			return true
-	var steal := find_card(p, "悄悄借走")
-	if not steal.is_empty():
-		var cands3: Array = []
-		for o in enemies:
-			if eff_dist(p, o) <= 1 and not all_target_cards(o).is_empty():
-				cands3.append(o)
-		if not cands3.is_empty():
-			await play_steal(p, steal, ai_pick_enemy(p, cands3))
-			return true
-	var duel := find_card(p, "单挑")
-	if not duel.is_empty() and not enemies.is_empty():
-		var tgt5 := ai_pick_enemy(p, enemies)
-		if int(p["hp"]) >= int(tgt5["hp"]):
-			await play_duel(p, duel, tgt5)
-			return true
-	var aoe1 := find_card(p, "全场乱斗")
-	if not aoe1.is_empty() and alive_players().size() >= 4:
-		await play_aoe(p, aoe1, "突击")
-		return true
-	var aoe2 := find_card(p, "弹幕齐射")
-	if not aoe2.is_empty() and alive_players().size() >= 4:
-		await play_aoe(p, aoe2, "闪避")
-		return true
-	var harvest := find_card(p, "物资发放")
-	if not harvest.is_empty():
-		await play_harvest(p, harvest)
-		return true
-	var allheal := find_card(p, "全员休整")
-	if not allheal.is_empty():
-		var hurt_count := 0
-		for o in alive_players():
-			if int(o["hp"]) < int(o["max_hp"]):
-				hurt_count += 1
-		if hurt_count >= 2:
-			await play_all_heal(p, allheal)
-			return true
-	# 6. 帮队友补给
-	var heal2 := find_card(p, "补给")
-	if not heal2.is_empty():
-		var hurt3: Array = allies.filter(func(o: Dictionary) -> bool: return int(o["hp"]) < int(o["max_hp"]) and int(o["hp"]) <= 2)
-		if not hurt3.is_empty():
-			await play_heal_card(p, heal2, hurt3[0])
-			return true
-		if int(p["hp"]) < int(p["max_hp"]):
-			await play_heal_card(p, heal2, p)
-			return true
-	return false
 
 
 # ---------------- 新引擎 UI 回调 ----------------
@@ -6036,28 +4762,6 @@ func fx_skill_banner(seat: int, skill_name: String) -> void:
 	tw.tween_callback(func() -> void: if is_instance_valid(lb): lb.queue_free())
 
 
-func fx_judge_show(card: Dictionary, label_text: String) -> void:
-	if showcase_panel == null or card.is_empty():
-		return
-	showcase_owner.text = "判定 · %s" % label_text
-	var suits_ch := {"红桃": "♥", "方块": "♦", "梅花": "♣", "黑桃": "♠"}
-	showcase_top.text = "%s%d" % [suits_ch[card["suit"]], int(card["point"])]
-	showcase_top.add_theme_color_override("font_color", C_RED if is_red(card) else C_BLACK)
-	showcase_name.text = String(card["name"])
-	showcase_kind.text = card_kind(card)
-	if showcase_tween and showcase_tween.is_valid():
-		showcase_tween.kill()
-	showcase_panel.visible = true
-	showcase_panel.modulate = Color(1, 1, 1, 1)
-	showcase_panel.position = Vector2(vw * 0.5 - 112, 300)
-	showcase_panel.scale = Vector2(0.05, 1.0)
-	showcase_tween = create_tween()
-	showcase_tween.tween_property(showcase_panel, "scale", Vector2.ONE, 0.18)
-	showcase_tween.tween_interval(0.75)
-	showcase_tween.tween_property(showcase_panel, "modulate:a", 0.0, 0.3)
-	showcase_tween.tween_callback(func() -> void: showcase_panel.visible = false)
-
-
 func show_turn_banner(char_name: String) -> void:
 	if turn_banner == null:
 		return
@@ -6424,7 +5128,6 @@ func _synth_hit() -> AudioStreamWAV:
 	return w
 
 
-
 func show_match_banner() -> void:
 	if match_banner == null:
 		return
@@ -6494,7 +5197,6 @@ func fx_screen_shake() -> void:
 	tw.tween_property(self, "position", Vector2(-7, -2), 0.07)
 	tw.tween_property(self, "position", Vector2(4, 1), 0.06)
 	tw.tween_property(self, "position", Vector2.ZERO, 0.06)
-
 
 
 func _short_name(s: String) -> String:
@@ -7256,7 +5958,6 @@ func test_answer(idx: int = -1) -> bool:
 	else:
 		_on_decided(ask_options[idx]["value"])
 	return true
-
 
 
 # ================= V0.28 重铸 =================
