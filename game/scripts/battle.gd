@@ -1587,7 +1587,7 @@ func refresh() -> void:
 	if eng != null:
 		deck_label.text = "牌堆 %d" % eng.deck.size()
 		disc_label.text = "弃牌 %d" % eng.discard_pile.size()
-		round_label.text = "第 %d 轮" % round_no
+		round_label.text = ("第 %d 轮 · ×%d" % [round_no, int(eng.ddz_stake())]) if game_mode == "doudizhu" else ("第 %d 轮" % round_no)
 	if turn_seat >= 0 and turn_seat < players.size():
 		turn_label.text = "当前回合：%s" % pname(players[turn_seat])
 	for panel in seat_panels:
@@ -1601,7 +1601,13 @@ func refresh() -> void:
 		var chip_text: Label = panel.get_node("Chip/ChipText")
 		var p_sh := int(p.get("shield", 0))
 		var p_mk := int((p.get("marks", {}) as Dictionary).get("影羽", 0))
+		var p_open: bool = game_mode == "doudizhu" and eng != null and eng.ddz_open_seats.has(seat_idx) and bool(p["alive"])
+		var p_seal := bool(p.get("skills_sealed", false)) and bool(p["alive"])
 		var chip_parts: Array = []
+		if p_open:
+			chip_parts.append("👁")
+		if p_seal:
+			chip_parts.append("❄封")
 		if p_sh > 0:
 			chip_parts.append("🛡%d" % p_sh)
 		if p_mk > 0:
@@ -1635,7 +1641,8 @@ func refresh() -> void:
 			var ddz_ally := game_mode == "doudizhu" and not players.is_empty() and String(players[0]["identity"]) == "农民" and String(p["identity"]) == "农民"
 			var is_ally_seat := ((game_mode == "twovtwo" or game_mode == "boss") and String(p["identity"]) == String(players[0]["identity"])) or ddz_ally
 			var mate_prefix := "★队友 · " if is_ally_seat else ("👑BOSS · " if (game_mode == "boss" and String(p["identity"]) == "魔王") else ("👑地主 · " if (game_mode == "doudizhu" and String(p["identity"]) == "地主") else ("⚔守关 · " if (game_mode == "puzzle" and String(p["identity"]) == "守关") else "")))
-			info.text = "%s距 %d · %s" % [mate_prefix, dd, tag_txt]
+			var open_pf := "👁明 · " if (game_mode == "doudizhu" and eng != null and eng.ddz_open_seats.has(seat_idx)) else ""
+			info.text = "%s%s距 %d · %s" % [open_pf, mate_prefix, dd, tag_txt]
 			info.modulate = Color(1, 0.96, 0.78, 1) if (not selected_card.is_empty() and tag_ok) else (Color(1, 1, 1, 1) if tag_ok else Color(0.72, 0.72, 0.78, 0.85))
 		else:
 			info.text = "已阵亡 · %s" % idt
@@ -1698,9 +1705,11 @@ func refresh() -> void:
 	var over_txt: String = ("（需弃%d）" % (h_cnt - h_lim)) if (h_cnt > h_lim and turn_seat == 0) else ""
 	var me_sh: int = int(me.get("shield", 0))
 	var me_mk: int = int((me.get("marks", {}) as Dictionary).get("影羽", 0))
+	var open_txt: String = "👁明牌 " if (game_mode == "doudizhu" and eng != null and eng.ddz_open_seats.has(0)) else ""
+	var seal_txt: String = "❄封技 " if bool(me.get("skills_sealed", false)) else ""
 	var sh_txt: String = ("🛡%d " % me_sh) if me_sh > 0 else ""
 	var mk_txt: String = ("🪶%d " % me_mk) if me_mk > 0 else ""
-	me_hp_label.text = "%s%s%s %d/%d · 手牌 %d/%d%s" % [sh_txt, mk_txt, hearts2, int(me["hp"]), int(me["max_hp"]), h_cnt, h_lim, over_txt]
+	me_hp_label.text = "%s%s%s%s%s %d/%d · 手牌 %d/%d%s" % [open_txt, seal_txt, sh_txt, mk_txt, hearts2, int(me["hp"]), int(me["max_hp"]), h_cnt, h_lim, over_txt]
 	# 自己的体力变化：数值条闪红/闪绿（座位体力槽同理）
 	var me_hp := int(me["hp"])
 	if me_hp_label.has_meta("hp_shown") and int(me_hp_label.get_meta("hp_shown")) != me_hp and not fast and not auto_all:
@@ -3233,7 +3242,7 @@ func start_match(sim: bool) -> void:
 		identities.shuffle()
 	luck_left = 0 if (tutorial or game_mode == "puzzle") else 2
 	lord_pre_char = {}
-	var pool: Array = Characters.LIST.duplicate()
+	var pool: Array = Meta.enabled_pool(Characters.LIST)
 	pool.shuffle()
 	if game_mode == "identity" and String(identities[0]) != "主公":
 		lord_pre_char = pool[0]
@@ -4370,6 +4379,22 @@ func counter_text() -> String:
 					mh.append(fmt_c.call(mc))
 				var mst := ("存活 ♥%d/%d" % [int(mp["hp"]), int(mp["max_hp"])]) if bool(mp["alive"]) else "已阵亡"
 				lines.append("  · [b]%s[/b]（%s）：%s" % [pname(mp), mst, "、".join(PackedStringArray(mh)) if not mh.is_empty() else "（无手牌）"])
+	if game_mode == "doudizhu" and not eng.ddz_open_seats.is_empty():
+		var open_rows: Array = []
+		for os_seat in eng.ddz_open_seats:
+			var si := int(os_seat)
+			if si < 0 or si >= players.size():
+				continue
+			var op: Dictionary = players[si]
+			var oh: Array = []
+			for oc in op["hand"]:
+				oh.append(fmt_c.call(oc))
+			var ost := ("存活 ♥%d/%d" % [int(op["hp"]), int(op["max_hp"])]) if bool(op["alive"]) else "已阵亡"
+			open_rows.append("  · [b]%s[/b]（%s · %s）：%s" % [pname(op), String(op["identity"]), ost, "、".join(PackedStringArray(oh)) if not oh.is_empty() else "（无手牌）"])
+		if not open_rows.is_empty():
+			lines.append("")
+			lines.append("[b][color=#b87312]【斗地主明牌 · 公开手牌（当前×%d倍）】[/color][/b]" % int(eng.ddz_stake()))
+			lines.append_array(open_rows)
 	lines.append("")
 	lines.append("[b][color=#b83258]【关键牌剩余速查】[/color][/b]")
 	lines.append("　".join(PackedStringArray(key_parts)))
@@ -5326,6 +5351,12 @@ func _eng_fx(kind: String, data: Dictionary) -> void:
 			var dm := int(data.get("mul", 2))
 			fx_float(seat, "⚡超级加倍！" if dm >= 4 else "⚡加倍！", Color(1.0, 0.76, 0.18), 48, 70.0)
 			play_sfx("skill")
+		"open_hand":
+			fx_float(seat, "👁 明牌 ×2！", Color(1.0, 0.84, 0.28), 48, 74.0)
+			play_sfx("skill")
+		"seal":
+			fx_float(seat, "❄ 霜封·封技！", Color(0.55, 0.85, 1.0), 44, 64.0)
+			play_sfx("skill")
 
 
 # ---------------- 濒死救援特写 ----------------
@@ -5793,12 +5824,17 @@ func _intro_seat(seat: int) -> Dictionary:
 	var p_mk2 := int((p.get("marks", {}) as Dictionary).get("影羽", 0))
 	if p_mk2 > 0:
 		st.append("🪶影羽 %d/4（手牌上限+%d）" % [p_mk2, p_mk2])
+	if bool(p.get("skills_sealed", false)):
+		st.append("❄ 本回合非锁定技失效")
 	var ddz_ally2 := game_mode == "doudizhu" and String(me["identity"]) == "农民" and String(p["identity"]) == "农民"
-	if ((game_mode == "twovtwo" or game_mode == "boss") or ddz_ally2) and seat != 0 and String(p["identity"]) == String(me["identity"]):
+	var see_ally := ((game_mode == "twovtwo" or game_mode == "boss") or ddz_ally2) and seat != 0 and String(p["identity"]) == String(me["identity"])
+	var see_open: bool = game_mode == "doudizhu" and eng != null and eng.ddz_open_seats.has(seat)
+	if see_ally or see_open:
 		var mcards: Array = []
 		for mc in p["hand"]:
 			mcards.append(card_text(mc))
-		st.append("队友手牌：" + ("、".join(PackedStringArray(mcards)) if not mcards.is_empty() else "无"))
+		var htag := "队友手牌：" if see_ally else "明牌手牌："
+		st.append(htag + ("、".join(PackedStringArray(mcards)) if not mcards.is_empty() else "无"))
 	rt["stats"] = "  ·  ".join(PackedStringArray(st))
 	rt["skills"] = _skills_of(p)
 	rt["used"] = skill_use_count.get(seat, {})
@@ -6583,7 +6619,7 @@ func _on_reshuffle_draft() -> void:
 	if draft_layer == null or not draft_layer.visible:
 		return
 	var pool: Array = []
-	for c in Characters.LIST:
+	for c in Meta.enabled_pool(Characters.LIST):
 		if lord_pre_char.is_empty() or String(c["id"]) != String(lord_pre_char.get("id", "")):
 			pool.append(c)
 	pool.shuffle()

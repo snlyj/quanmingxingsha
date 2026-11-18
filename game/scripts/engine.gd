@@ -72,8 +72,15 @@ func load_skills() -> void:
 	_skill_owner.register_all(self)
 
 
+const LOCKED_SKILLS := ["mowei", "xingshi", "xingying_lord", "jianxin", "podi", "miaosuan", "shengdun", "lianyu"]
+
+
+func is_skill_sealed(p: Dictionary, sid: String) -> bool:
+	return bool(p.get("skills_sealed", false)) and not LOCKED_SKILLS.has(sid)
+
+
 func has_skill(p: Dictionary, sid: String) -> bool:
-	return (p["skills"] as Array).has(sid)
+	return (p["skills"] as Array).has(sid) and not is_skill_sealed(p, sid)
 
 
 func add_skill(p: Dictionary, sid: String) -> void:
@@ -520,6 +527,8 @@ func fire(timing: String, ctx: Dictionary) -> void:
 	var entries: Array = []
 	for p in seat_order_from(start_seat):
 		for sid in (p["skills"] as Array):
+			if is_skill_sealed(p, String(sid)):
+				continue
 			var def: Dictionary = skill_lib.get(sid, {})
 			if def.is_empty():
 				continue
@@ -666,6 +675,7 @@ func setup_game(char_list: Array, identities: Array) -> void:
 		p["xingwei_turn_used"] = false
 		p["marks"] = {}
 		p["pokong_atk_bonus"] = 0
+		p["skills_sealed"] = false
 		p["stat_damage"] = 0
 		p["stat_taken"] = 0
 		p["stat_kills"] = 0
@@ -680,6 +690,7 @@ func setup_game(char_list: Array, identities: Array) -> void:
 	ddz_landlord_seat = -1
 	ddz_multiplier = 1
 	ddz_double = 1
+	ddz_open_seats = []
 	for p in players:
 		var start_n := 4
 		if mode == "duel" and int(p["seat"]) == duel_first_seat:
@@ -1467,7 +1478,7 @@ func use_attack(src: Dictionary, tgt: Dictionary, card: Dictionary, counts := tr
 			changed()
 	# 应变：声明使用后（牌已离手）满足条件词则触发效果词（突击实装 伤害+/强命/目标+，条件含简单条件与助战）
 	var yb := await eval_yingbian_full(src, card, tgt)
-	var yb_hit := bool(card.get("force_hit", false))
+	var yb_hit := bool(card.get("force_hit", false)) or bool(ctx.get("force_hit", false))
 	var yb_extra: Dictionary = {}
 	if bool(yb["triggered"]):
 		var cond_s := "·".join(PackedStringArray(yb["conds"]))
@@ -1488,8 +1499,9 @@ func use_attack(src: Dictionary, tgt: Dictionary, card: Dictionary, counts := tr
 	if not yb_extra.is_empty() and bool(yb_extra["alive"]) and src["alive"] and not game_over:
 		log_msg("「应变·目标+」：%s 也成为此次「突击」的目标。" % pname(yb_extra))
 		fx("attack", {"src_seat": int(src["seat"]), "tgt_seat": int(yb_extra["seat"]), "nature": nature})
-		if not await attack_target_excluded(src, yb_extra, card):
-			await resolve_attack_hit(src, yb_extra, card, dmg, wname, nature, yb_hit)
+		var ex_yb_ctx := {}
+		if not await attack_target_excluded(src, yb_extra, card, ex_yb_ctx):
+			await resolve_attack_hit(src, yb_extra, card, dmg, wname, nature, yb_hit or bool(ex_yb_ctx.get("force_hit", false)))
 	# 星月画戟：突击是最后一张手牌时，可再追加至多两名目标
 	if wname == "星月画戟" and was_last and src["alive"] and not game_over:
 		var extras: Array = []
@@ -1525,14 +1537,16 @@ func use_attack(src: Dictionary, tgt: Dictionary, card: Dictionary, counts := tr
 				continue
 			log_msg("「星月画戟」追加目标：%s。" % pname(t))
 			fx("attack", {"src_seat": int(src["seat"]), "tgt_seat": int(t["seat"]), "nature": nature})
-			if not await attack_target_excluded(src, t, card):
-				await resolve_attack_hit(src, t, card, dmg, wname, nature, yb_hit)
+			var ex_ctx := {}
+			if not await attack_target_excluded(src, t, card, ex_ctx):
+				await resolve_attack_hit(src, t, card, dmg, wname, nature, yb_hit or bool(ex_ctx.get("force_hit", false)))
 
 
 # 追加目标同样经过「成为目标时」的技能（如猫步），被排除时只跳过该目标
-func attack_target_excluded(src: Dictionary, t: Dictionary, card: Dictionary) -> bool:
+func attack_target_excluded(src: Dictionary, t: Dictionary, card: Dictionary, out_ctx: Dictionary = {}) -> bool:
 	var c2 := {"name": "useCard", "player": src, "source": src, "target": t, "card": card, "cancelled": false}
 	await fire("useCardBegin", c2)
+	out_ctx["force_hit"] = bool(c2.get("force_hit", false))
 	return bool(c2.get("cancelled", false)) or game_over
 
 
@@ -2003,6 +2017,7 @@ func run_turn(p: Dictionary) -> void:
 		await think(0.6, 1.0)
 	for q in players:
 		q["xingwei_turn_used"] = false
+		q["skills_sealed"] = false
 	p["pokong_atk_bonus"] = 0
 	turn_player = p
 	phase_text = "准备阶段"
@@ -2097,6 +2112,13 @@ func run_turn(p: Dictionary) -> void:
 	await fire("phaseJieshuStart", base.duplicate())
 	await fire("phaseJieshu", base.duplicate())
 	await fire("phaseJieshuEnd", base.duplicate())
+	var had_seal := false
+	for q_e in players:
+		if bool(q_e.get("skills_sealed", false)):
+			q_e["skills_sealed"] = false
+			had_seal = true
+	if had_seal:
+		changed()
 	p["drunk"] = false
 	p["canyue_turn"] = false
 	p["jianxin_dmg_turn"] = false
@@ -2208,6 +2230,7 @@ var duel_first_seat: int = 0
 var ddz_multiplier: int = 1
 var ddz_double: int = 1
 var ddz_landlord_seat: int = -1
+var ddz_open_seats: Array = []
 var fan_total := 2
 var revealed_fan_dead := 0
 
@@ -2845,6 +2868,7 @@ func ddz_stake() -> int:
 
 func run_ddz_doubling() -> void:
 	ddz_double = 1
+	ddz_open_seats = []
 	var has_hum := false
 	for q in players:
 		if not is_ai(q):
@@ -2854,10 +2878,13 @@ func run_ddz_doubling() -> void:
 		if game_over:
 			return
 		var mul := 1
+		var open_hand := false
+		var des := ai_ddz_bid_desire(p) if is_ai(p) else 0
 		if is_ai(p):
-			var des := ai_ddz_bid_desire(p)
 			if des >= 3:
 				mul = 2
+				if String(p["identity"]) == "地主":
+					open_hand = true
 		elif ui.has("pick_option"):
 			var role_tag := "【地主】" if String(p["identity"]) == "地主" else "【农民】"
 			var v: Variant = await (ui["pick_option"] as Callable).call(p, [
@@ -2866,11 +2893,23 @@ func run_ddz_doubling() -> void:
 				{"label": "超级加倍（×4）", "value": 4},
 			], "斗地主加倍：你作为%s，当前总倍数 ×%d，是否加倍？" % [role_tag, ddz_stake()])
 			mul = clampi(int(v), 1, 4)
+			var ov: Variant = await (ui["pick_option"] as Callable).call(p, [
+				{"label": "保持暗牌（×1）", "value": false, "default": true},
+				{"label": "明牌亮手（×2 · 公开手牌）", "value": true},
+			], "斗地主明牌：你作为%s，是否公开手牌令总倍数 ×2？（当前总倍数 ×%d）" % [role_tag, ddz_stake()])
+			open_hand = bool(ov)
 		if mul > 1:
-			ddz_double = mini(16, ddz_double * mul)
+			ddz_double = mini(32, ddz_double * mul)
 			var lbl_m := "超级加倍！" if mul >= 4 else "加倍！"
 			log_msg("⚡「%s」%s 选择%s本局加倍倍率升至 ×%d（总倍数 ×%d）。" % [String(p["identity"]), pname(p), lbl_m, ddz_double, ddz_stake()])
 			fx("doubling", {"seat": int(p["seat"]), "mul": mul})
+			if has_hum:
+				await pace(0.25)
+		if open_hand:
+			ddz_open_seats.append(int(p["seat"]))
+			ddz_double = mini(32, ddz_double * 2)
+			log_msg("👁「%s」%s 选择【明牌】！公开全部手牌，加倍倍率升至 ×%d（总倍数 ×%d）。" % [String(p["identity"]), pname(p), ddz_double, ddz_stake()])
+			fx("open_hand", {"seat": int(p["seat"])})
 			if has_hum:
 				await pace(0.25)
 	changed()

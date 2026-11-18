@@ -545,8 +545,7 @@ func show_home() -> void:
 	var strip := HBoxContainer.new()
 	strip.alignment = BoxContainer.ALIGNMENT_CENTER
 	strip.add_theme_constant_override("separation", 18)
-	if home_showcase_ids.is_empty():
-		home_showcase_ids = ["sena", "hina", "reo"]
+	home_showcase_ids = Meta.get_showcase(Characters.LIST)
 	for slot_i in home_showcase_ids.size():
 		var pid := String(home_showcase_ids[slot_i])
 		var ch_d := Characters.by_id(pid)
@@ -729,9 +728,17 @@ func make_char_card(c: Dictionary, scroll: ScrollContainer = null) -> Button:
 	var sk_names: Array = []
 	for skd in c["skills"]:
 		sk_names.append("【%s】" % String(skd["name"]))
-	var skl := lbl(" ".join(PackedStringArray(sk_names)), 22, C_INK_SOFT, false, HORIZONTAL_ALIGNMENT_CENTER)
+	var cid_m := String(c["id"])
+	var banned_m := Meta.is_char_banned(cid_m)
+	var cst := Meta.char_stats_by_name(String(c["name"]))
+	var cg_n := int(cst.get("games", 0))
+	var cw_n := int(cst.get("wins", 0))
+	var stat_suf := " · 🚫已禁用" if banned_m else (" · %d胜/%d局" % [cw_n, cg_n] if cg_n > 0 else "")
+	var skl := lbl(" ".join(PackedStringArray(sk_names)) + stat_suf, 21, C_PINK_DEEP if banned_m else C_INK_SOFT, banned_m, HORIZONTAL_ALIGNMENT_CENTER)
 	skl.mouse_filter = MOUSE_FILTER_IGNORE
 	vb.add_child(skl)
+	if banned_m:
+		b.modulate = Color(0.84, 0.80, 0.86, 0.90)
 	b.add_child(vb)
 	b.set_meta("intro", IntroPop.char_spec(c))
 	b.set_meta("drag_px", 0.0)
@@ -800,6 +807,48 @@ func show_detail(c: Dictionary) -> void:
 		var st := lbl(sk["text"], 28, C_INK)
 		st.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		rv.add_child(st)
+	var sep2 := HSeparator.new()
+	rv.add_child(sep2)
+	var cid_d := String(c["id"])
+	var cstat := Meta.char_stats_by_name(String(c["name"]))
+	var cg := int(cstat.get("games", 0))
+	var cw := int(cstat.get("wins", 0))
+	var cxp := int(cstat.get("xp", 0))
+	var lv_d := Meta.level_of(cxp)
+	var rate_s := (" · 胜率 %.0f%%" % (100.0 * float(cw) / float(cg))) if cg > 0 else ""
+	var stat_lbl := lbl("战绩：Lv.%d · %d 胜 / %d 局%s" % [lv_d, cw, cg, rate_s], 25, C_INK_SOFT, true)
+	rv.add_child(stat_lbl)
+	var act_hb := HBoxContainer.new()
+	act_hb.add_theme_constant_override("separation", 16)
+	rv.add_child(act_hb)
+	var sc_list := Meta.get_showcase(Characters.LIST)
+	var is_pin := (not sc_list.is_empty() and String(sc_list[0]) == cid_d)
+	var mk_det_btn := func(txt: String, bg: Color) -> Button:
+		var b := Button.new()
+		b.text = txt
+		b.custom_minimum_size = Vector2(280, 58)
+		b.focus_mode = Control.FOCUS_NONE
+		b.add_theme_font_override("font", font_bold)
+		b.add_theme_font_size_override("font_size", 24)
+		b.add_theme_color_override("font_color", C_WHITE)
+		b.add_theme_stylebox_override("normal", style(bg, 16, C_GOLD, 2, true))
+		b.add_theme_stylebox_override("hover", style(bg.lightened(0.08), 16, C_GOLD, 2, true))
+		return b
+	var pin_b: Button = mk_det_btn.call("★ 当前首页主看板" if is_pin else "☆ 设为首页看板", C_GOLD if is_pin else C_PLATE)
+	pin_b.pressed.connect(func() -> void:
+		home_showcase_ids = Meta.pin_showcase_char(cid_d)
+		show_detail(c))
+	act_hb.add_child(pin_b)
+	var is_ban := Meta.is_char_banned(cid_d)
+	var ban_b: Button = mk_det_btn.call("✓ 已禁用（点击恢复）" if is_ban else "🚫 禁用点将池", Color(0.55, 0.36, 0.42) if is_ban else Color(0.45, 0.45, 0.56))
+	var ban_msg := lbl("", 22, C_PINK_DEEP, true)
+	ban_b.pressed.connect(func() -> void:
+		if Meta.toggle_ban_char(cid_d, Characters.LIST.size()):
+			show_detail(c)
+		else:
+			ban_msg.text = "至少需保留 8 名启用武将，无法继续禁用！")
+	act_hb.add_child(ban_b)
+	rv.add_child(ban_msg)
 	row.add_child(right)
 
 
@@ -858,13 +907,11 @@ func show_puzzles() -> void:
 	sc.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	sc.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	vb.add_child(sc)
-	var grid := GridContainer.new()
-	grid.columns = 2
-	grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	grid.add_theme_constant_override("h_separation", 20)
-	grid.add_theme_constant_override("v_separation", 18)
-	sc.add_child(grid)
-	for i in total_n:
+	var ch_vb := VBoxContainer.new()
+	ch_vb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	ch_vb.add_theme_constant_override("separation", 18)
+	sc.add_child(ch_vb)
+	var make_pz_card := func(i: int, grid_tgt: GridContainer) -> void:
 		var ps: Dictionary = Puzzles.LIST[i]
 		var pid := String(ps["id"])
 		var cleared := Meta.puzzle_cleared(pid)
@@ -894,8 +941,12 @@ func show_puzzles() -> void:
 		hd.add_child(lbl(star_s, 22, C_GOLD, true))
 		hd.add_child(lbl("✓ 已破关" if cleared else "待挑战", 21, Color(0.18, 0.62, 0.32) if cleared else C_PINK_DEEP, true))
 		info.add_child(hd)
-		info.add_child(lbl(String(ps["brief"]), 21, C_INK_SOFT))
-		info.add_child(lbl("目标：" + String(ps["goal"]), 20, C_INK, true))
+		var br_lbl := lbl(String(ps["brief"]), 21, C_INK_SOFT)
+		br_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		info.add_child(br_lbl)
+		var gl_lbl := lbl("目标：" + String(ps["goal"]), 20, C_INK, true)
+		gl_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		info.add_child(gl_lbl)
 		var go_b := Button.new()
 		go_b.text = "重玩此关" if cleared else "挑战本关"
 		go_b.custom_minimum_size = Vector2(150, 56)
@@ -907,7 +958,31 @@ func show_puzzles() -> void:
 		go_b.add_theme_stylebox_override("normal", style(Color(0.32, 0.68, 0.44) if cleared else C_PLATE, 16, C_GOLD, 2, true))
 		go_b.pressed.connect(func() -> void: start_puzzle(pid))
 		row.add_child(go_b)
-		grid.add_child(card)
+		grid_tgt.add_child(card)
+	for ch_no in [1, 2]:
+		var indices: Array = []
+		var ch_done := 0
+		for i in total_n:
+			var pid0 := String((Puzzles.LIST[i] as Dictionary)["id"])
+			if Puzzles.chapter_of(pid0) == ch_no:
+				indices.append(i)
+				if Meta.puzzle_cleared(pid0):
+					ch_done += 1
+		if indices.is_empty():
+			continue
+		var ch_head := PanelContainer.new()
+		ch_head.add_theme_stylebox_override("panel", style(Color(0.95, 0.97, 1.0, 0.90) if ch_no == 2 else Color(1, 1, 1, 0.85), 18, Color(0.45, 0.68, 0.95) if ch_no == 2 else C_GOLD, 2, true))
+		var ch_txt := ("❄ 第二章 · 新锐名局（改判/影羽/观星/水淹/霜封 · %d/%d）" % [ch_done, indices.size()]) if ch_no == 2 else ("🌸 第一章 · 樱社入门（经典破防与绝杀 · %d/%d）" % [ch_done, indices.size()])
+		ch_head.add_child(lbl(ch_txt, 26, Color(0.18, 0.38, 0.68) if ch_no == 2 else C_PINK_DEEP, true))
+		ch_vb.add_child(ch_head)
+		var grid := GridContainer.new()
+		grid.columns = 2
+		grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		grid.add_theme_constant_override("h_separation", 20)
+		grid.add_theme_constant_override("v_separation", 18)
+		ch_vb.add_child(grid)
+		for i_p in indices:
+			make_pz_card.call(int(i_p), grid)
 
 
 func show_tutorial() -> void:
@@ -2017,11 +2092,14 @@ func _on_home_showcase_clicked(slot_idx: int) -> void:
 	if IntroPop.inst != null and IntroPop.inst.swallowing():
 		return
 	var cands: Array = []
-	for c in Characters.LIST:
-		if not home_showcase_ids.has(String(c["id"])):
-			cands.append(String(c["id"]))
+	for c in Meta.enabled_pool(Characters.LIST):
+		var cid := String(c["id"])
+		if not home_showcase_ids.has(cid):
+			cands.append(cid)
 	if not cands.is_empty():
-		home_showcase_ids[slot_idx] = cands[randi() % cands.size()]
+		var picked := String(cands[randi() % cands.size()])
+		home_showcase_ids[slot_idx] = picked
+		Meta.set_showcase_slot(slot_idx, picked)
 	show_home()
 
 

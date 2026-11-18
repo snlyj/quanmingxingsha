@@ -45,6 +45,8 @@ func register_all(eng) -> void:
 	eng.register_skill("mingzha", {"name": "命札"})
 	eng.register_skill("yuchen", {"name": "余谶", "timings": {"phaseZhunbeiStart": {"who": "player", "filter": Callable(self, "_yuchen_filter"), "content": Callable(self, "_yuchen_content")}}})
 	eng.register_skill("pokong", {"name": "破空", "active": {"filter": Callable(self, "_pokong_filter"), "ai_use": Callable(self, "_pokong_aiuse"), "content": Callable(self, "_pokong_content")}})
+	eng.register_skill("shuangfeng", {"name": "霜封", "timings": {"useCardBegin": {"who": "source", "filter": Callable(self, "_shuangfeng_filter"), "ai_decide": Callable(self, "_shuangfeng_ai"), "content": Callable(self, "_shuangfeng_content")}}})
+	eng.register_skill("bingxin", {"name": "冰心", "timings": {"phaseJieshuStart": {"who": "player", "filter": Callable(self, "_bingxin_filter"), "ai_decide": Callable(self, "_bingxin_ai"), "content": Callable(self, "_bingxin_content")}}})
 	eng.register_skill("xingying_lord", {"name": "星樱号令", "text": "主公技，锁定技。你的首个准备阶段开始时，若你没有「护甲」，你获得 1 点「护甲」；其他同阵营角色在濒死时对你使用「补给」后摸 1 张牌。", "timings": {"phaseZhunbeiStart": {"who": "player", "forced": true, "filter": Callable(self, "_xingying_lord_filter"), "content": Callable(self, "_xingying_lord_content")}}})
 
 
@@ -1144,3 +1146,50 @@ func _yuchen_filter(eng, ctx, p) -> bool:
 func _yuchen_content(eng, ctx, p) -> void:
 	eng.draw_cards(p, 1)
 	eng.log_msg("🔮「余谶」：%s 手牌少于体力上限，摸 1 张牌。" % eng.pname(p))
+
+
+# ---------------- V0.40 千早真冬：霜封 / 冰心 ----------------
+func _shuangfeng_filter(_eng, ctx: Dictionary, _p: Dictionary) -> bool:
+	var card: Dictionary = ctx.get("card", {})
+	var tgt: Dictionary = ctx.get("target", {})
+	return String(card.get("name", "")) == "突击" and not bool(ctx.get("cancelled", false)) and not tgt.is_empty() and bool(tgt.get("alive", false))
+
+
+func _shuangfeng_ai(eng, ctx: Dictionary, p: Dictionary) -> bool:
+	var tgt: Dictionary = ctx.get("target", {})
+	return eng.ai_is_enemy(p, tgt)
+
+
+func _shuangfeng_content(eng, ctx: Dictionary, p: Dictionary) -> void:
+	var tgt: Dictionary = ctx.get("target", {})
+	if tgt.is_empty() or not bool(tgt.get("alive", false)):
+		return
+	# 照无名杀/手游「铁骑」时序：先令目标非锁定技本回合失效，再进行判定
+	tgt["skills_sealed"] = true
+	eng.fx("seal", {"seat": int(tgt["seat"])})
+	eng.log_msg("❄「霜封」：%s 冻结了 %s 本回合的非锁定技，并进行判定。" % [eng.pname(p), eng.pname(tgt)])
+	eng.changed()
+	var jc: Dictionary = await eng.do_judge(p, "霜封")
+	if not jc.is_empty() and eng.is_black(jc):
+		ctx["force_hit"] = true
+		eng.log_msg("❄「霜封」判定为黑色（%s）：此「突击」不可被「闪避」响应！" % eng.card_text(jc))
+	elif not jc.is_empty():
+		eng.log_msg("❄「霜封」判定为红色（%s）：目标本回合非锁定技失效，可正常响应「闪避」。" % eng.card_text(jc))
+
+
+func _bingxin_filter(_eng, _ctx: Dictionary, p: Dictionary) -> bool:
+	return (p["hand"] as Array).size() < int(p["max_hp"])
+
+
+func _bingxin_ai(_eng, _ctx: Dictionary, _p: Dictionary) -> bool:
+	return true
+
+
+func _bingxin_content(eng, _ctx: Dictionary, p: Dictionary) -> void:
+	var need: int = mini(2, int(p["max_hp"]) - (p["hand"] as Array).size())
+	if need <= 0:
+		return
+	eng.draw_cards(p, need)
+	eng.fx("draw", {"seat": int(p["seat"]), "num": need})
+	eng.log_msg("❄「冰心」：%s 发动冰心从牌堆摸了 %d 张牌。" % [eng.pname(p), need])
+	eng.changed()

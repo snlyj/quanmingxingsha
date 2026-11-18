@@ -368,6 +368,7 @@ func _run_reg_test() -> void:
 	await _reg_v37()
 	await _reg_v38()
 	await _reg_v39()
+	await _reg_v40()
 	_reg_lines.append("REGTEST_DONE tests=%d fails=%d" % [_reg_n, _reg_fails])
 	_write("/tmp/ask_regtest.txt", _reg_lines)
 	print(_reg_lines[_reg_lines.size() - 1])
@@ -2786,7 +2787,7 @@ func _reg_v36() -> void:
 	await get_tree().process_frame
 	_ok(Characters.LIST.size() >= 15 and ResourceLoader.exists("res://assets/cg/lilia.webp"), "V36-4 角色池扩充至 15 人及以上且莉莉娅 CG 资源齐全")
 
-func _pz_play(pid: String, move_fn: Callable, opt_fn: Callable = Callable(), card_fn: Callable = Callable(), tgt_fn: Callable = Callable()):
+func _pz_play(pid: String, move_fn: Callable, opt_fn: Callable = Callable(), card_fn: Callable = Callable(), tgt_fn: Callable = Callable(), ask_fn: Callable = Callable()):
 	var spec: Dictionary = PuzzlesT.by_id(pid)
 	var eng = EngineS.new()
 	eng.load_skills()
@@ -2800,6 +2801,7 @@ func _pz_play(pid: String, move_fn: Callable, opt_fn: Callable = Callable(), car
 	PuzzlesT.rig(eng, spec)
 	eng.set_ui({
 		"is_human": func(p): return int(p["seat"]) == 0,
+		"ask_skill": func(p, sid, tm, ctx): return bool(ask_fn.call(p, sid, tm, ctx)) if ask_fn.is_valid() else true,
 		"ask_respond": func(p, nm, reason): return String(nm) == "突击" and String(reason) == "单挑",
 		"ask_save": func(p, dying): return false,
 		"pick_option": func(p, opts, prompt):
@@ -2837,7 +2839,7 @@ func _pz_find(p: Dictionary, nm: String, nat: String = "") -> Dictionary:
 
 # ---------------- V0.37：残局闯关（全 10 关必胜与错手判负） / 星野咲夜 / 排序与斗地主同盟 ----------------
 func _reg_v37() -> void:
-	_ok(PuzzlesT.count() == 10, "V37-1 残局闯关配置全 10 关")
+	_ok(PuzzlesT.count() >= 15, "V37-1 残局闯关配置至少 10 关（当前 %d 关）" % PuzzlesT.count())
 
 	# p01 破甲一击
 	var e1 = await _pz_play("p01", func(e, p):
@@ -3064,7 +3066,10 @@ func _reg_v37() -> void:
 	_ok(String(MetaT.win_rate_text("all")) == "—", "V37-3 残局挑战不污染普通对战总胜率")
 	for k in range(2, 11):
 		MetaT.mark_puzzle("p%02d" % k)
-	_ok(MetaT.puzzles_cleared_count() == 10 and (MetaT.load_data()["ach"] as Dictionary).has("puzzle_all"), "V37-3 通关全 10 关解锁成就「残局大师」")
+	_ok(MetaT.puzzles_cleared_count() == 10 and (MetaT.load_data()["ach"] as Dictionary).has("puzzle_master"), "V37-3 通关 10 关解锁成就「破局宗师」")
+	for k2 in range(11, PuzzlesT.count() + 1):
+		MetaT.mark_puzzle("p%02d" % k2)
+	_ok(MetaT.puzzles_cleared_count() == PuzzlesT.count() and (MetaT.load_data()["ach"] as Dictionary).has("puzzle_all"), "V37-3b 通关全 %d 关解锁成就「残局大师」" % PuzzlesT.count())
 	MetaT.reset_for_test("user://meta_v37.json")
 	MetaT.path = "user://meta_test.json"
 
@@ -3075,7 +3080,7 @@ func _reg_v37() -> void:
 	for n in main_ref.screen_root.find_children("*", "Button", true, false):
 		if (n as Button).text in ["挑战本关", "重玩此关"]:
 			pz_btns += 1
-	_ok(pz_btns == 10, "V37-4 残局选关大厅渲染全部 10 关挑战入口")
+	_ok(pz_btns == PuzzlesT.count(), "V37-4 残局选关大厅渲染全部 %d 关挑战入口" % PuzzlesT.count())
 	main_ref.start_puzzle("p07")
 	var bs_pz = null
 	for ch in main_ref.screen_root.get_children():
@@ -3243,3 +3248,237 @@ func _reg_v39() -> void:
 	Meta39.path = "user://meta_test.json"
 	main_ref.show_home()
 	await get_tree().process_frame
+
+
+func _reg_v40() -> void:
+	# V40-1: 第 19 名角色千早真冬（mafuyu）与 CG 资源
+	var mf_c := Characters.by_id("mafuyu")
+	_ok(Characters.LIST.size() >= 19 and not mf_c.is_empty() and String(mf_c["name"]) == "千早真冬" and ResourceLoader.exists("res://assets/cg/mafuyu.webp"), "V40-1 第 19 名角色「千早真冬」及 CG 资源齐全")
+
+	# V40-2: 霜封：封锁非锁定技（如绯樱/星帷）+ 黑色判定强命 + 锁定技豁免（圣盾）+ 回合结束解除
+	var eng_sf = _clean_eng()
+	eng_sf.setup_game([
+		{"name": "千早真冬", "hp": 3, "skills": ["shuangfeng"]},
+		{"name": "樱庭雏", "hp": 3, "skills": ["feiyin", "shengdun"]},
+	], ["主公", "反贼"])
+	for p in eng_sf.players:
+		(p["hand"] as Array).clear()
+		(p["judge"] as Array).clear()
+		p["shield"] = 0
+	var mf: Dictionary = eng_sf.players[0]
+	var hn: Dictionary = eng_sf.players[1]
+	(mf["hand"] as Array).append({"name": "突击", "suit": "红桃", "point": 7, "nature": ""})
+	(hn["hand"] as Array).append({"name": "闪避", "suit": "红桃", "point": 5})
+	# deck pops from back: 判定牌黑桃10
+	eng_sf.deck.append({"name": "突击", "suit": "黑桃", "point": 10, "nature": ""})
+	eng_sf.set_ui({
+		"is_human": func(p): return int(p["seat"]) == 0,
+		"pick_option": func(_p, opts, _prompt):
+			return true if opts.size() > 0 and opts[0].get("value") is bool else opts[0]["value"],
+	})
+	await eng_sf.use_attack(mf, hn, mf["hand"][0])
+	_ok(bool(hn.get("skills_sealed", false)) and not eng_sf.has_skill(hn, "feiyin") and eng_sf.has_skill(hn, "shengdun"), "V40-2a 霜封封锁非锁定技但不封锁定技")
+	_ok(int(hn["hp"]) == 2 and (hn["hand"] as Array).size() == 1, "V40-2b 霜封判定黑色强命无视闪避命中 1 点伤害")
+	eng_sf.set_ui({})
+
+	# V40-3: 冰心：结束阶段将手牌补至不超过体力上限（单次至多摸 2 张）
+	var eng_bx = _clean_eng()
+	eng_bx.setup_game([
+		{"name": "千早真冬", "hp": 3, "skills": ["bingxin"]},
+		{"name": "星野咲夜", "hp": 3, "skills": []},
+	], ["主公", "反贼"])
+	for p in eng_bx.players:
+		(p["hand"] as Array).clear()
+		(p["judge"] as Array).clear()
+	var mf2: Dictionary = eng_bx.players[0]
+	mf2["max_hp"] = 4
+	mf2["hp"] = 3
+	(mf2["hand"] as Array).append({"name": "闪避", "suit": "红桃", "point": 2})
+	eng_bx.set_ui({"is_human": func(_p): return false})
+	await eng_bx.fire("phaseJieshuStart", {"name": "phaseJieshu", "player": mf2})
+	_ok((mf2["hand"] as Array).size() == 3, "V40-3 冰心 1 牌摸 2 张至 3（受单次最多 2 张限制）")
+	eng_bx.set_ui({})
+
+	# V40-4: 残局第二章 p11~p15 正解通关 + 常见错序陷阱失败验证
+	_ok(PuzzlesT.count() >= 15 and PuzzlesT.chapter_of("p10") == 1 and PuzzlesT.chapter_of("p11") == 2 and PuzzlesT.chapter_of("p15") == 2, "V40-4a 残局扩展至 15 关且分章正确")
+
+	# p11 正解：连弩 -> 特饮 -> 突击（命札以看破黑桃11改判红桃6） -> 突击击杀
+	var e11_ok = await _pz_play("p11", func(e, me):
+		var bow := _pz_find(me, "魔导连弩")
+		if not bow.is_empty(): await e.play_card(me, bow, me)
+		var drk := _pz_find(me, "特饮")
+		if not drk.is_empty(): await e.play_card(me, drk, me)
+		var a1 := _pz_find(me, "突击")
+		if not a1.is_empty(): await e.play_card(me, a1, e.players[1])
+		var a2 := _pz_find(me, "突击")
+		if not a2.is_empty() and e.players[1]["alive"]: await e.play_card(me, a2, e.players[1]),
+		func(_e, _p, opts, _pr):
+			return true,
+		func(_e, _p, cands, _pr):
+			for c in cands:
+				if String(c["name"]) == "看破": return c
+			return cands[0])
+	_ok(bool(e11_ok.game_over) and String(e11_ok.winner_text) == "残局破解成功！", "V40-4b p11「命札破阵」正解过关")
+	# p11 陷阱：拒绝发动命札改判 -> 红桃6触发结界手环闪避 2 伤特饮突击 -> 守关者存活失败
+	var e11_trap = await _pz_play("p11", func(e, me):
+		var bow := _pz_find(me, "魔导连弩")
+		if not bow.is_empty(): await e.play_card(me, bow, me)
+		var drk := _pz_find(me, "特饮")
+		if not drk.is_empty(): await e.play_card(me, drk, me)
+		var a1 := _pz_find(me, "突击")
+		if not a1.is_empty(): await e.play_card(me, a1, e.players[1])
+		var a2 := _pz_find(me, "突击")
+		if not a2.is_empty() and e.players[1]["alive"]: await e.play_card(me, a2, e.players[1]),
+		func(_e, _p, _opts, _pr):
+			return false)
+	_ok(bool(e11_trap.game_over) and not String(e11_trap.winner_text) == "残局破解成功！", "V40-4c p11 拒绝命札改判必定失败")
+
+	# p12 正解：先出突击骗出1号位闪避 -> 再破空（摸突击+火试炼）-> 2伤突击斩1号位 -> 火焰试炼弃红桃闪避斩2号位
+	var e12_ok = await _pz_play("p12", func(e, me):
+		var a0 := _pz_find(me, "突击")
+		if not a0.is_empty(): await e.play_card(me, a0, e.players[1])
+		await e.use_active_skill(me, "pokong")
+		var a1 := _pz_find(me, "突击")
+		if not a1.is_empty() and e.players[1]["alive"]: await e.play_card(me, a1, e.players[1])
+		var hg := _pz_find(me, "火焰试炼")
+		if not hg.is_empty() and e.players[2]["alive"]: await e.play_card(me, hg, e.players[2]))
+	_ok(bool(e12_ok.game_over) and String(e12_ok.winner_text) == "残局破解成功！", "V40-4d p12「影羽破空」先诱闪再破空过关")
+	# p12 陷阱：先破空再突击 -> 破空加伤撞进闪避 -> 守关者存活失败
+	var e12_trap = await _pz_play("p12", func(e, me):
+		await e.use_active_skill(me, "pokong")
+		var a0 := _pz_find(me, "突击")
+		if not a0.is_empty(): await e.play_card(me, a0, e.players[1])
+		var a1 := _pz_find(me, "突击")
+		if not a1.is_empty() and e.players[1]["alive"]: await e.play_card(me, a1, e.players[1])
+		var hg := _pz_find(me, "火焰试炼")
+		if not hg.is_empty() and e.players[2]["alive"]: await e.play_card(me, hg, e.players[2]))
+	_ok(bool(e12_trap.game_over) and not String(e12_trap.winner_text) == "残局破解成功！", "V40-4e p12 先开破空浪费加伤必定失败")
+
+	# p13 正解：时计选火突击 -> 突然检查拆闪避 -> 火突击双倍穿藤蔓
+	var e13_ok = await _pz_play("p13", func(e, me):
+		await e.use_active_skill(me, "shiji")
+		var dis := _pz_find(me, "突然检查")
+		if not dis.is_empty() and not (e.players[1]["hand"] as Array).is_empty(): await e.play_card(me, dis, e.players[1], e.players[1]["hand"][0])
+		var fa := _pz_find(me, "突击", "火")
+		if not fa.is_empty(): await e.play_card(me, fa, e.players[1]),
+		func(_e, _p, opts, _pr):
+			for o in opts:
+				var lb := String((o as Dictionary).get("label", ""))
+				if lb.contains("火") or lb.contains("突击"): return o["value"]
+			return opts[0]["value"],
+		func(_e, _p, cands, _pr):
+			for c in cands:
+				if String(c["name"]) == "闪避": return c
+			return cands[0])
+	_ok(bool(e13_ok.game_over) and String(e13_ok.winner_text) == "残局破解成功！", "V40-4f p13「星时抉择」选火突击破藤蔓过关")
+	# p13 陷阱：时计误选特饮 -> 普通突击被藤蔓铠甲免疫
+	var e13_trap = await _pz_play("p13", func(e, me):
+		await e.use_active_skill(me, "shiji")
+		var dis := _pz_find(me, "突然检查")
+		if not dis.is_empty() and not (e.players[1]["hand"] as Array).is_empty(): await e.play_card(me, dis, e.players[1], e.players[1]["hand"][0])
+		var drk := _pz_find(me, "特饮")
+		if not drk.is_empty(): await e.play_card(me, drk, me)
+		var na := _pz_find(me, "突击")
+		if not na.is_empty(): await e.play_card(me, na, e.players[1]),
+		func(_e, _p, opts, _pr):
+			for o in opts:
+				if String((o as Dictionary).get("label", "")).contains("特饮"): return o["value"]
+			return opts[opts.size() - 1]["value"],
+		func(_e, _p, cands, _pr):
+			for c in cands:
+				if String(c["name"]) == "闪避": return c
+			return cands[0])
+	_ok(bool(e13_trap.game_over) and not String(e13_trap.winner_text) == "残局破解成功！", "V40-4g p13 误拿特饮打不动藤蔓必定失败")
+
+	# p14 正解：先水淹逼弃满血银狮（0回血） -> 再特饮+突击 2 伤斩杀
+	var e14_ok = await _pz_play("p14", func(e, me):
+		var sy := _pz_find(me, "水淹七军")
+		if not sy.is_empty(): await e.play_card(me, sy, e.players[1])
+		var drk := _pz_find(me, "特饮")
+		if not drk.is_empty(): await e.play_card(me, drk, me)
+		var a := _pz_find(me, "突击")
+		if not a.is_empty() and e.players[1]["alive"]: await e.play_card(me, a, e.players[1]))
+	_ok(bool(e14_ok.game_over) and String(e14_ok.winner_text) == "残局破解成功！", "V40-4h p14「洪流弃甲」满血逼弃银狮不回血过关")
+	# p14 陷阱：先特饮+突击只打 1 伤 -> 再水淹弃银狮帮敌回满 2 血 -> 失败
+	var e14_trap = await _pz_play("p14", func(e, me):
+		var drk := _pz_find(me, "特饮")
+		if not drk.is_empty(): await e.play_card(me, drk, me)
+		var a := _pz_find(me, "突击")
+		if not a.is_empty(): await e.play_card(me, a, e.players[1])
+		var sy := _pz_find(me, "水淹七军")
+		if not sy.is_empty() and e.players[1]["alive"]: await e.play_card(me, sy, e.players[1]))
+	_ok(bool(e14_trap.game_over) and not String(e14_trap.winner_text) == "残局破解成功！", "V40-4i p14 先砍后水淹触发银狮回血必定失败")
+
+	# p15 正解：羁绊锁链横置两敌 -> 特饮 -> 火突击打星川幽并发动霜封（先封命札、黑桃强命） -> 连环传导穿藤蔓双杀
+	var e15_ok = await _pz_play("p15", func(e, me):
+		var ts_c := _pz_find(me, "羁绊锁链")
+		if not ts_c.is_empty(): await e.play_card(me, ts_c, e.players[1])
+		var drk := _pz_find(me, "特饮")
+		if not drk.is_empty(): await e.play_card(me, drk, me)
+		var fa := _pz_find(me, "突击", "火")
+		if not fa.is_empty(): await e.play_card(me, fa, e.players[1]),
+		func(e, p, opts, pr):
+			if String(pr).contains("羁绊锁链"):
+				for o in opts:
+					if o["value"] is Dictionary and o["value"] == e.players[2]: return o["value"]
+			if int(p["seat"]) == 0:
+				return true
+			return opts[0]["value"],
+		Callable(),
+		func(e, _p, cands, _pr):
+			for c in cands:
+				if c == e.players[2]: return c
+			return cands[0])
+	_ok(bool(e15_ok.game_over) and String(e15_ok.winner_text) == "残局破解成功！", "V40-4j p15「霜封破御」封命札强命连环双杀过关")
+	# p15 陷阱：放弃发动霜封 -> 星川幽打出黑桃8闪避完全躲过 -> 失败
+	var e15_trap = await _pz_play("p15", func(e, me):
+		var ts_c := _pz_find(me, "羁绊锁链")
+		if not ts_c.is_empty(): await e.play_card(me, ts_c, e.players[1])
+		var drk := _pz_find(me, "特饮")
+		if not drk.is_empty(): await e.play_card(me, drk, me)
+		var fa := _pz_find(me, "突击", "火")
+		if not fa.is_empty(): await e.play_card(me, fa, e.players[1]),
+		func(e, _p, opts, pr):
+			if String(pr).contains("羁绊锁链"):
+				for o in opts:
+					if o["value"] is Dictionary and o["value"] == e.players[2]: return o["value"]
+			return opts[0]["value"],
+		Callable(),
+		func(e, _p, cands, _pr):
+			for c in cands:
+				if c == e.players[2]: return c
+			return cands[0],
+		func(_p, _sid, _tm, _ctx): return false)
+	_ok(bool(e15_trap.game_over) and not String(e15_trap.winner_text) == "残局破解成功！", "V40-4k p15 不发动霜封被闪避必定失败")
+
+	# V40-5: Meta 禁用武将池护栏 + 首页看板置顶 + 斗地主开局明牌倍率 + 第 25 项成就
+	const Meta40 = preload("res://scripts/meta.gd")
+	var old_path: String = Meta40.path
+	Meta40.reset_for_test("/tmp/qmxs_v40_meta_test.json")
+	_ok(Meta40.ACHIEVEMENTS.size() == 25 and not Meta40.ach_def("puzzle_master").is_empty(), "V40-5a 第 25 项残局成就及成就上限合法")
+	_ok(Meta40.toggle_ban_char("yuu", Characters.LIST.size()) and Meta40.is_char_banned("yuu") and Meta40.enabled_pool(Characters.LIST).size() == Characters.LIST.size() - 1, "V40-5b 禁用武将可开关且过滤点将池")
+	Meta40.pin_showcase_char("mafuyu")
+	_ok(String(Meta40.get_showcase(Characters.LIST)[0]) == "mafuyu", "V40-5c 设为首页看板持久化到首位")
+	Meta40.toggle_ban_char("yuu", Characters.LIST.size())
+	_ok(not Meta40.toggle_ban_char("hina", 8), "V40-5d 最少保留 8 名启用武将护栏生效")
+	# DDZ 明牌 ×2 倍率检验
+	var eng_open = _clean_eng()
+	eng_open.mode = "doudizhu"
+	eng_open.setup_game([
+		{"name": "千早真冬", "hp": 3, "skills": []},
+		{"name": "星川幽", "hp": 3, "skills": []},
+		{"name": "御影纱奈", "hp": 4, "skills": []},
+	], ["地主", "农民", "农民"])
+	eng_open.ddz_landlord_seat = 0
+	eng_open.ddz_multiplier = 2
+	eng_open.set_ui({
+		"is_human": func(p): return int(p["seat"]) == 0,
+		"pick_option": func(_p, opts, prompt):
+			if String(prompt).contains("明牌"): return true
+			return 2,
+	})
+	await eng_open.run_ddz_doubling()
+	_ok(eng_open.ddz_open_seats.has(0) and eng_open.ddz_double >= 4 and eng_open.ddz_stake() >= 8, "V40-5e 斗地主开局明牌公开座位且总倍数 ×2 生效")
+	eng_open.set_ui({})
+	Meta40.reset_for_test("/tmp/qmxs_v40_meta_test.json")
+	Meta40.path = old_path

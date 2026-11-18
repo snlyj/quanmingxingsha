@@ -33,14 +33,15 @@ const ACHIEVEMENTS := [
 	["mastery_3", "得心应手", "任一角色熟练度达到 Lv3"],
 	["tutorial", "新手毕业", "完成教学关"],
 	["puzzle_first", "初破残局", "通过任意 1 关残局挑战"],
-	["puzzle_all", "残局大师", "通关全部 10 关残局挑战"],
+	["puzzle_master", "破局宗师", "累计通关 10 关不同的残局挑战"],
+	["puzzle_all", "残局大师", "通关全部残局挑战（15 关）"],
 	["rich_beans", "欢斗富豪", "累计拥有至少 2000 欢斗豆"],
 	["streak_3", "势如破竹", "常规对战达成 3 连胜"],
 ]
 
 
 static func _blank() -> Dictionary:
-	return {"version": 2, "records": [], "totals": {}, "chars": {}, "ach": {}, "puzzles": {}, "beans": 1000, "win_streak": 0, "best_streak": 0, "tutorial_done": false}
+	return {"version": 2, "records": [], "totals": {}, "chars": {}, "ach": {}, "puzzles": {}, "beans": 1000, "win_streak": 0, "best_streak": 0, "tutorial_done": false, "banned_chars": [], "showcase": ["sena", "hina", "reo"]}
 
 
 static func load_data() -> Dictionary:
@@ -195,6 +196,9 @@ static func mark_puzzle(pid: String) -> Array:
 	if pz.size() >= 1 and not (d["ach"] as Dictionary).has("puzzle_first"):
 		d["ach"]["puzzle_first"] = int(Time.get_unix_time_from_system())
 		out.append(ach_def("puzzle_first"))
+	if pz.size() >= 10 and not (d["ach"] as Dictionary).has("puzzle_master"):
+		d["ach"]["puzzle_master"] = int(Time.get_unix_time_from_system())
+		out.append(ach_def("puzzle_master"))
 	if pz.size() >= total_n and not (d["ach"] as Dictionary).has("puzzle_all"):
 		d["ach"]["puzzle_all"] = int(Time.get_unix_time_from_system())
 		out.append(ach_def("puzzle_all"))
@@ -281,3 +285,100 @@ static func win_rate_text(key: String) -> String:
 	if int(v[0]) == 0:
 		return "—"
 	return "%d 局 · 胜 %d · %.0f%%" % [int(v[0]), int(v[1]), 100.0 * float(v[1]) / float(v[0])]
+
+
+# V0.40 武将禁用池与首页看板持久化（保留至少 8 名可用武将，避免 8 人局选角枯竭）
+static func is_char_banned(cid: String) -> bool:
+	var d := load_data()
+	var arr: Array = d.get("banned_chars", [])
+	return arr.has(cid)
+
+
+static func toggle_ban_char(cid: String, total_chars: int = 19) -> bool:
+	var d := load_data()
+	var arr: Array = (d.get("banned_chars", []) as Array).duplicate()
+	if arr.has(cid):
+		arr.erase(cid)
+	else:
+		if total_chars - arr.size() <= 8:
+			return false
+		arr.append(cid)
+	d["banned_chars"] = arr
+	save()
+	return true
+
+
+static func enabled_pool(all_chars: Array) -> Array:
+	var d := load_data()
+	var banned: Array = d.get("banned_chars", [])
+	if banned.is_empty():
+		return all_chars.duplicate()
+	var out: Array = []
+	for c in all_chars:
+		if not banned.has(String((c as Dictionary).get("id", ""))):
+			out.append(c)
+	if out.size() < 8:
+		return all_chars.duplicate()
+	return out
+
+
+static func get_showcase(all_chars: Array) -> Array:
+	var d := load_data()
+	var valid := {}
+	for c in all_chars:
+		valid[String((c as Dictionary).get("id", ""))] = true
+	var out: Array = []
+	for raw_id in (d.get("showcase", ["sena", "hina", "reo"]) as Array):
+		var sid := String(raw_id)
+		if valid.has(sid) and not out.has(sid):
+			out.append(sid)
+	for def_id in ["sena", "hina", "reo"]:
+		if out.size() >= 3:
+			break
+		if valid.has(def_id) and not out.has(def_id):
+			out.append(def_id)
+	for c in all_chars:
+		if out.size() >= 3:
+			break
+		var sid2 := String((c as Dictionary).get("id", ""))
+		if not out.has(sid2):
+			out.append(sid2)
+	return out.slice(0, 3)
+
+
+static func set_showcase_slot(slot_idx: int, cid: String) -> void:
+	var d := load_data()
+	var sc: Array = (d.get("showcase", ["sena", "hina", "reo"]) as Array).duplicate()
+	while sc.size() < 3:
+		sc.append("sena")
+	if slot_idx >= 0 and slot_idx < sc.size():
+		sc[slot_idx] = cid
+	d["showcase"] = sc
+	save()
+
+
+static func pin_showcase_char(cid: String) -> Array:
+	var d := load_data()
+	var sc: Array = (d.get("showcase", ["sena", "hina", "reo"]) as Array).duplicate()
+	while sc.size() < 3:
+		sc.append("sena")
+	var cur_idx := sc.find(cid)
+	if cur_idx == 0:
+		return sc
+	if cur_idx > 0:
+		var tmp: String = String(sc[0])
+		sc[0] = cid
+		sc[cur_idx] = tmp
+	else:
+		sc[2] = sc[1]
+		sc[1] = sc[0]
+		sc[0] = cid
+	d["showcase"] = sc
+	save()
+	return sc
+
+
+static func char_stats_by_name(cname: String) -> Dictionary:
+	var d := load_data()
+	var cs: Dictionary = (d.get("chars", {}) as Dictionary).get(cname, {})
+	return cs.duplicate()
