@@ -3748,6 +3748,64 @@ func _reg_v44() -> void:
 	main_ref.show_detail(Characters.by_id("sena"))
 	await _frames(2)
 	_ok(main_ref.screen_root.get_child_count() > 0, "V44-3b 角色详情页伪Live2D呼吸与触碰反馈加载正常")
+
+	# V44.1: 按键细节优化回归验证（无撞车、全状态样式、木牛不压战报、猜身份样式、触控尺寸）
+	main_ref.show_battle()
+	await _frames(2)
+	var bs45: Variant = null
+	for ch in main_ref.screen_root.get_children():
+		if ch is BS44:
+			bs45 = ch
+			break
+	bs45.match_players = 2
+	bs45.build_table()
+	bs45.players = [
+		{"seat": 0, "identity": "主公", "char": Characters.by_id("sena"), "char_name": "白石星奈", "alive": true, "hp": 4, "max_hp": 4, "hand": [], "equip": {"weapon": {}, "armor": {}, "minus": {}, "plus": {}, "treasure": {"name": "木牛流马", "suit": "方块", "point": 5, "stored": []}}, "judge": [], "marks": {}, "skills": ["caijue", "xinggui"], "turn_used": {}, "attack_count": 0},
+		{"seat": 1, "identity": "反贼", "char": Characters.by_id("mafuyu"), "char_name": "千早真冬", "alive": true, "hp": 3, "max_hp": 3, "hand": [], "equip": {"weapon": {}, "armor": {}, "minus": {}, "plus": {}, "treasure": {}}, "judge": [], "marks": {}, "skills": [], "turn_used": {}, "attack_count": 0},
+	]
+	var rc45 := {"name": "羁绊锁链", "suit": "梅花", "point": 11, "recastable": true}
+	(bs45.players[0]["hand"] as Array).append(rc45)
+	bs45.selected_card = rc45
+	bs45.interactive = true
+	bs45.in_play_phase = true
+	bs45.turn_seat = 0
+	bs45.round_no = 1
+	bs45.luck_left = 2
+	bs45.refresh()
+	bs45._update_action_bar()
+	await _frames(2)
+	# 1) 认输二次确认不重叠倍速
+	bs45._style_concede_btn(true)
+	await _frames(1)
+	var cr: Rect2 = bs45.concede_btn.get_global_rect()
+	var sr45: Rect2 = bs45.speed_btn.get_global_rect()
+	_ok(not cr.intersects(sr45), "V44.1-1a 认输二次确认不与倍速按钮重叠")
+	bs45._style_concede_btn(false)
+	# 2) 木牛流马右侧技能不撞进战报栏
+	var log_x: float = bs45.log_panel.get_global_rect().position.x
+	var muniu_ok := true
+	for sb45 in bs45.skill_btns.get_children():
+		if (sb45 as Control).get_global_rect().end.x >= log_x:
+			muniu_ok = false
+	_ok(muniu_ok, "V44.1-1b 木牛流马与技能按钮不再撞进战报面板")
+	# 3) 5 按钮 action_bar 不撞入右侧被动技与左侧角色框
+	var end_r: Rect2 = bs45.end_play_btn.get_global_rect()
+	var pass_ok := true
+	for pb45 in bs45.skill_passives.get_children():
+		if end_r.intersects((pb45 as Control).get_global_rect()):
+			pass_ok = false
+	_ok(pass_ok and bs45.confirm_btn.get_global_rect().position.x > bs45.me_panel_ref.get_global_rect().end.x, "V44.1-1c 5按钮操作栏不撞左侧人物面板与右侧被动技能")
+	# 4) 猜身份弹窗样式完整、座位热区放大
+	var gp_styled := true
+	for gb45 in bs45.guess_popup.find_children("*", "Button", true, false):
+		var btn_g := gb45 as Button
+		if not (btn_g.has_theme_stylebox_override("normal") and btn_g.has_theme_stylebox_override("pressed") and btn_g.has_theme_stylebox_override("disabled")):
+			gp_styled = false
+	var sp1: Control = bs45.seat_panels[0]
+	var gbtn_sz := (sp1.get_node("GuessBtn") as Control).size
+	var ebtn_sz := (sp1.get_node("EmoteBtn") as Control).size
+	_ok(gp_styled and gbtn_sz.y >= 46.0 and ebtn_sz.x >= 56.0 and ebtn_sz.y >= 46.0, "V44.1-1d 猜身份弹框全状态美化且座位按钮触控区>=46px")
+	await _close_battle(bs45)
 	Meta44.reset_for_test("/tmp/qmxs_v44_meta_test.json")
 	Meta44.path = old_p44
 	main_ref.show_home()

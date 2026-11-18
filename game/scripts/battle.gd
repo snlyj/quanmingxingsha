@@ -164,17 +164,50 @@ func style(color: Color, radius: int = 22, border: Color = Color(0, 0, 0, 0), bw
 	return s
 
 
+func _wire_btn_bounce(b: Button) -> void:
+	if bool(b.get_meta("_bounce_wired", false)):
+		return
+	b.set_meta("_bounce_wired", true)
+	b.ready.connect(func() -> void: b.pivot_offset = b.size * 0.5)
+	b.resized.connect(func() -> void: b.pivot_offset = b.size * 0.5)
+	b.button_down.connect(func() -> void:
+		if b.disabled or float(b.get_meta("drag_px", 0.0)) > 10.0:
+			return
+		b.pivot_offset = b.size * 0.5
+		var tw := create_tween().bind_node(b)
+		tw.tween_property(b, "scale", Vector2(0.96, 0.96), 0.06))
+	b.button_up.connect(func() -> void:
+		var tw2 := create_tween().bind_node(b)
+		tw2.tween_property(b, "scale", Vector2.ONE, 0.14).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT))
+
+
+func _set_btn_theme(b: Button, bg: Color, border: Color, fg: Color, radius: int = 18, bw: int = 2, shadow: bool = false, pad: Vector2i = Vector2i(-1, -1), hover_border: Color = Color(-1, 0, 0, 0)) -> void:
+	var hb: Color = hover_border if hover_border.r >= 0.0 else border
+	var n_sb := style(bg, radius, border, bw, shadow)
+	var h_sb := style(bg.lightened(0.07), radius, hb, bw, shadow)
+	var p_sb := style(bg.darkened(0.08), radius, hb, bw, false)
+	var d_sb := style(Color(0.86, 0.84, 0.89, 0.88), radius, Color(0.70, 0.67, 0.74, 0.60), mini(bw, 2), false)
+	if pad.x >= 0:
+		for sb_i in [n_sb, h_sb, p_sb, d_sb]:
+			_tight(sb_i, pad.x, pad.y)
+	b.add_theme_stylebox_override("normal", n_sb)
+	b.add_theme_stylebox_override("hover", h_sb)
+	b.add_theme_stylebox_override("pressed", p_sb)
+	b.add_theme_stylebox_override("disabled", d_sb)
+	b.add_theme_color_override("font_color", fg)
+	b.add_theme_color_override("font_hover_color", fg)
+	b.add_theme_color_override("font_pressed_color", fg)
+	b.add_theme_color_override("font_disabled_color", Color(0.56, 0.52, 0.58))
+
+
 func plain_btn(text: String, bg: Color = C_WHITE, fg: Color = C_PINK_DEEP, fsize: int = 28) -> Button:
 	var b := Button.new()
 	b.text = text
 	b.focus_mode = Control.FOCUS_NONE
 	b.add_theme_font_override("font", font_reg)
 	b.add_theme_font_size_override("font_size", fsize)
-	b.add_theme_color_override("font_color", fg)
-	b.add_theme_stylebox_override("normal", style(bg, 18, C_GOLD, 2))
-	b.add_theme_stylebox_override("hover", style(bg.lightened(0.05), 18, C_PINK_DEEP, 2))
-	b.add_theme_stylebox_override("pressed", style(bg.darkened(0.05), 18, C_PINK_DEEP, 2))
-	b.add_theme_stylebox_override("disabled", style(Color(0.92, 0.90, 0.92), 18, Color(0.7, 0.68, 0.72), 2))
+	_set_btn_theme(b, bg, C_GOLD, fg, 18, 2, false, Vector2i(-1, -1), C_PINK_DEEP)
+	_wire_btn_bounce(b)
 	b.pressed.connect(func() -> void: play_sfx("click"))
 	return b
 
@@ -597,6 +630,9 @@ func build_table() -> void:
 	var feat_defs := ["记牌", "记录", "排序", "托管", "认输", "倍速", "设置"]
 	for fi in feat_defs.size():
 		var fb := plain_btn(feat_defs[fi], Color(0.24, 0.12, 0.31, 0.92), Color(1.0, 0.94, 0.84), 23)
+		_set_btn_theme(fb, Color(0.24, 0.12, 0.31, 0.92), C_GOLD, Color(1.0, 0.94, 0.84), 18, 2, false, Vector2i(10, 6), C_GOLD)
+		fb.clip_text = true
+		fb.custom_minimum_size = Vector2(108, 52)
 		fb.position = Vector2(16 + fi * 118, 24)
 		fb.size = Vector2(108, 52)
 		add_child(fb)
@@ -741,16 +777,16 @@ func build_table() -> void:
 	add_child(ask_secs_label)
 	prompt_btns = HBoxContainer.new()
 	prompt_btns.alignment = BoxContainer.ALIGNMENT_CENTER
-	prompt_btns.add_theme_constant_override("separation", 14)
-	prompt_btns.position = Vector2(bar_cx - 560, 682)
-	prompt_btns.size = Vector2(1120, 66)
+	prompt_btns.add_theme_constant_override("separation", 12)
+	prompt_btns.position = Vector2(344, 682)
+	prompt_btns.size = Vector2(892, 66)
 	add_child(prompt_btns)
 	# 操作栏（手杀：确定 / 取消 / 结束 位于手牌正上方）
 	action_bar = HBoxContainer.new()
 	action_bar.alignment = BoxContainer.ALIGNMENT_CENTER
-	action_bar.add_theme_constant_override("separation", 18)
-	action_bar.position = Vector2(bar_cx - 430, 682)
-	action_bar.size = Vector2(860, 66)
+	action_bar.add_theme_constant_override("separation", 14)
+	action_bar.position = Vector2(344, 682)
+	action_bar.size = Vector2(892, 66)
 	action_bar.visible = false
 	add_child(action_bar)
 	confirm_btn = _make_action_btn("确定", C_GOLD, Color(0.25, 0.16, 0.05))
@@ -914,14 +950,14 @@ func build_table() -> void:
 	add_child(me_chips)
 	table_nodes.append(me_chips)
 	skill_passives = HBoxContainer.new()
-	skill_passives.position = Vector2(vw - 674, 694)
+	skill_passives.position = Vector2(vw - 674, 684)
 	skill_passives.add_theme_constant_override("separation", 8)
 	add_child(skill_passives)
 	table_nodes.append(skill_passives)
 	skill_sig = ""
 	skill_btns = VBoxContainer.new()
-	skill_btns.position = Vector2(vw - 674, 748)
-	skill_btns.size = Vector2(230, 170)
+	skill_btns.position = Vector2(vw - 674, 738)
+	skill_btns.size = Vector2(244, 210)
 	skill_btns.add_theme_constant_override("separation", 14)
 	add_child(skill_btns)
 	table_nodes.append(skill_btns)
@@ -1194,28 +1230,28 @@ func make_seat_panel(seat_idx: int) -> Button:
 	var gb := Button.new()
 	gb.name = "GuessBtn"
 	gb.focus_mode = Control.FOCUS_NONE
-	gb.position = Vector2(182, 214)
-	gb.size = Vector2(58, 40)
+	gb.position = Vector2(180, 206)
+	gb.size = Vector2(62, 48)
+	gb.custom_minimum_size = Vector2(62, 48)
 	gb.text = "猜"
 	gb.add_theme_font_override("font", font_bold)
-	gb.add_theme_font_size_override("font_size", 20)
-	gb.add_theme_color_override("font_color", Color(1, 1, 1, 0.95))
-	gb.add_theme_stylebox_override("normal", style(Color(0.25, 0.2, 0.45, 0.7), 12, Color(1, 1, 1, 0.7), 1))
-	gb.add_theme_stylebox_override("hover", style(Color(0.35, 0.28, 0.6, 0.85), 12, Color(1, 1, 1, 0.9), 1))
-	gb.add_theme_stylebox_override("pressed", style(Color(0.35, 0.28, 0.6, 0.85), 12, Color(1, 1, 1, 0.9), 1))
+	gb.add_theme_font_size_override("font_size", 21)
+	_set_btn_theme(gb, Color(0.24, 0.18, 0.44, 0.88), Color(1.0, 0.90, 0.65, 0.90), Color(1, 1, 1, 0.98), 14, 2, true, Vector2i(4, 2), C_GOLD)
+	_wire_btn_bounce(gb)
 	gb.pressed.connect(func() -> void: _open_guess(seat_idx))
 	gb.visible = false
 	b.add_child(gb)
 	var eb := Button.new()
 	eb.name = "EmoteBtn"
 	eb.focus_mode = Control.FOCUS_NONE
-	eb.position = Vector2(194, 268)
-	eb.size = Vector2(46, 36)
+	eb.position = Vector2(184, 262)
+	eb.size = Vector2(58, 48)
+	eb.custom_minimum_size = Vector2(58, 48)
 	eb.text = "🌹"
 	eb.add_theme_font_override("font", font_bold)
-	eb.add_theme_font_size_override("font_size", 19)
-	eb.add_theme_stylebox_override("normal", style(Color(0.30, 0.14, 0.28, 0.78), 12, C_GOLD, 1))
-	eb.add_theme_stylebox_override("hover", style(Color(0.45, 0.20, 0.38, 0.92), 12, C_GOLD, 2))
+	eb.add_theme_font_size_override("font_size", 22)
+	_set_btn_theme(eb, Color(0.32, 0.14, 0.30, 0.88), C_GOLD, C_WHITE, 14, 2, true, Vector2i(4, 2), Color(1.0, 0.88, 0.52))
+	_wire_btn_bounce(eb)
 	eb.pressed.connect(func() -> void: _throw_seat_emote(seat_idx))
 	b.add_child(eb)
 	b.set_meta("seat", seat_idx)
@@ -1271,7 +1307,7 @@ func _add_seat_overlays(pn: Control, sz: Vector2, is_me: bool) -> void:
 	eqv.name = "Equips"
 	# V0.31：左上让给竖排名牌，装备栏改为左下、自下而上排
 	eqv.position = Vector2(10, 186) if not is_me else Vector2(10, 150)
-	eqv.size = Vector2(176, 130)
+	eqv.size = Vector2(168, 130)
 	eqv.alignment = BoxContainer.ALIGNMENT_END
 	eqv.add_theme_constant_override("separation", 3)
 	eqv.mouse_filter = MOUSE_FILTER_IGNORE
@@ -1530,17 +1566,23 @@ func _build_guess_popup() -> void:
 	guess_popup.add_theme_stylebox_override("panel", style(Color(0.16, 0.10, 0.24, 0.94), 16, Color(1.0, 0.82, 0.45, 0.9), 2, true))
 	guess_popup.visible = false
 	var hb := HBoxContainer.new()
-	hb.add_theme_constant_override("separation", 6)
+	hb.add_theme_constant_override("separation", 8)
 	guess_popup.add_child(hb)
+	var role_cols := {"主": Color(0.84, 0.22, 0.34), "忠": Color(0.86, 0.56, 0.14), "反": Color(0.20, 0.62, 0.44), "内": Color(0.42, 0.34, 0.72), "": Color(0.36, 0.32, 0.44)}
 	for mk in ["主", "忠", "反", "内", ""]:
 		var b := Button.new()
 		b.focus_mode = Control.FOCUS_NONE
 		b.text = mk if mk != "" else "清"
-		b.custom_minimum_size = Vector2(58, 52)
+		b.custom_minimum_size = Vector2(62, 52)
 		b.add_theme_font_override("font", font_bold)
 		b.add_theme_font_size_override("font_size", 24)
+		var gcol: Color = role_cols[mk]
+		_set_btn_theme(b, gcol, Color(1.0, 0.88, 0.56), C_WHITE, 14, 2, true, Vector2i(6, 4))
+		_wire_btn_bounce(b)
 		var m: String = mk
-		b.pressed.connect(func() -> void: _pick_guess(m))  # 只隐藏弹层，不释放按钮（避免 V0.24 信号内释放）
+		b.pressed.connect(func() -> void:
+			play_sfx("click")
+			_pick_guess(m))  # 只隐藏弹层，不释放按钮（避免 V0.24 信号内释放）
 		hb.add_child(b)
 	add_child(guess_popup)
 
@@ -1965,23 +2007,33 @@ func _make_action_btn(text: String, bg: Color, fg: Color) -> Button:
 	var b := Button.new()
 	b.focus_mode = Control.FOCUS_NONE
 	b.text = text
-	b.custom_minimum_size = Vector2(196, 64)
+	b.clip_text = true
+	b.custom_minimum_size = Vector2(188, 64)
 	b.add_theme_font_override("font", font_bold)
 	b.add_theme_font_size_override("font_size", 28)
 	b.add_theme_color_override("font_color", fg)
 	b.add_theme_color_override("font_hover_color", fg)
 	b.add_theme_color_override("font_pressed_color", fg)
 	b.add_theme_color_override("font_disabled_color", Color(0.55, 0.52, 0.58))
-	b.add_theme_stylebox_override("normal", style(bg, 32, C_GOLD, 3, true))
-	b.add_theme_stylebox_override("hover", style(bg.lightened(0.08), 32, Color(1.0, 0.88, 0.52), 3, true))
-	b.add_theme_stylebox_override("pressed", style(bg.darkened(0.08), 32, C_GOLD, 3, false))
-	b.add_theme_stylebox_override("disabled", style(Color(0.42, 0.38, 0.46, 0.78), 32, Color(0.75, 0.70, 0.78, 0.45), 2))
+	b.add_theme_stylebox_override("normal", _tight(style(bg, 32, C_GOLD, 3, true), 14, 10))
+	b.add_theme_stylebox_override("hover", _tight(style(bg.lightened(0.08), 32, Color(1.0, 0.88, 0.52), 3, true), 14, 10))
+	b.add_theme_stylebox_override("pressed", _tight(style(bg.darkened(0.08), 32, C_GOLD, 3, false), 14, 10))
+	b.add_theme_stylebox_override("disabled", _tight(style(Color(0.42, 0.38, 0.46, 0.78), 32, Color(0.75, 0.70, 0.78, 0.45), 2), 14, 10))
 	var gl := Panel.new()
 	gl.mouse_filter = MOUSE_FILTER_IGNORE
-	gl.position = Vector2(10, 4)
-	gl.size = Vector2(176, 24)
+	gl.set_anchors_preset(Control.PRESET_TOP_WIDE)
+	gl.offset_left = 10
+	gl.offset_right = -10
+	gl.offset_top = 4
+	gl.offset_bottom = 26
 	gl.add_theme_stylebox_override("panel", style(Color(1, 1, 1, 0.22), 12))
 	b.add_child(gl)
+	b.set_meta("_last_dis", false)
+	b.draw.connect(func() -> void:
+		if bool(b.get_meta("_last_dis", false)) != b.disabled:
+			b.set_meta("_last_dis", b.disabled)
+			gl.visible = not b.disabled)
+	_wire_btn_bounce(b)
 	b.pressed.connect(func() -> void: play_sfx("click"))
 	return b
 
@@ -2477,7 +2529,15 @@ func _update_action_bar() -> void:
 		luck_btn.visible = lk_ok
 		luck_btn.disabled = not (lk_ok and interactive)
 		luck_btn.text = "手气卡×%d" % luck_left
-	cancel_btn.disabled = not interactive or (selected_card.is_empty() and not targeting and skill_mode == "")
+	var five_btns := (recast_btn != null and recast_btn.visible) and (luck_btn != null and luck_btn.visible)
+	action_bar.add_theme_constant_override("separation", 12 if five_btns else 16)
+	var bw_act := 164.0 if five_btns else 188.0
+	var fs_act := 24 if five_btns else 28
+	for ab in [confirm_btn, cancel_btn, recast_btn, luck_btn, end_play_btn]:
+		if ab != null:
+			ab.custom_minimum_size = Vector2(bw_act, 64)
+			ab.add_theme_font_size_override("font_size", fs_act)
+	cancel_btn.disabled = not interactive or (selected_card.is_empty() and not targeting and skill_mode == "" and not spear_targeting and not muniu_targeting)
 	end_play_btn.disabled = not interactive
 
 
@@ -3104,9 +3164,9 @@ func refresh_skill_buttons() -> void:
 				pb.add_theme_font_override("font", font_bold)
 				pb.add_theme_font_size_override("font_size", 19)
 				pb.add_theme_color_override("font_color", Color(1, 0.95, 0.85))
-				pb.add_theme_stylebox_override("normal", _tight(style(Color(0.30, 0.22, 0.45, 0.85), 14, Color(1.0, 0.82, 0.45, 0.8), 1, true), 10, 4))
-				pb.add_theme_stylebox_override("hover", _tight(style(Color(0.38, 0.28, 0.56, 0.92), 14, Color(1.0, 0.82, 0.45, 0.95), 1, true), 10, 4))
-				pb.add_theme_stylebox_override("pressed", _tight(style(Color(0.38, 0.28, 0.56, 0.92), 14, Color(1.0, 0.82, 0.45, 0.95), 1), 10, 4))
+				pb.custom_minimum_size = Vector2(72, 44)
+				_set_btn_theme(pb, Color(0.30, 0.22, 0.45, 0.85), Color(1.0, 0.82, 0.45, 0.85), Color(1, 0.95, 0.85), 14, 1, true, Vector2i(12, 6))
+				_wire_btn_bounce(pb)
 				var title := String(e["name"])
 				var desc := String(e["desc"])
 				pb.pressed.connect(func() -> void:
@@ -3119,15 +3179,25 @@ func refresh_skill_buttons() -> void:
 				continue
 			var b := Button.new()
 			b.focus_mode = Control.FOCUS_NONE
-			b.custom_minimum_size = Vector2(230 if String(e["kind"]) != "muniu_store" else 300, 64)
+			b.clip_text = true
+			b.custom_minimum_size = Vector2(244, 62)
 			b.add_theme_font_override("font", font_bold)
-			b.add_theme_font_size_override("font_size", 24)
+			b.add_theme_font_size_override("font_size", 21 if String(e["kind"]) == "muniu_store" else 23)
 			var gloss2 := Panel.new()
 			gloss2.mouse_filter = MOUSE_FILTER_IGNORE
 			gloss2.set_anchors_preset(Control.PRESET_TOP_WIDE)
-			gloss2.size = Vector2(0, 26)
-			gloss2.add_theme_stylebox_override("panel", style(Color(1, 1, 1, 0.20), 24))
+			gloss2.offset_left = 8
+			gloss2.offset_right = -8
+			gloss2.offset_top = 4
+			gloss2.offset_bottom = 24
+			gloss2.add_theme_stylebox_override("panel", style(Color(1, 1, 1, 0.20), 20))
 			b.add_child(gloss2)
+			b.set_meta("_last_dis", false)
+			b.draw.connect(func() -> void:
+				if bool(b.get_meta("_last_dis", false)) != b.disabled:
+					b.set_meta("_last_dis", b.disabled)
+					gloss2.visible = not b.disabled)
+			_wire_btn_bounce(b)
 			b.pressed.connect(e["cb"])
 			b.set_meta("key", e["key"])
 			if e.has("sid"):
@@ -3166,11 +3236,13 @@ func refresh_skill_buttons() -> void:
 			col = Color(base.r, base.g, base.b, 0.45)
 			fcol = Color(1, 1, 1, 0.8)
 		b2.add_theme_color_override("font_color", fcol)
+		b2.add_theme_color_override("font_hover_color", fcol)
+		b2.add_theme_color_override("font_pressed_color", fcol)
 		b2.add_theme_color_override("font_disabled_color", fcol)
-		b2.add_theme_stylebox_override("normal", style(col, 32, Color(1, 1, 1, 0.98) if st == "sel" else Color(1, 1, 1, 0.75), 4 if st == "sel" else 2, st == "ready" or st == "sel"))
-		b2.add_theme_stylebox_override("hover", style(col.lightened(0.08), 32, Color(1, 1, 1, 0.9), 2, true))
-		b2.add_theme_stylebox_override("pressed", style(col.darkened(0.08), 32, Color(1, 1, 1, 0.9), 2, false))
-		b2.add_theme_stylebox_override("disabled", style(col, 32, Color(1, 1, 1, 0.45), 2, false))
+		b2.add_theme_stylebox_override("normal", _tight(style(col, 30, Color(1, 1, 1, 0.98) if st == "sel" else Color(1, 1, 1, 0.75), 4 if st == "sel" else 2, st == "ready" or st == "sel"), 10, 6))
+		b2.add_theme_stylebox_override("hover", _tight(style(col.lightened(0.08), 30, Color(1, 1, 1, 0.9), 2, true), 10, 6))
+		b2.add_theme_stylebox_override("pressed", _tight(style(col.darkened(0.08), 30, Color(1, 1, 1, 0.9), 2, false), 10, 6))
+		b2.add_theme_stylebox_override("disabled", _tight(style(col, 30, Color(1, 1, 1, 0.45), 2, false), 10, 6))
 
 
 func _skill_entries() -> Array:
@@ -3221,7 +3293,7 @@ func _skill_entries() -> Array:
 	# 木牛流马：存粮 / 转运
 	var trm: Dictionary = me["equip"]["treasure"]
 	if not trm.is_empty() and String(trm["name"]) == "木牛流马":
-		out.append({"key": "muniu_s", "kind": "muniu_store", "state": "ready", "text": "🌾 存粮（先选手牌）", "color": Color(0.45, 0.62, 0.35), "cb": _on_muniu_store})
+		out.append({"key": "muniu_s", "kind": "muniu_store", "state": "ready", "text": "🌾 存粮 (选手牌)", "color": Color(0.45, 0.62, 0.35), "cb": _on_muniu_store})
 		out.append({"key": "muniu_g", "kind": "muniu_give", "state": "sel" if muniu_targeting else "ready", "text": "🚚 转运木牛", "color": Color(0.45, 0.62, 0.35), "cb": _on_muniu_give})
 	return out
 
@@ -3289,15 +3361,15 @@ func ask(prompt: String, options: Array, on_built: Callable = Callable(), mode: 
 		else:
 			b = _make_action_btn(lab, Color(1, 1, 1, 0.96), C_PINK_DEEP)
 		first = false
-		var tw_w := clampf(64.0 + lab.length() * 26.0, 150.0, 420.0)
+		var tw_w := clampf(64.0 + lab.length() * 26.0, 146.0, 360.0)
 		b.custom_minimum_size = Vector2(tw_w, 64)
-		(b.get_child(0) as Control).size = Vector2(tw_w - 20, 24)
 		if lab.length() > 10:
 			b.add_theme_font_size_override("font_size", 22)
 		var v: Variant = opt["value"]
 		b.pressed.connect(func() -> void: _on_decided(v))
 		_attach_option_intro(b, lab, v)
 		prompt_btns.add_child(b)
+	_fit_prompt_btns()
 	ask_default = _default_answer(options)
 	if on_built.is_valid():
 		on_built.call()
@@ -3747,11 +3819,13 @@ func _puzzle_show(pspec: Dictionary) -> void:
 		vb.add_child(puzzle_label)
 		var row := HBoxContainer.new()
 		row.add_theme_constant_override("separation", 10)
-		puzzle_hint_btn = plain_btn("💡 看提示", Color(1.0, 0.94, 0.78), Color(0.45, 0.25, 0.05), 18)
-		puzzle_hint_btn.custom_minimum_size = Vector2(124, 34)
+		puzzle_hint_btn = plain_btn("💡 看提示", Color(1.0, 0.94, 0.78), Color(0.45, 0.25, 0.05), 19)
+		_set_btn_theme(puzzle_hint_btn, Color(1.0, 0.94, 0.78), C_GOLD, Color(0.45, 0.25, 0.05), 14, 2, false, Vector2i(10, 6), C_PINK_DEEP)
+		puzzle_hint_btn.custom_minimum_size = Vector2(132, 46)
 		row.add_child(puzzle_hint_btn)
-		var rst := plain_btn("重开", Color(1, 1, 1, 0.95), C_PINK_DEEP, 18)
-		rst.custom_minimum_size = Vector2(96, 34)
+		var rst := plain_btn("重开", Color(1, 1, 1, 0.95), C_PINK_DEEP, 19)
+		_set_btn_theme(rst, Color(1, 1, 1, 0.95), C_GOLD, C_PINK_DEEP, 14, 2, false, Vector2i(10, 6), C_PINK_DEEP)
+		rst.custom_minimum_size = Vector2(104, 46)
 		rst.pressed.connect(_restart_puzzle)
 		row.add_child(rst)
 		vb.add_child(row)
@@ -3905,7 +3979,7 @@ func _mvp_info(winner_text: String) -> Array:
 
 func build_settlement(winner_text: String, your_result: String) -> void:
 	var dim := ColorRect.new()
-	dim.color = Color(0.16, 0.05, 0.12, 0.55)
+	dim.color = Color(0.14, 0.04, 0.10, 0.72)
 	dim.position = Vector2.ZERO
 	dim.size = Vector2(vw, 1080)
 	add_child(dim)
@@ -4083,7 +4157,7 @@ func build_settlement(winner_text: String, your_result: String) -> void:
 	home.custom_minimum_size = Vector2(200, 66)
 	home.pressed.connect(func() -> void: go_home.call())
 	btn_row.add_child(home)
-	_extend_cover(dim, Color(0.16, 0.05, 0.12, 0.55))
+	_extend_cover(dim, Color(0.14, 0.04, 0.10, 0.72))
 
 
 # V0.24 4:3 适配：主界面在较高视口里把 1080 高的内容区垂直居中（main._fit_wide），
@@ -4366,12 +4440,11 @@ func _on_difficulty(d: int) -> void:
 func refresh_diff_buttons() -> void:
 	for i in diff_btns.size():
 		var b: Button = diff_btns[i]
+		_wire_btn_bounce(b)
 		if i == difficulty:
-			b.add_theme_stylebox_override("normal", style(C_PLATE, 26, Color(1, 1, 1, 0.8), 2, true))
-			b.add_theme_color_override("font_color", C_WHITE)
+			_set_btn_theme(b, C_PLATE, Color(1, 1, 1, 0.85), C_WHITE, 24, 2, true, Vector2i(10, 6))
 		else:
-			b.add_theme_stylebox_override("normal", style(Color(1, 1, 1, 0.92), 26, C_GOLD, 2, true))
-			b.add_theme_color_override("font_color", C_PINK_DEEP)
+			_set_btn_theme(b, Color(1, 1, 1, 0.92), C_GOLD, C_PINK_DEEP, 24, 2, true, Vector2i(10, 6), C_PINK_DEEP)
 
 
 func _on_spear_button() -> void:
@@ -4635,18 +4708,32 @@ func toggle_auto() -> void:
 		end_play_pressed.emit()
 
 
+func _style_concede_btn(armed: bool) -> void:
+	if concede_btn == null or not is_instance_valid(concede_btn):
+		return
+	if armed:
+		concede_btn.text = "确认认输"
+		concede_btn.add_theme_font_size_override("font_size", 20)
+		_set_btn_theme(concede_btn, Color(0.84, 0.18, 0.34), C_GOLD, C_WHITE, 18, 2, true, Vector2i(6, 6), C_GOLD)
+	else:
+		concede_btn.text = "认输"
+		concede_btn.add_theme_font_size_override("font_size", 23)
+		_set_btn_theme(concede_btn, Color(0.24, 0.12, 0.31, 0.92), C_GOLD, Color(1.0, 0.94, 0.84), 18, 2, false, Vector2i(10, 6), C_GOLD)
+	concede_btn.size = Vector2(108, 52)
+
+
 func on_concede_pressed() -> void:
 	if eng == null or eng.game_over:
 		return
 	if not concede_arm:
 		concede_arm = true
-		if concede_btn:
-			concede_btn.text = "确认认输？"
+		_style_concede_btn(true)
 		await get_tree().create_timer(2.5).timeout
 		concede_arm = false
 		if concede_btn and eng != null and not eng.game_over:
-			concede_btn.text = "认输"
+			_style_concede_btn(false)
 		return
+	_style_concede_btn(false)
 	concede_arm = false
 	eng.concede(players[0])
 	# V0.24 修复：旧版在自己的出牌阶段或有提问等待作答时认输，引擎仍卡在等待「结束出牌」/作答，结算界面不出现
@@ -6382,6 +6469,7 @@ func _build_settings_panel() -> void:
 	auto_confirm_check = CheckButton.new()
 	auto_confirm_check.focus_mode = Control.FOCUS_NONE
 	auto_confirm_check.text = "自动确认"
+	auto_confirm_check.custom_minimum_size.y = 46
 	auto_confirm_check.add_theme_font_override("font", font_bold)
 	auto_confirm_check.add_theme_font_size_override("font_size", 24)
 	for k in ["font_color", "font_hover_color", "font_pressed_color", "font_hover_pressed_color", "font_focus_color"]:
@@ -6394,6 +6482,7 @@ func _build_settings_panel() -> void:
 	double_tap_check = CheckButton.new()
 	double_tap_check.focus_mode = Control.FOCUS_NONE
 	double_tap_check.text = "双击手牌直出"
+	double_tap_check.custom_minimum_size.y = 46
 	double_tap_check.add_theme_font_override("font", font_bold)
 	double_tap_check.add_theme_font_size_override("font_size", 24)
 	for k in ["font_color", "font_hover_color", "font_pressed_color", "font_hover_pressed_color", "font_focus_color"]:
@@ -6473,7 +6562,7 @@ func build_audio_rows(vb: VBoxContainer) -> void:
 			var cb := CheckButton.new()
 			cb.focus_mode = Control.FOCUS_NONE
 			cb.text = String(row[0])
-			cb.custom_minimum_size = Vector2(190, 0)
+			cb.custom_minimum_size = Vector2(190, 46)
 			cb.add_theme_font_override("font", font_bold)
 			cb.add_theme_font_size_override("font_size", 24)
 			for k in ["font_color", "font_hover_color", "font_pressed_color", "font_hover_pressed_color", "font_focus_color"]:
@@ -6786,11 +6875,31 @@ func _is_cancel_val(v: Variant) -> bool:
 	return false
 
 
+func _fit_prompt_btns() -> void:
+	if prompt_btns == null:
+		return
+	var bs: Array = prompt_btns.get_children()
+	if bs.is_empty():
+		return
+	var total_w := float(maxi(0, bs.size() - 1)) * 12.0
+	for c in bs:
+		total_w += (c as Control).custom_minimum_size.x
+	if total_w <= 892.0:
+		prompt_btns.add_theme_constant_override("separation", 12)
+		return
+	prompt_btns.add_theme_constant_override("separation", 8)
+	var avail := 892.0 - float(maxi(0, bs.size() - 1)) * 8.0
+	var sum_w := maxf(total_w - float(maxi(0, bs.size() - 1)) * 12.0, 1.0)
+	var ratio := avail / sum_w
+	for c in bs:
+		var bc := c as Control
+		bc.custom_minimum_size.x = floorf(maxf(bc.custom_minimum_size.x * ratio, 110.0))
+
+
 func _build_select_ask(options: Array) -> void:
 	ask_confirm_btn = _make_action_btn("确定", C_GOLD, Color(0.25, 0.16, 0.05))
 	ask_confirm_btn.disabled = true
-	ask_confirm_btn.custom_minimum_size = Vector2(170, 64)
-	(ask_confirm_btn.get_child(0) as Control).size = Vector2(150, 24)
+	ask_confirm_btn.custom_minimum_size = Vector2(168, 64)
 	ask_confirm_btn.pressed.connect(_ask_confirm)
 	prompt_btns.add_child(ask_confirm_btn)
 	var selectable: Array = []
@@ -6800,9 +6909,8 @@ func _build_select_ask(options: Array) -> void:
 		if ask_mode == "respond" and v is bool and bool(v):
 			continue  # 「打出X」由「确定」代替：先点亮的牌选中，再点确定
 		var b := _make_action_btn(lab, Color(1, 1, 1, 0.96), C_PINK_DEEP)
-		var tw_w := clampf(64.0 + lab.length() * 26.0, 150.0, 420.0)
+		var tw_w := clampf(64.0 + lab.length() * 26.0, 146.0, 360.0)
 		b.custom_minimum_size = Vector2(tw_w, 64)
-		(b.get_child(0) as Control).size = Vector2(tw_w - 20, 24)
 		if lab.length() > 10:
 			b.add_theme_font_size_override("font_size", 22)
 		if _is_cancel_val(v) or ask_mode == "respond":
@@ -6814,6 +6922,7 @@ func _build_select_ask(options: Array) -> void:
 		_attach_option_intro(b, lab, v)
 		prompt_btns.add_child(b)
 	# 不预选：点一下就是「选中」，避免点已预选的牌反而取消；选中后才能点「确定」
+	_fit_prompt_btns()
 	prompt_label.text = ask_prompt + ("（点亮的牌选中后点「确定」）" if ask_mode == "respond" else "（选中后点「确定」）")
 
 
@@ -7091,8 +7200,7 @@ func _open_free_pick() -> void:
 		var cb := Button.new()
 		cb.focus_mode = Control.FOCUS_NONE
 		cb.custom_minimum_size = Vector2(276, 360)
-		cb.add_theme_stylebox_override("normal", style(Color(1, 1, 1, 0.95), 20, C_GOLD, 2, true))
-		cb.add_theme_stylebox_override("hover", style(Color(1, 0.96, 0.98, 1.0), 20, C_PINK_DEEP, 3, true))
+		_set_btn_theme(cb, Color(1, 1, 1, 0.95), C_GOLD, C_INK, 20, 2, true, Vector2i(-1, -1), C_PINK_DEEP)
 		var cvb := VBoxContainer.new()
 		cvb.mouse_filter = MOUSE_FILTER_IGNORE
 		cvb.set_anchors_preset(Control.PRESET_FULL_RECT)

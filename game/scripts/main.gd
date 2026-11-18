@@ -448,6 +448,54 @@ func style(color: Color, radius: int = 24, border: Color = Color(0, 0, 0, 0), bw
 	return s
 
 
+func _tight_sb(sb: StyleBoxFlat, h: int, v: int) -> StyleBoxFlat:
+	sb.content_margin_left = h
+	sb.content_margin_right = h
+	sb.content_margin_top = v
+	sb.content_margin_bottom = v
+	return sb
+
+
+func _wire_btn_bounce(b: Button) -> void:
+	if bool(b.get_meta("_bounce_wired", false)):
+		return
+	b.set_meta("_bounce_wired", true)
+	b.ready.connect(func() -> void: b.pivot_offset = b.size * 0.5)
+	b.resized.connect(func() -> void: b.pivot_offset = b.size * 0.5)
+	b.button_down.connect(func() -> void:
+		if b.disabled or float(b.get_meta("drag_px", 0.0)) > 10.0:
+			return
+		b.pivot_offset = b.size * 0.5
+		var tw := create_tween().bind_node(b)
+		tw.tween_property(b, "scale", Vector2(0.965, 0.965), 0.07))
+	b.button_up.connect(func() -> void:
+		var tw2 := create_tween().bind_node(b)
+		tw2.tween_property(b, "scale", Vector2.ONE, 0.16).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT))
+
+
+func _style_btn(b: Button, bg: Color, border: Color, fg: Color = C_WHITE, radius: int = 18, bw: int = 2, shadow: bool = true, pad: Vector2i = Vector2i(-1, -1), bounce: bool = true, hover_border: Color = Color(-1, 0, 0, 0)) -> Button:
+	var hb: Color = hover_border if hover_border.r >= 0.0 else border
+	var n_sb := style(bg, radius, border, bw, shadow)
+	var h_sb := style(bg.lightened(0.08), radius, hb, bw, shadow)
+	var p_sb := style(bg.darkened(0.08), radius, hb, bw, false)
+	var d_sb := style(Color(0.76, 0.73, 0.80, 0.92), radius, Color(0.68, 0.65, 0.72, 0.70), mini(bw, 2), false)
+	if pad.x >= 0:
+		for sb_i in [n_sb, h_sb, p_sb, d_sb]:
+			_tight_sb(sb_i, pad.x, pad.y)
+	b.add_theme_stylebox_override("normal", n_sb)
+	b.add_theme_stylebox_override("hover", h_sb)
+	b.add_theme_stylebox_override("pressed", p_sb)
+	b.add_theme_stylebox_override("disabled", d_sb)
+	b.add_theme_color_override("font_color", fg)
+	b.add_theme_color_override("font_hover_color", fg)
+	b.add_theme_color_override("font_pressed_color", fg)
+	var lum := 0.299 * fg.r + 0.587 * fg.g + 0.114 * fg.b
+	b.add_theme_color_override("font_disabled_color", Color(0.96, 0.95, 0.98, 0.78) if lum > 0.65 else Color(0.55, 0.52, 0.58))
+	if bounce:
+		_wire_btn_bounce(b)
+	return b
+
+
 func cute_button(text: String, sub: String, bg_color: Color, min_size: Vector2) -> Button:
 	var b := Button.new()
 	b.custom_minimum_size = min_size
@@ -455,16 +503,23 @@ func cute_button(text: String, sub: String, bg_color: Color, min_size: Vector2) 
 	b.add_theme_stylebox_override("normal", style(bg_color, 26, C_GOLD, 3, true))
 	b.add_theme_stylebox_override("hover", style(bg_color.lightened(0.08), 26, Color(1.0, 0.88, 0.52), 3, true))
 	b.add_theme_stylebox_override("pressed", style(bg_color.darkened(0.08), 26, C_GOLD, 3, false))
+	b.add_theme_stylebox_override("disabled", style(Color(0.66, 0.63, 0.70, 0.92), 26, Color(0.78, 0.75, 0.82, 0.65), 2, false))
 	var gloss := Panel.new()
 	gloss.mouse_filter = MOUSE_FILTER_IGNORE
 	gloss.set_anchors_preset(Control.PRESET_TOP_WIDE)
-	gloss.size = Vector2(0, maxf(28.0, min_size.y * 0.42))
-	gloss.add_theme_stylebox_override("panel", style(Color(1, 1, 1, 0.18), 24))
+	gloss.offset_left = 4
+	gloss.offset_right = -4
+	gloss.offset_top = 3
+	gloss.offset_bottom = maxf(28.0, min_size.y * 0.42)
+	gloss.add_theme_stylebox_override("panel", style(Color(1, 1, 1, 0.18), 22))
 	b.add_child(gloss)
 	var rim := Panel.new()
 	rim.mouse_filter = MOUSE_FILTER_IGNORE
-	rim.position = Vector2(5, 5)
-	rim.size = min_size - Vector2(10, 10)
+	rim.set_anchors_preset(Control.PRESET_FULL_RECT)
+	rim.offset_left = 5
+	rim.offset_top = 5
+	rim.offset_right = -5
+	rim.offset_bottom = -5
 	rim.add_theme_stylebox_override("panel", style(Color(0, 0, 0, 0), 21, Color(1.0, 0.94, 0.78, 0.40), 1))
 	b.add_child(rim)
 	Art.add_corners(b, min_size, clampf(min_size.y * 0.24, 20.0, 32.0), 1.0)
@@ -472,27 +527,36 @@ func cute_button(text: String, sub: String, bg_color: Color, min_size: Vector2) 
 	vb.alignment = BoxContainer.ALIGNMENT_CENTER
 	vb.add_theme_constant_override("separation", 4)
 	vb.mouse_filter = MOUSE_FILTER_IGNORE
-	var t_fs := (38 if min_size.y <= 112 else 44) if sub != "" else (28 if min_size.x <= 228 else 32)
+	var t_fs := (38 if min_size.y <= 112 else 44) if sub != "" else (26 if min_size.x <= 240 else 32)
 	var t := lbl(text, t_fs, Color(1.0, 0.98, 0.92), true, HORIZONTAL_ALIGNMENT_CENTER)
+	t.clip_text = true
 	t.add_theme_color_override("font_outline_color", Color(0.22, 0.08, 0.18, 0.88))
 	t.add_theme_constant_override("outline_size", 6)
 	t.mouse_filter = MOUSE_FILTER_IGNORE
 	vb.add_child(t)
+	var s_lbl: Label = null
 	if sub != "":
 		var s := lbl(sub, 23, Color(1.0, 0.96, 0.86, 0.96), true, HORIZONTAL_ALIGNMENT_CENTER)
+		s.clip_text = true
 		s.add_theme_color_override("font_outline_color", Color(0.18, 0.06, 0.16, 0.82))
 		s.add_theme_constant_override("outline_size", 4)
 		s.mouse_filter = MOUSE_FILTER_IGNORE
 		vb.add_child(s)
+		s_lbl = s
 	vb.set_anchors_preset(Control.PRESET_FULL_RECT)
+	vb.offset_left = 10
+	vb.offset_right = -10
 	b.add_child(vb)
-	b.ready.connect(func() -> void: b.pivot_offset = b.size / 2.0)
-	b.button_down.connect(func() -> void:
-		var tw := create_tween().bind_node(b)
-		tw.tween_property(b, "scale", Vector2(0.965, 0.965), 0.07))
-	b.button_up.connect(func() -> void:
-		var tw2 := create_tween().bind_node(b)
-		tw2.tween_property(b, "scale", Vector2.ONE, 0.16).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT))
+	b.set_meta("_last_dis", false)
+	b.draw.connect(func() -> void:
+		var cur_dis := b.disabled
+		if bool(b.get_meta("_last_dis", false)) != cur_dis:
+			b.set_meta("_last_dis", cur_dis)
+			t.modulate.a = 0.62 if cur_dis else 1.0
+			if s_lbl != null:
+				s_lbl.modulate.a = 0.62 if cur_dis else 1.0
+			gloss.modulate.a = 0.25 if cur_dis else 1.0)
+	_wire_btn_bounce(b)
 	b.pressed.connect(func() -> void: AudioCfg.play_ui(self, "click"))
 	return b
 
@@ -507,10 +571,7 @@ func back_bar(title: String, back_to: Callable, back_text: String = "← 返回�
 	back.focus_mode = Control.FOCUS_NONE
 	back.add_theme_font_override("font", font_reg)
 	back.add_theme_font_size_override("font_size", 30)
-	back.add_theme_color_override("font_color", C_PINK_DEEP)
-	back.add_theme_stylebox_override("normal", style(Color(1, 1, 1, 0.88), 20, C_GOLD, 2))
-	back.add_theme_stylebox_override("hover", style(Color(1, 0.95, 0.97, 0.95), 20, C_PINK, 2))
-	back.add_theme_stylebox_override("pressed", style(Color(1, 0.90, 0.94, 1.0), 20, C_PINK, 2))
+	_style_btn(back, Color(1, 1, 1, 0.90), C_GOLD, C_PINK_DEEP, 20, 2, true, Vector2i(16, 10), true, C_PINK)
 	back.pressed.connect(func() -> void:
 		AudioCfg.play_ui(self, "click")
 		back_to.call())
@@ -575,12 +636,10 @@ func show_home() -> void:
 	var style_b := Button.new()
 	style_b.focus_mode = Control.FOCUS_NONE
 	style_b.text = "🎼 " + MusicDirector.style_label()
-	style_b.custom_minimum_size = Vector2(184, 40)
+	style_b.custom_minimum_size = Vector2(198, 46)
 	style_b.add_theme_font_override("font", font_bold)
 	style_b.add_theme_font_size_override("font_size", 20)
-	style_b.add_theme_color_override("font_color", Color(1.0, 0.96, 0.86))
-	style_b.add_theme_stylebox_override("normal", style(Color(0.32, 0.16, 0.42, 0.95), 14, C_GOLD, 2))
-	style_b.add_theme_stylebox_override("hover", style(Color(0.42, 0.22, 0.54, 0.98), 14, C_GOLD, 2))
+	_style_btn(style_b, Color(0.32, 0.16, 0.42, 0.95), C_GOLD, Color(1.0, 0.96, 0.86), 14, 2, false, Vector2i(14, 6))
 	style_b.pressed.connect(func() -> void:
 		AudioCfg.play_ui(self, "click")
 		if music != null:
@@ -694,22 +753,22 @@ func show_home() -> void:
 	theme_row.add_theme_constant_override("separation", 14)
 	var ready_n := Meta.daily_claimable_count()
 	var daily_txt := ("📋 每日委托 (%d)" % ready_n) if ready_n > 0 else "📋 每日委托"
-	var b_daily := cute_button(daily_txt, "", Color(0.94, 0.42, 0.60) if ready_n > 0 else Color(0.68, 0.42, 0.80), Vector2(224, 78))
+	var b_daily := cute_button(daily_txt, "", Color(0.94, 0.42, 0.60) if ready_n > 0 else Color(0.68, 0.42, 0.80), Vector2(236, 78))
 	b_daily.pressed.connect(_open_daily_overlay)
 	theme_row.add_child(b_daily)
-	var b_chars := cute_button("👤 图鉴百科", "", C_SKY, Vector2(214, 78))
+	var b_chars := cute_button("👤 图鉴百科", "", C_SKY, Vector2(212, 78))
 	b_chars.pressed.connect(show_gallery)
 	theme_row.add_child(b_chars)
-	var b_meta := cute_button("🏆 战绩·成就", "", Color(0.88, 0.45, 0.56), Vector2(214, 78))
+	var b_meta := cute_button("🏆 战绩·成就", "", Color(0.88, 0.45, 0.56), Vector2(212, 78))
 	b_meta.pressed.connect(show_records)
 	theme_row.add_child(b_meta)
-	var b_tut := cute_button("🎓 教学关", "", Color(0.92, 0.58, 0.28), Vector2(214, 78))
+	var b_tut := cute_button("🎓 教学关", "", Color(0.92, 0.58, 0.28), Vector2(212, 78))
 	b_tut.pressed.connect(show_tutorial)
 	theme_row.add_child(b_tut)
-	var b_help := cute_button("📖 新手说明", "", Color(0.28, 0.64, 0.50), Vector2(214, 78))
+	var b_help := cute_button("📖 新手说明", "", Color(0.28, 0.64, 0.50), Vector2(212, 78))
 	b_help.pressed.connect(show_help)
 	theme_row.add_child(b_help)
-	var b_theme := cute_button("🌸 昼樱主题" if theme_night else "🌙 祭典夜", "", Color(0.92, 0.66, 0.24) if theme_night else Color(0.32, 0.28, 0.58), Vector2(214, 78))
+	var b_theme := cute_button("🌸 昼樱主题" if theme_night else "🌙 祭典夜", "", Color(0.92, 0.66, 0.24) if theme_night else Color(0.32, 0.28, 0.58), Vector2(212, 78))
 	b_theme.pressed.connect(toggle_theme)
 	theme_row.add_child(b_theme)
 	vb.add_child(theme_row)
@@ -769,9 +828,7 @@ func show_gallery() -> void:
 	to_cards.focus_mode = Control.FOCUS_NONE
 	to_cards.add_theme_font_override("font", font_bold)
 	to_cards.add_theme_font_size_override("font_size", 26)
-	to_cards.add_theme_color_override("font_color", C_WHITE)
-	to_cards.add_theme_stylebox_override("normal", style(C_PLATE, 20, C_GOLD, 2, true))
-	to_cards.add_theme_stylebox_override("hover", style(C_PLATE.lightened(0.08), 20, C_GOLD, 2, true))
+	_style_btn(to_cards, C_PLATE, C_GOLD, C_WHITE, 20, 2, true, Vector2i(18, 10))
 	to_cards.pressed.connect(show_card_gallery)
 	bbar.add_child(to_cards)
 	vb.add_child(bbar)
@@ -835,9 +892,7 @@ func make_char_card(c: Dictionary, scroll: ScrollContainer = null) -> Button:
 	var b := Button.new()
 	b.focus_mode = Control.FOCUS_NONE
 	b.custom_minimum_size = Vector2(400, 500)
-	b.add_theme_stylebox_override("normal", style(Color(1, 1, 1, 0.90), 26, C_GOLD, 3, true))
-	b.add_theme_stylebox_override("hover", style(Color(1, 0.97, 0.98, 0.97), 26, C_PINK, 3, true))
-	b.add_theme_stylebox_override("pressed", style(Color(1, 0.93, 0.95, 1.0), 26, C_PINK, 3, false))
+	_style_btn(b, Color(1, 1, 1, 0.90), C_GOLD, C_INK, 26, 3, true, Vector2i(-1, -1), false, C_PINK)
 	var vb := VBoxContainer.new()
 	vb.mouse_filter = MOUSE_FILTER_IGNORE
 	vb.set_anchors_preset(Control.PRESET_FULL_RECT)
@@ -995,13 +1050,11 @@ func show_detail(c: Dictionary) -> void:
 	var mk_det_btn := func(txt: String, bg: Color, w_min: float = 216.0) -> Button:
 		var b := Button.new()
 		b.text = txt
-		b.custom_minimum_size = Vector2(w_min, 54)
+		b.custom_minimum_size = Vector2(w_min, 56)
 		b.focus_mode = Control.FOCUS_NONE
 		b.add_theme_font_override("font", font_bold)
 		b.add_theme_font_size_override("font_size", 22)
-		b.add_theme_color_override("font_color", C_WHITE)
-		b.add_theme_stylebox_override("normal", style(bg, 16, C_GOLD, 2, true))
-		b.add_theme_stylebox_override("hover", style(bg.lightened(0.08), 16, C_GOLD, 2, true))
+		_style_btn(b, bg, C_GOLD, C_WHITE, 16, 2, true, Vector2i(14, 8))
 		return b
 	var pin_b: Button = mk_det_btn.call("★ 当前看板" if is_pin else "☆ 设为看板", C_GOLD if is_pin else C_PLATE, 196.0)
 	pin_b.pressed.connect(func() -> void:
@@ -1191,13 +1244,12 @@ func show_puzzles() -> void:
 		info.add_child(gl_lbl)
 		var go_b := Button.new()
 		go_b.text = "重玩此关" if cleared else "挑战本关"
-		go_b.custom_minimum_size = Vector2(146, 56)
+		go_b.custom_minimum_size = Vector2(150, 56)
 		go_b.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 		go_b.focus_mode = Control.FOCUS_NONE
 		go_b.add_theme_font_override("font", font_bold)
 		go_b.add_theme_font_size_override("font_size", 23)
-		go_b.add_theme_color_override("font_color", C_WHITE)
-		go_b.add_theme_stylebox_override("normal", style(Color(0.32, 0.68, 0.44) if cleared else C_PLATE, 16, C_GOLD, 2, true))
+		_style_btn(go_b, Color(0.32, 0.68, 0.44) if cleared else C_PLATE, C_GOLD, C_WHITE, 16, 2, true, Vector2i(14, 8), false)
 		_wire_scroll_drag(go_b, sc)
 		go_b.pressed.connect(func() -> void:
 			if float(go_b.get_meta("drag_px", 0.0)) > 18.0:
@@ -2488,15 +2540,15 @@ func _open_daily_overlay() -> void:
 		info_v.add_child(bar)
 		var cbtn := Button.new()
 		cbtn.focus_mode = Control.FOCUS_NONE
-		cbtn.custom_minimum_size = Vector2(148, 50)
+		cbtn.custom_minimum_size = Vector2(150, 52)
 		cbtn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 		cbtn.text = "✓ 已领取" if claimed else ("领取奖励" if claimable else "进行中")
 		cbtn.disabled = not claimable
 		cbtn.add_theme_font_override("font", font_bold)
 		cbtn.add_theme_font_size_override("font_size", 22)
-		cbtn.add_theme_color_override("font_color", C_WHITE if claimable else C_INK_SOFT)
-		cbtn.add_theme_stylebox_override("normal", style(C_PLATE if claimable else Color(0.90, 0.88, 0.92), 16, C_GOLD if claimable else Color(0.8, 0.76, 0.84), 2, claimable))
-		cbtn.add_theme_stylebox_override("disabled", style(Color(0.88, 0.92, 0.89) if claimed else Color(0.91, 0.89, 0.93), 16, Color(0.75, 0.78, 0.76), 1))
+		_style_btn(cbtn, C_PLATE, C_GOLD, C_WHITE, 16, 2, true, Vector2i(14, 8))
+		cbtn.add_theme_stylebox_override("disabled", _tight_sb(style(Color(0.86, 0.92, 0.88) if claimed else Color(0.90, 0.88, 0.92), 16, Color(0.74, 0.80, 0.76) if claimed else Color(0.78, 0.74, 0.82), 1), 14, 8))
+		cbtn.add_theme_color_override("font_disabled_color", Color(0.24, 0.56, 0.34) if claimed else C_INK_SOFT)
 		cbtn.pressed.connect(func() -> void:
 			var r := Meta.claim_daily(tid)
 			if bool(r.get("ok", false)):
@@ -2555,9 +2607,7 @@ func show_card_gallery() -> void:
 	to_chars.focus_mode = Control.FOCUS_NONE
 	to_chars.add_theme_font_override("font", font_bold)
 	to_chars.add_theme_font_size_override("font_size", 26)
-	to_chars.add_theme_color_override("font_color", C_WHITE)
-	to_chars.add_theme_stylebox_override("normal", style(C_SKY, 20, C_GOLD, 2, true))
-	to_chars.add_theme_stylebox_override("hover", style(C_SKY.lightened(0.08), 20, C_GOLD, 2, true))
+	_style_btn(to_chars, C_SKY, C_GOLD, C_WHITE, 20, 2, true, Vector2i(18, 10))
 	to_chars.pressed.connect(show_gallery)
 	bbar.add_child(to_chars)
 	vb.add_child(bbar)
@@ -2601,8 +2651,7 @@ func show_card_gallery() -> void:
 			cb.focus_mode = Control.FOCUS_NONE
 			cb.custom_minimum_size = Vector2(432, 224)
 			var fcol := Art.frame_color(String(nm))
-			cb.add_theme_stylebox_override("normal", style(Color(1, 1, 1, 0.95), 20, fcol, 3, true))
-			cb.add_theme_stylebox_override("hover", style(Color(1, 0.97, 0.99, 1.0), 20, C_GOLD, 3, true))
+			_style_btn(cb, Color(1, 1, 1, 0.95), fcol, C_INK, 20, 3, true, Vector2i(-1, -1), false, C_GOLD)
 			var hb := HBoxContainer.new()
 			hb.mouse_filter = MOUSE_FILTER_IGNORE
 			hb.set_anchors_preset(Control.PRESET_FULL_RECT)
