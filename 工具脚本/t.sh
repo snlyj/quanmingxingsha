@@ -1,5 +1,5 @@
 #!/bin/bash
 # usage: t.sh <args...>   runs godot headless in project
-cd /workspace/newproj/proj/game
-G=/workspace/tools/godot4
-exec timeout ${TMO:-600} $G --headless --path . "$@"
+cd "$(dirname "$0")/../game" || exit 1
+G=${G:-godot}
+exec timeout ${TMO:-600} "$G" --headless --path . "$@"

@@ -1,1 +1,2 @@
-安装包单独下载：全明星杀_V0.31.0.apk（versionCode 37）。bgm_full 里只保留了选定的三首完整曲目，其他候选的 45 秒剪辑在 bgm_candidates。
+项目已完成 GitHub 仓库整理，请直接阅读根目录 README.md 与 交接说明.md（当前版本：V0.44.1 / versionCode=51）。
+Android 覆盖安装统一签名密钥位于 签名/qmxs_sign.keystore（别名 androiddebugkey，密码 android）。
