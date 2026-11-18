@@ -472,7 +472,7 @@ func cute_button(text: String, sub: String, bg_color: Color, min_size: Vector2) 
 	vb.alignment = BoxContainer.ALIGNMENT_CENTER
 	vb.add_theme_constant_override("separation", 4)
 	vb.mouse_filter = MOUSE_FILTER_IGNORE
-	var t_fs := (38 if min_size.y <= 112 else 44) if sub != "" else 32
+	var t_fs := (38 if min_size.y <= 112 else 44) if sub != "" else (28 if min_size.x <= 228 else 32)
 	var t := lbl(text, t_fs, Color(1.0, 0.98, 0.92), true, HORIZONTAL_ALIGNMENT_CENTER)
 	t.add_theme_color_override("font_outline_color", Color(0.22, 0.08, 0.18, 0.88))
 	t.add_theme_constant_override("outline_size", 6)
@@ -620,10 +620,18 @@ func show_home() -> void:
 		wrap_b.custom_minimum_size = Vector2(166, 198)
 		var cc := Art.cg_card(ch_d, Vector2(166, 198), {"zoom": 0.62, "face_y": 0.34, "title": true, "hp": false, "fs": 19})
 		wrap_b.add_child(cc)
+		_attach_l2d_breath(cc, float(slot_i) * 0.7, 0.018, 2.2)
+		if _home_touch_slot == slot_i:
+			_home_touch_slot = -1
+			cc.scale = Vector2(0.86, 0.86)
+			var ptw := create_tween().bind_node(cc)
+			ptw.tween_property(cc, "scale", Vector2.ONE, 0.28).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+			_spawn_touch_burst(wrap_b, Vector2(83, 86), ["💕", "🌸", "✨"], "+2♥")
 		wrap_b.set_meta("intro", IntroPop.char_spec(ch_d))
 		var idx_s := slot_i
 		wrap_b.pressed.connect(func() -> void:
-			Meta.add_affection(pid, 2)
+			Meta.touch_char(pid, 2)
+			_home_touch_slot = idx_s
 			_on_home_showcase_clicked(idx_s)
 			var new_pid := String(home_showcase_ids[idx_s]) if idx_s < home_showcase_ids.size() else pid
 			if not AudioCfg.play_cv(self, new_pid, "touch"):
@@ -683,20 +691,25 @@ func show_home() -> void:
 
 	var theme_row := HBoxContainer.new()
 	theme_row.alignment = BoxContainer.ALIGNMENT_CENTER
-	theme_row.add_theme_constant_override("separation", 16)
-	var b_chars := cute_button("👤 图鉴百科", "", C_SKY, Vector2(228, 78))
+	theme_row.add_theme_constant_override("separation", 14)
+	var ready_n := Meta.daily_claimable_count()
+	var daily_txt := ("📋 每日委托 (%d)" % ready_n) if ready_n > 0 else "📋 每日委托"
+	var b_daily := cute_button(daily_txt, "", Color(0.94, 0.42, 0.60) if ready_n > 0 else Color(0.68, 0.42, 0.80), Vector2(224, 78))
+	b_daily.pressed.connect(_open_daily_overlay)
+	theme_row.add_child(b_daily)
+	var b_chars := cute_button("👤 图鉴百科", "", C_SKY, Vector2(214, 78))
 	b_chars.pressed.connect(show_gallery)
 	theme_row.add_child(b_chars)
-	var b_meta := cute_button("🏆 战绩·成就", "", Color(0.88, 0.45, 0.56), Vector2(228, 78))
+	var b_meta := cute_button("🏆 战绩·成就", "", Color(0.88, 0.45, 0.56), Vector2(214, 78))
 	b_meta.pressed.connect(show_records)
 	theme_row.add_child(b_meta)
-	var b_tut := cute_button("🎓 教学关", "", Color(0.92, 0.58, 0.28), Vector2(228, 78))
+	var b_tut := cute_button("🎓 教学关", "", Color(0.92, 0.58, 0.28), Vector2(214, 78))
 	b_tut.pressed.connect(show_tutorial)
 	theme_row.add_child(b_tut)
-	var b_help := cute_button("📖 新手说明", "", Color(0.28, 0.64, 0.50), Vector2(228, 78))
+	var b_help := cute_button("📖 新手说明", "", Color(0.28, 0.64, 0.50), Vector2(214, 78))
 	b_help.pressed.connect(show_help)
 	theme_row.add_child(b_help)
-	var b_theme := cute_button("🌸 昼樱主题" if theme_night else "🌙 祭典夜", "", Color(0.92, 0.66, 0.24) if theme_night else Color(0.32, 0.28, 0.58), Vector2(228, 78))
+	var b_theme := cute_button("🌸 昼樱主题" if theme_night else "🌙 祭典夜", "", Color(0.92, 0.66, 0.24) if theme_night else Color(0.32, 0.28, 0.58), Vector2(214, 78))
 	b_theme.pressed.connect(toggle_theme)
 	theme_row.add_child(b_theme)
 	vb.add_child(theme_row)
@@ -891,6 +904,9 @@ func show_detail(c: Dictionary) -> void:
 	left.add_theme_stylebox_override("panel", style(Color(1, 0.95, 0.98, 0.90) if is_vow_c else Color(1, 1, 1, 0.75), 28, C_PINK_DEEP if is_vow_c else C_GOLD, 4 if is_vow_c else 3, true))
 	var lcc := CenterContainer.new()
 	var cg_wrap := Art.cg_card(c, Vector2(520, 693), {"fs": 44})
+	var cg_inner := cg_wrap.get_node_or_null("Clip") as Control
+	if cg_inner != null:
+		_attach_l2d_breath(cg_inner, 0.0, 0.015, 2.5)
 	lcc.add_child(cg_wrap)
 	left.add_child(lcc)
 	row.add_child(left)
@@ -1035,7 +1051,9 @@ func show_detail(c: Dictionary) -> void:
 		bond_lbl.text = "💕 羁绊：%s" % Meta.bond_title(cid_d)
 		bond_bar.value = float(clampi(Meta.affection(cid_d), 0, 500))
 		var g_line := BattleScreen.line_for(cid_d, "vow" if bool(gr.get("vowed", false)) else "head")
-		v_lbl.text = ("💍 【达成永恒誓约！】「%s」" % g_line) if bool(gr.get("vowed", false)) else ("🎁 【收到礼物 · 好感+35♥】「%s」" % g_line))
+		v_lbl.text = ("💍 【达成永恒誓约！】「%s」" % g_line) if bool(gr.get("vowed", false)) else ("🎁 【收到礼物 · 好感+35♥】「%s」" % g_line)
+		_bounce_control(cg_wrap)
+		_spawn_touch_burst(left, left.size * 0.45, ["💍", "💖", "🌸"] if bool(gr.get("vowed", false)) else ["🎁", "💖", "✨"], "+35♥"))
 	act_hb.add_child(gift_b)
 	left.gui_input.connect(func(ev: InputEvent) -> void:
 		if ev is InputEventMouseButton and (ev as InputEventMouseButton).pressed and (ev as InputEventMouseButton).button_index == MOUSE_BUTTON_LEFT:
@@ -1044,9 +1062,11 @@ func show_detail(c: Dictionary) -> void:
 			var zone_cat := "head" if ry < 0.30 else ("face" if ry < 0.52 else ("body" if ry < 0.76 else "attack"))
 			var zone_nm := "🌸摸头杀(+2♥)" if zone_cat == "head" else ("💕轻触脸颊(+2♥)" if zone_cat == "face" else ("💓心口互动(+2♥)" if zone_cat == "body" else "✨并肩互动(+2♥)"))
 			var cv_cat := "touch" if (zone_cat == "head" or zone_cat == "face") else ("hurt" if zone_cat == "body" else "attack")
-			Meta.add_affection(cid_d, 2)
+			Meta.touch_char(cid_d, 2)
 			if not AudioCfg.play_cv(self, cid_d, cv_cat):
 				AudioCfg.play_ui(self, "heal")
+			_bounce_control(cg_wrap)
+			_spawn_touch_burst(left, mb.position, ["💕", "🌸", "✨"], "+2♥")
 			stat_lbl.text = "⚔ 熟练度 Lv.%d · 战绩 %d 胜 / %d 局%s   |   🪙 欢斗豆：%d" % [lv_d, cw, cg, rate_s, Meta.beans()]
 			bond_lbl.text = "💕 羁绊：%s" % Meta.bond_title(cid_d)
 			bond_bar.value = float(clampi(Meta.affection(cid_d), 0, 500))
@@ -2325,6 +2345,186 @@ func _shot_v30(target: String) -> void:
 
 
 var home_showcase_ids: Array = ["sena", "hina", "reo"]
+var _home_touch_slot := -1
+var _daily_overlay: Control = null
+
+
+func _attach_l2d_breath(ctrl: Control, phase_delay: float = 0.0, amp_scale: float = 0.018, amp_y: float = 2.5) -> void:
+	if ctrl == null:
+		return
+	ctrl.ready.connect(func() -> void:
+		ctrl.pivot_offset = ctrl.size * 0.5
+		var y0 := ctrl.position.y
+		var tw := create_tween().bind_node(ctrl).set_loops()
+		if phase_delay > 0.0:
+			var dt := create_tween().bind_node(ctrl)
+			dt.tween_interval(phase_delay)
+			dt.tween_callback(func() -> void:
+				if is_instance_valid(ctrl):
+					var tw2 := create_tween().bind_node(ctrl).set_loops()
+					tw2.tween_property(ctrl, "scale", Vector2(1.0 + amp_scale, 1.0 + amp_scale), 1.4).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+					tw2.parallel().tween_property(ctrl, "position:y", y0 - amp_y, 1.4).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+					tw2.tween_property(ctrl, "scale", Vector2.ONE, 1.4).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+					tw2.parallel().tween_property(ctrl, "position:y", y0, 1.4).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT))
+			tw.kill()
+		else:
+			tw.tween_property(ctrl, "scale", Vector2(1.0 + amp_scale, 1.0 + amp_scale), 1.4).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+			tw.parallel().tween_property(ctrl, "position:y", y0 - amp_y, 1.4).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+			tw.tween_property(ctrl, "scale", Vector2.ONE, 1.4).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+			tw.parallel().tween_property(ctrl, "position:y", y0, 1.4).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT))
+
+
+func _bounce_control(ctrl: Control) -> void:
+	if ctrl == null or not is_instance_valid(ctrl):
+		return
+	ctrl.pivot_offset = ctrl.size * 0.5
+	ctrl.scale = Vector2(1.045, 0.96)
+	var tw := create_tween().bind_node(ctrl)
+	tw.tween_property(ctrl, "scale", Vector2.ONE, 0.30).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+
+
+func _spawn_touch_burst(parent: Control, pos: Vector2, emojis: Array, tag_txt: String = "") -> void:
+	if parent == null or not is_instance_valid(parent) or DisplayServer.get_name() == "headless":
+		return
+	for i_b in 5:
+		var em_lbl := lbl(String(emojis[i_b % emojis.size()]), 28, C_PINK_DEEP, true, HORIZONTAL_ALIGNMENT_CENTER)
+		em_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		em_lbl.position = pos - Vector2(16, 16)
+		parent.add_child(em_lbl)
+		var ang := -PI * 0.5 + (float(i_b) - 2.0) * 0.45 + randf_range(-0.15, 0.15)
+		var dist := randf_range(58.0, 96.0)
+		var tw := create_tween().bind_node(em_lbl).set_parallel(true)
+		tw.tween_property(em_lbl, "position", pos + Vector2(cos(ang), sin(ang)) * dist - Vector2(16, 16), 0.72).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+		tw.tween_property(em_lbl, "modulate:a", 0.0, 0.72)
+		tw.chain().tween_callback(func() -> void: if is_instance_valid(em_lbl): em_lbl.queue_free())
+	if tag_txt != "":
+		var tl := lbl(tag_txt, 26, C_PINK_DEEP, true, HORIZONTAL_ALIGNMENT_CENTER)
+		tl.add_theme_constant_override("outline_size", 6)
+		tl.add_theme_color_override("font_outline_color", Color(1, 1, 1, 0.95))
+		tl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		tl.position = pos - Vector2(40, 28)
+		parent.add_child(tl)
+		var tw2 := create_tween().bind_node(tl).set_parallel(true)
+		tw2.tween_property(tl, "position:y", pos.y - 84.0, 0.85).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+		tw2.tween_property(tl, "modulate:a", 0.0, 0.85)
+		tw2.chain().tween_callback(func() -> void: if is_instance_valid(tl): tl.queue_free())
+
+
+func _open_daily_overlay() -> void:
+	if _daily_overlay != null and is_instance_valid(_daily_overlay):
+		_daily_overlay.queue_free()
+	var ov := Control.new()
+	ov.name = "DailyOverlay"
+	ov.set_anchors_preset(Control.PRESET_FULL_RECT)
+	screen_root.add_child(ov)
+	_daily_overlay = ov
+	var dim := ColorRect.new()
+	dim.color = Color(0.10, 0.05, 0.16, 0.68)
+	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
+	ov.add_child(dim)
+	var card := PanelContainer.new()
+	card.position = Vector2(410, 96)
+	card.custom_minimum_size = Vector2(1100, 0)
+	card.size = Vector2(1100, 0)
+	var csb := style(Color(1.0, 0.98, 0.96, 0.98), 28, C_GOLD, 4, true)
+	csb.content_margin_left = 30
+	csb.content_margin_right = 30
+	csb.content_margin_top = 20
+	csb.content_margin_bottom = 20
+	card.add_theme_stylebox_override("panel", csb)
+	ov.add_child(card)
+	var vb := VBoxContainer.new()
+	vb.add_theme_constant_override("separation", 12)
+	card.add_child(vb)
+	var hdr := HBoxContainer.new()
+	hdr.add_theme_constant_override("separation", 16)
+	var ttl := lbl("📋 每日社团委托（%s）" % Time.get_date_string_from_system(), 32, C_PINK_DEEP, true)
+	ttl.autowrap_mode = TextServer.AUTOWRAP_OFF
+	ttl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	hdr.add_child(ttl)
+	var bl := lbl("🪙 欢斗豆：%d" % Meta.beans(), 25, Color(0.72, 0.44, 0.08), true)
+	bl.autowrap_mode = TextServer.AUTOWRAP_OFF
+	hdr.add_child(bl)
+	vb.add_child(hdr)
+	var sub_l := lbl("完成任意模式对局或与角色互动即可累计进度，每日 00:00 自动刷新。", 20, C_INK_SOFT)
+	sub_l.autowrap_mode = TextServer.AUTOWRAP_OFF
+	vb.add_child(sub_l)
+	var items := Meta.daily_status()
+	for it in items:
+		var tid := String(it["id"])
+		var done := bool(it["done"])
+		var claimed := bool(it["claimed"])
+		var claimable := bool(it["claimable"])
+		var row_pc := PanelContainer.new()
+		var rsb := style(Color(0.95, 1.0, 0.96) if claimed else (Color(1.0, 0.94, 0.97) if claimable else Color(1, 1, 1, 0.95)), 18, C_GOLD if claimable else Color(0.84, 0.78, 0.86), 2)
+		rsb.content_margin_left = 18
+		rsb.content_margin_right = 18
+		rsb.content_margin_top = 10
+		rsb.content_margin_bottom = 10
+		row_pc.add_theme_stylebox_override("panel", rsb)
+		var hb := HBoxContainer.new()
+		hb.add_theme_constant_override("separation", 14)
+		row_pc.add_child(hb)
+		var info_v := VBoxContainer.new()
+		info_v.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		info_v.add_theme_constant_override("separation", 4)
+		hb.add_child(info_v)
+		var rew_s := "🪙+%d 欢斗豆" % int(it["beans"])
+		if int(it["aff"]) > 0:
+			rew_s += " · ♥看板好感+%d" % int(it["aff"])
+		var rt1 := lbl("%s  （%s）" % [String(it["title"]), rew_s], 23, C_INK, true)
+		rt1.autowrap_mode = TextServer.AUTOWRAP_OFF
+		info_v.add_child(rt1)
+		var rt2 := lbl("%s  ·  进度 %d / %d" % [String(it["desc"]), int(it["prog"]), int(it["goal"])], 19, C_INK_SOFT)
+		rt2.autowrap_mode = TextServer.AUTOWRAP_OFF
+		info_v.add_child(rt2)
+		var bar := ProgressBar.new()
+		bar.show_percentage = false
+		bar.custom_minimum_size = Vector2(0, 10)
+		bar.max_value = float(int(it["goal"]))
+		bar.value = float(int(it["prog"]))
+		bar.add_theme_stylebox_override("background", style(Color(0.93, 0.88, 0.92), 5))
+		bar.add_theme_stylebox_override("fill", style(Color(0.28, 0.74, 0.44) if done else C_PINK_DEEP, 5))
+		info_v.add_child(bar)
+		var cbtn := Button.new()
+		cbtn.focus_mode = Control.FOCUS_NONE
+		cbtn.custom_minimum_size = Vector2(148, 50)
+		cbtn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		cbtn.text = "✓ 已领取" if claimed else ("领取奖励" if claimable else "进行中")
+		cbtn.disabled = not claimable
+		cbtn.add_theme_font_override("font", font_bold)
+		cbtn.add_theme_font_size_override("font_size", 22)
+		cbtn.add_theme_color_override("font_color", C_WHITE if claimable else C_INK_SOFT)
+		cbtn.add_theme_stylebox_override("normal", style(C_PLATE if claimable else Color(0.90, 0.88, 0.92), 16, C_GOLD if claimable else Color(0.8, 0.76, 0.84), 2, claimable))
+		cbtn.add_theme_stylebox_override("disabled", style(Color(0.88, 0.92, 0.89) if claimed else Color(0.91, 0.89, 0.93), 16, Color(0.75, 0.78, 0.76), 1))
+		cbtn.pressed.connect(func() -> void:
+			var r := Meta.claim_daily(tid)
+			if bool(r.get("ok", false)):
+				AudioCfg.play_ui(self, "heal")
+				show_home()
+				_open_daily_overlay())
+		hb.add_child(cbtn)
+		vb.add_child(row_pc)
+	var bot := HBoxContainer.new()
+	bot.alignment = BoxContainer.ALIGNMENT_CENTER
+	bot.add_theme_constant_override("separation", 24)
+	vb.add_child(bot)
+	var all_ok := Meta.daily_claimable_count() > 0
+	var all_b := cute_button("🎁 一键全部领取", "", Color(0.94, 0.42, 0.60) if all_ok else Color(0.70, 0.68, 0.74), Vector2(280, 66))
+	all_b.disabled = not all_ok
+	all_b.pressed.connect(func() -> void:
+		var ar := Meta.claim_all_daily()
+		if int(ar.get("claimed_n", 0)) > 0:
+			AudioCfg.play_ui(self, "win")
+			show_home()
+			_open_daily_overlay())
+	bot.add_child(all_b)
+	var cls_b := cute_button("关闭", "", C_SKY, Vector2(180, 66))
+	cls_b.pressed.connect(func() -> void:
+		if is_instance_valid(ov):
+			ov.queue_free()
+		_daily_overlay = null)
+	bot.add_child(cls_b)
 
 
 func _on_home_showcase_clicked(slot_idx: int) -> void:

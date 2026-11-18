@@ -372,6 +372,7 @@ func _run_reg_test() -> void:
 	await _reg_v41()
 	await _reg_v42()
 	await _reg_v43()
+	await _reg_v44()
 	_reg_lines.append("REGTEST_DONE tests=%d fails=%d" % [_reg_n, _reg_fails])
 	_write("/tmp/ask_regtest.txt", _reg_lines)
 	print(_reg_lines[_reg_lines.size() - 1])
@@ -3686,5 +3687,68 @@ func _reg_v43() -> void:
 		cg_btn.gui_input.emit(cg_drag)
 		await _frames(1)
 		_ok(cg_scroll.scroll_vertical > 0, "V43-4 卡牌图鉴按住卡面上下滑动顺畅滚动")
+	main_ref.show_home()
+	await _frames(2)
+
+
+func _reg_v44() -> void:
+	const Meta44 = preload("res://scripts/meta.gd")
+	const BS44 = preload("res://scripts/battle.gd")
+
+	# V44-1: 每日社团委托进度累计、互动计数、一键领取与防重复领取
+	var old_p44: String = Meta44.path
+	Meta44.reset_for_test("/tmp/qmxs_v44_meta_test.json")
+	_ok(Meta44.daily_claimable_count() == 0, "V44-1a 新档初始可领委托数为 0")
+	Meta44.record({"mode": "identity", "char": "白石星奈", "identity": "主公", "result": "win", "rounds": 5, "dmg": 6, "kills": 1, "heal": 1, "taken": 1, "mvp": true})
+	Meta44.record({"mode": "duel", "char": "千早真冬", "identity": "先手", "result": "lose", "rounds": 3, "dmg": 1, "kills": 0, "heal": 0, "taken": 3, "mvp": false})
+	for _ti in 3:
+		Meta44.touch_char("sena", 2)
+	_ok(Meta44.daily_claimable_count() == 4, "V44-1b 对局与互动后 4 项每日委托全部达成可领取（实际 %d）" % Meta44.daily_claimable_count())
+	var b_before := Meta44.beans()
+	var aff_s0 := Meta44.affection("sena")
+	var ar44 := Meta44.claim_all_daily()
+	_ok(int(ar44.get("claimed_n", 0)) == 4 and Meta44.beans() == b_before + 550 and Meta44.affection("sena") == aff_s0 + 8, "V44-1c 一键领取发放全部 550 欢斗豆与看板好感 +8")
+	_ok(Meta44.daily_claimable_count() == 0 and int(Meta44.claim_all_daily().get("claimed_n", 0)) == 0, "V44-1d 已领委托不可重复领取")
+
+	# V44-2: 战斗牌桌全量 CV 触发链路（attack/damage/skill/dying/death）与设置试听按钮
+	main_ref.clear_screen()
+	var bs44 = BS44.new()
+	bs44.set_anchors_preset(Control.PRESET_FULL_RECT)
+	bs44.go_home = Callable(main_ref, "show_home")
+	main_ref.screen_root.add_child(bs44)
+	bs44.build_table()
+	bs44.players = [
+		{"seat": 0, "char": Characters.by_id("sena"), "char_name": "白石星奈", "alive": true, "hp": 4, "max_hp": 4, "hand": [], "equip": {"weapon": {}, "armor": {}, "minus": {}, "plus": {}, "treasure": {}}, "judge": [], "marks": {}},
+		{"seat": 1, "char": Characters.by_id("mafuyu"), "char_name": "千早真冬", "alive": true, "hp": 3, "max_hp": 3, "hand": [], "equip": {"weapon": {}, "armor": {}, "minus": {}, "plus": {}, "treasure": {}}, "judge": [], "marks": {}},
+	]
+	bs44.cv_played_count = 0
+	bs44._eng_fx("attack", {"src_seat": 0, "tgt_seat": 1, "nature": ""})
+	bs44._eng_fx("damage", {"seat": 0, "num": 1, "nature": ""})
+	bs44._eng_fx("skill", {"seat": 1, "name": "霜封", "sid": "shuangfeng", "big": false})
+	bs44._eng_fx("dying", {"seat": 1})
+	_ok(bs44.cv_played_count >= 4, "V44-2a 战斗受击/出击/技能/濒死完整触发角色 CV 语音（count=%d）" % bs44.cv_played_count)
+	bs44.toggle_settings_panel()
+	var has_cv_test := false
+	if bs44.settings_panel != null:
+		for btn44 in bs44.settings_panel.find_children("*", "Button", true, false):
+			if (btn44 as Button).text.find("试听语音") >= 0:
+				has_cv_test = true
+	_ok(has_cv_test, "V44-2b 对局设置面板包含角色语音试听按钮")
+	await _close_battle(bs44)
+
+	# V44-3: 主页每日委托浮层与详情页伪Live2D呼吸组件正常构建
+	main_ref.show_home()
+	await _frames(2)
+	main_ref._open_daily_overlay()
+	await _frames(2)
+	_ok(main_ref._daily_overlay != null and is_instance_valid(main_ref._daily_overlay), "V44-3a 主页每日社团委托浮层可正常打开")
+	if main_ref._daily_overlay != null and is_instance_valid(main_ref._daily_overlay):
+		main_ref._daily_overlay.queue_free()
+		main_ref._daily_overlay = null
+	main_ref.show_detail(Characters.by_id("sena"))
+	await _frames(2)
+	_ok(main_ref.screen_root.get_child_count() > 0, "V44-3b 角色详情页伪Live2D呼吸与触碰反馈加载正常")
+	Meta44.reset_for_test("/tmp/qmxs_v44_meta_test.json")
+	Meta44.path = old_p44
 	main_ref.show_home()
 	await _frames(2)

@@ -40,8 +40,16 @@ const ACHIEVEMENTS := [
 ]
 
 
+const DAILY_TASKS := [
+	{"id": "d_play2", "title": "午后对战", "desc": "完成任意模式 2 局对局", "goal": 2, "beans": 120, "aff": 0},
+	{"id": "d_win1", "title": "社团优胜", "desc": "在任意模式取得 1 场胜利", "goal": 1, "beans": 180, "aff": 0},
+	{"id": "d_dmg5", "title": "火力全开", "desc": "对局内累计造成 5 点伤害", "goal": 5, "beans": 150, "aff": 0},
+	{"id": "d_bond3", "title": "心意传达", "desc": "与角色互动、摸头或赠礼 3 次", "goal": 3, "beans": 100, "aff": 8},
+]
+
+
 static func _blank() -> Dictionary:
-	return {"version": 2, "records": [], "totals": {}, "chars": {}, "ach": {}, "puzzles": {}, "beans": 1000, "win_streak": 0, "best_streak": 0, "tutorial_done": false, "banned_chars": [], "showcase": ["sena", "hina", "reo"], "affection": {}}
+	return {"version": 2, "records": [], "totals": {}, "chars": {}, "ach": {}, "puzzles": {}, "beans": 1000, "win_streak": 0, "best_streak": 0, "tutorial_done": false, "banned_chars": [], "showcase": ["sena", "hina", "reo"], "affection": {}, "daily": {"day": "", "prog": {}, "claimed": []}}
 
 
 static func load_data() -> Dictionary:
@@ -169,10 +177,18 @@ static func record(rec: Dictionary) -> Dictionary:
 	var ws := (int(d.get("win_streak", 0)) + 1) if won else 0
 	d["win_streak"] = ws
 	d["best_streak"] = maxi(int(d.get("best_streak", 0)), ws)
+	var dy := _ensure_daily(d)
+	var dprog: Dictionary = dy["prog"]
+	dprog["d_play2"] = int(dprog.get("d_play2", 0)) + 1
+	if won:
+		dprog["d_win1"] = int(dprog.get("d_win1", 0)) + 1
+	var ddmg := int(rec.get("dmg", 0))
+	if ddmg > 0:
+		dprog["d_dmg5"] = int(dprog.get("d_dmg5", 0)) + ddmg
 	var new_lv := level_of(int(cs["xp"]))
 	var new_ach := _check_achievements(d, rec)
 	save()
-	var out := {"xp": xp, "level": new_lv, "level_up": new_lv > old_lv, "win_streak": ws, "best_streak": int(d["best_streak"]), "new_ach": new_ach}
+	var out := {"xp": xp, "level": new_lv, "level_up": new_lv > old_lv, "win_streak": ws, "best_streak": int(d["best_streak"]), "new_ach": new_ach, "daily_ready": _daily_ready_in(d)}
 	for bk in binfo:
 		out[bk] = binfo[bk]
 	return out
@@ -466,6 +482,121 @@ static func gift_char(cid_or_name: String, cost_beans: int = 100, gain_aff: int 
 	var nv := clampi(affection(k) + gain_aff, 0, 999)
 	aff_d[k] = nv
 	d["affection"] = aff_d
+	var dy_g := _ensure_daily(d)
+	(dy_g["prog"] as Dictionary)["d_bond3"] = int((dy_g["prog"] as Dictionary).get("d_bond3", 0)) + 1
 	save()
 	var new_lv := bond_level(k)
 	return {"ok": true, "beans": int(d["beans"]), "affection": nv, "level": new_lv, "level_up": new_lv > old_lv, "vowed": new_lv >= 5}
+
+
+static func touch_char(cid_or_name: String, delta: int = 2) -> int:
+	var nv := add_affection(cid_or_name, delta)
+	bump_daily("d_bond3", 1)
+	return nv
+
+
+static func _today_str() -> String:
+	return Time.get_date_string_from_system()
+
+
+static func _ensure_daily(d: Dictionary) -> Dictionary:
+	var today := _today_str()
+	var dy: Dictionary = d.get("daily", {}) if d.get("daily") is Dictionary else {}
+	if String(dy.get("day", "")) != today:
+		dy = {"day": today, "prog": {}, "claimed": []}
+		d["daily"] = dy
+	if not (dy.get("prog") is Dictionary):
+		dy["prog"] = {}
+	if not (dy.get("claimed") is Array):
+		dy["claimed"] = []
+	return dy
+
+
+static func _daily_ready_in(d: Dictionary) -> int:
+	var dy := _ensure_daily(d)
+	var prog: Dictionary = dy["prog"]
+	var claimed: Array = dy["claimed"]
+	var cnt := 0
+	for t in DAILY_TASKS:
+		var tid := String(t["id"])
+		if not claimed.has(tid) and int(prog.get(tid, 0)) >= int(t["goal"]):
+			cnt += 1
+	return cnt
+
+
+static func bump_daily(tid: String, delta: int = 1) -> void:
+	if delta <= 0:
+		return
+	var d := load_data()
+	var dy := _ensure_daily(d)
+	var prog: Dictionary = dy["prog"]
+	prog[tid] = int(prog.get(tid, 0)) + delta
+	save()
+
+
+static func daily_status() -> Array:
+	var d := load_data()
+	var dy := _ensure_daily(d)
+	var prog: Dictionary = dy["prog"]
+	var claimed: Array = dy["claimed"]
+	var out: Array = []
+	for t in DAILY_TASKS:
+		var tid := String(t["id"])
+		var g := int(t["goal"])
+		var p := mini(int(prog.get(tid, 0)), g)
+		var cl := claimed.has(tid)
+		var done := p >= g
+		out.append({"id": tid, "title": String(t["title"]), "desc": String(t["desc"]), "goal": g, "prog": p, "beans": int(t["beans"]), "aff": int(t["aff"]), "done": done, "claimed": cl, "claimable": done and not cl})
+	return out
+
+
+static func daily_claimable_count() -> int:
+	return _daily_ready_in(load_data())
+
+
+static func claim_daily(tid: String) -> Dictionary:
+	var d := load_data()
+	var dy := _ensure_daily(d)
+	var prog: Dictionary = dy["prog"]
+	var claimed: Array = dy["claimed"]
+	if claimed.has(tid):
+		return {"ok": false, "msg": "今日已领取"}
+	var spec: Dictionary = {}
+	for t in DAILY_TASKS:
+		if String(t["id"]) == tid:
+			spec = t
+			break
+	if spec.is_empty():
+		return {"ok": false, "msg": "未知委托"}
+	if int(prog.get(tid, 0)) < int(spec["goal"]):
+		return {"ok": false, "msg": "委托尚未完成"}
+	claimed.append(tid)
+	dy["claimed"] = claimed
+	var rb := int(spec["beans"])
+	var raff := int(spec["aff"])
+	d["beans"] = int(d.get("beans", 1000)) + rb
+	if raff > 0:
+		var CharsD = load("res://data/characters.gd")
+		var sc_ids := get_showcase(CharsD.LIST if CharsD != null else [])
+		var aff_d: Dictionary = d.get("affection", {})
+		for cid in sc_ids:
+			var k2 := _aff_key(String(cid))
+			aff_d[k2] = clampi(int(aff_d.get(k2, 0)) + raff, 0, 999)
+		d["affection"] = aff_d
+	save()
+	return {"ok": true, "beans": int(d["beans"]), "beans_delta": rb, "aff": raff}
+
+
+static func claim_all_daily() -> Dictionary:
+	var st := daily_status()
+	var cnt := 0
+	var b_tot := 0
+	var a_tot := 0
+	for item in st:
+		if bool(item.get("claimable", false)):
+			var r := claim_daily(String(item["id"]))
+			if bool(r.get("ok", false)):
+				cnt += 1
+				b_tot += int(r.get("beans_delta", 0))
+				a_tot += int(r.get("aff", 0))
+	return {"claimed_n": cnt, "beans_delta": b_tot, "aff": a_tot, "beans": beans()}

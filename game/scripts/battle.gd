@@ -46,6 +46,10 @@ var last_turn_seat := -1
 var sfx_players: Array = []
 var sfx_streams: Dictionary = {}
 var voice_player: AudioStreamPlayer = null
+var cv_played_count := 0
+var _cv_last_prio := 0
+var _cv_last_ms := 0
+var _cv_seat_ms := {}
 var sfx_count := 0  # 播放请求计数（测试用）
 const AudioCfg = preload("res://scripts/audio.gd")
 const Meta = preload("res://scripts/meta.gd")
@@ -869,6 +873,10 @@ func build_table() -> void:
 	me_panel.add_child(player_portrait)
 	player_portrait.position = Vector2(7, -2)
 	player_portrait.size = Vector2(278, 336)
+	player_portrait.pivot_offset = Vector2(139, 168)
+	var bt := create_tween().bind_node(player_portrait).set_loops()
+	bt.tween_property(player_portrait, "scale", Vector2(1.016, 1.016), 1.6).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+	bt.tween_property(player_portrait, "scale", Vector2.ONE, 1.6).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
 	var me_plate := Panel.new()
 	me_plate.position = Vector2(-6, 282)
 	me_plate.size = Vector2(252, 52)
@@ -4029,6 +4037,8 @@ func build_settlement(winner_text: String, your_result: String) -> void:
 			names.append(String(a[1]))
 		if not names.is_empty():
 			mt_parts.append("解锁成就：" + "、".join(PackedStringArray(names)))
+		if int(meta_result.get("daily_ready", 0)) > 0:
+			mt_parts.append("📋 有 %d 项今日委托可回主页领奖！" % int(meta_result.get("daily_ready", 0)))
 		if not mt_parts.is_empty():
 			var ml := lbl("　".join(PackedStringArray(mt_parts)), 22, C_GOLD.darkened(0.15), true)
 			ml.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -4996,11 +5006,6 @@ func show_bubble(seat: int, cat: String) -> void:
 		return
 	if auto_all:
 		return
-	if not fast and voice_player != null and is_instance_valid(voice_player) and voice_player.is_inside_tree() and bool(AudioCfg.get_v("voice_on")):
-		var cv_st := AudioCfg.cv_stream(cid, cat)
-		if cv_st != null and not voice_player.playing:
-			voice_player.stream = cv_st
-			voice_player.play()
 	if bubble_nodes.has(seat) and is_instance_valid(bubble_nodes[seat]):
 		(bubble_nodes[seat] as Node).queue_free()
 	bubble_order.erase(seat)
@@ -5465,13 +5470,17 @@ func _eng_fx(kind: String, data: Dictionary) -> void:
 			if seat == 0:
 				fx_vignette()
 			play_sfx("fire_hit" if nat == "火" else ("thunder_hit" if nat == "雷" else "hit"))
-			if randf() < 0.35:
+			if seat == 0 or randf() < 0.78:
+				play_cv_battle(seat, "hurt", 2)
+			if randf() < 0.45:
 				show_bubble(seat, "hurt")
 		"heal":
 			fx_float(seat, "+%d" % int(data["num"]), Color(0.25, 0.78, 0.38), 56)
 			fx_flash(seat, Color(0.4, 1.0, 0.55))
 			play_sfx("heal")
-			if randf() < 0.3:
+			if randf() < 0.65:
+				play_cv_battle(seat, "heal", 1)
+			if randf() < 0.35:
 				show_bubble(seat, "heal")
 		"draw":
 			fx_draw_fly(seat, int(data.get("n", data.get("num", 1))))
@@ -5484,6 +5493,7 @@ func _eng_fx(kind: String, data: Dictionary) -> void:
 			else:
 				fx_skill_banner(seat, String(data["name"]))
 			play_sfx("skill")
+			play_cv_battle(seat, "skill", 3)
 			show_bubble(seat, "skill")
 		"judge":
 			_pz_judge(seat, data["card"], String(data["label"]))
@@ -5495,8 +5505,11 @@ func _eng_fx(kind: String, data: Dictionary) -> void:
 			fx_equip_fly(seat, String(data.get("name", "")))
 			play_sfx("equip")
 		"attack":
-			fx_attack_fx(int(data["src_seat"]), int(data["tgt_seat"]), String(data.get("nature", "")))
+			var a_src := int(data.get("src_seat", -1))
+			fx_attack_fx(a_src, int(data.get("tgt_seat", -1)), String(data.get("nature", "")))
 			play_sfx("slash")
+			if a_src == 0 or randf() < 0.80:
+				play_cv_battle(a_src, "attack", 2)
 		"yingbian":
 			fx_float(seat, String(data.get("text", "应变")), Color(0.95, 0.45, 0.75), 40, 70.0)
 			play_sfx("skill")
@@ -5511,11 +5524,13 @@ func _eng_fx(kind: String, data: Dictionary) -> void:
 			fx_float(seat, "濒死！", Color(0.75, 0.15, 0.6), 56, 50.0)
 			fx_flash(seat, Color(0.9, 0.1, 0.4))
 			play_sfx("dying")
+			play_cv_battle(seat, "dying", 3)
 			show_bubble(seat, "dying")
 			fx_dying_show(seat)
 		"death":
 			_fx_reveal_gem(seat)
 			play_sfx("death")
+			play_cv_battle(seat, "death", 3)
 			show_bubble(seat, "death")
 			if seat == dying_seat:
 				fx_dying_hide()
@@ -5722,6 +5737,40 @@ func _ensure_sfx() -> void:
 
 
 const VOICE_KEYS := {"slash": "attack", "dodge": "dodge", "heal": "heal", "dying": "dying", "win": "win", "lose": "lose", "skill": "skill"}
+
+
+func play_cv_battle(seat: int, cat: String, priority: int = 1) -> bool:
+	if auto_all or seat < 0 or seat >= players.size():
+		return false
+	var ch_d: Variant = (players[seat] as Dictionary).get("char", {})
+	if not (ch_d is Dictionary):
+		return false
+	var cid := String((ch_d as Dictionary).get("id", ""))
+	if cid == "":
+		return false
+	var cv_st := AudioCfg.cv_stream(cid, cat)
+	if cv_st == null:
+		return false
+	var now := Time.get_ticks_msec()
+	if priority <= 1 and now - int(_cv_seat_ms.get(seat, 0)) < 750:
+		return false
+	cv_played_count += 1
+	_cv_seat_ms[seat] = now
+	if fast or DisplayServer.get_name() == "headless":
+		return true
+	if voice_player == null or not is_instance_valid(voice_player) or not voice_player.is_inside_tree():
+		return false
+	AudioCfg.ensure()
+	if not bool(AudioCfg.get_v("voice_on")) or float(AudioCfg.get_v("master")) <= 0.001 or float(AudioCfg.get_v("voice_vol")) <= 0.001:
+		return false
+	if voice_player.playing:
+		if priority < 3 or (now - _cv_last_ms < 420 and priority <= _cv_last_prio):
+			return false
+	voice_player.stream = cv_st
+	voice_player.play()
+	_cv_last_prio = priority
+	_cv_last_ms = now
+	return true
 
 
 func play_sfx(key: String) -> void:
@@ -5967,7 +6016,7 @@ func _throw_seat_emote(seat_idx: int) -> void:
 	play_sfx("play")
 	var cid_e := String(players[seat_idx]["char"].get("id", ""))
 	if String(em["icon"]) != "🥿":
-		Meta.add_affection(cid_e, 2)
+		Meta.touch_char(cid_e, 2)
 	var tw := create_tween().bind_node(fly)
 	tw.tween_property(fly, "position", b - Vector2(32, 32), 0.32).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
 	tw.parallel().tween_property(fly, "rotation", TAU, 0.32)
@@ -5976,7 +6025,19 @@ func _throw_seat_emote(seat_idx: int) -> void:
 			fly.queue_free()
 		fx_float(seat_idx, String(em["txt"]), em["col"], 36, 58.0)
 		play_sfx(String(em["sfx"]))
-		show_bubble(seat_idx, String(em["cat"])))
+		play_cv_battle(seat_idx, String(em["cat"]), 2)
+		show_bubble(seat_idx, String(em["cat"]))
+		if not fast and not auto_all and fx_root != null:
+			for pi_b in 4:
+				var pl_b := lbl("🌸" if pi_b % 2 == 0 else "💕", 26, Color.WHITE, true, HORIZONTAL_ALIGNMENT_CENTER)
+				pl_b.position = b + Vector2(-14, -14)
+				pl_b.mouse_filter = MOUSE_FILTER_IGNORE
+				fx_root.add_child(pl_b)
+				var ang := float(pi_b) * PI * 0.5 + randf_range(-0.35, 0.35)
+				var ptw := create_tween().bind_node(pl_b).set_parallel(true)
+				ptw.tween_property(pl_b, "position", b + Vector2(cos(ang), sin(ang)) * 68.0 - Vector2(14, 24), 0.55).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+				ptw.tween_property(pl_b, "modulate:a", 0.0, 0.55)
+				ptw.chain().tween_callback(func() -> void: if is_instance_valid(pl_b): pl_b.queue_free()))
 
 
 func fx_vignette() -> void:
@@ -6304,51 +6365,50 @@ func toggle_settings_panel() -> void:
 
 func _build_settings_panel() -> void:
 	settings_panel = PanelContainer.new()
-	settings_panel.position = Vector2(16.0 + 4.0 * 118.0, 84)
-	settings_panel.custom_minimum_size = Vector2(560, 0)
+	settings_panel.position = Vector2(16.0 + 4.0 * 118.0, 82)
+	settings_panel.custom_minimum_size = Vector2(660, 0)
 	settings_panel.mouse_filter = MOUSE_FILTER_STOP
-	settings_panel.add_theme_stylebox_override("panel", style(Color(1, 1, 1, 0.97), 22, C_GOLD, 3, true))
+	settings_panel.add_theme_stylebox_override("panel", _tight(style(Color(1, 1, 1, 0.97), 22, C_GOLD, 3, true), 22, 14))
 	settings_panel.visible = false
-	var mc := MarginContainer.new()
-	for side in ["left", "right", "top", "bottom"]:
-		mc.add_theme_constant_override("margin_" + side, 20)
-	settings_panel.add_child(mc)
 	var vb := VBoxContainer.new()
-	vb.add_theme_constant_override("separation", 12)
-	mc.add_child(vb)
-	var tl := lbl("设置", 30, C_PINK_DEEP, true)
+	vb.add_theme_constant_override("separation", 8)
+	settings_panel.add_child(vb)
+	var tl := lbl("对局设置", 28, C_PINK_DEEP, true)
 	tl.autowrap_mode = TextServer.AUTOWRAP_OFF
 	vb.add_child(tl)
+	var chk_row := HBoxContainer.new()
+	chk_row.add_theme_constant_override("separation", 20)
+	vb.add_child(chk_row)
 	auto_confirm_check = CheckButton.new()
 	auto_confirm_check.focus_mode = Control.FOCUS_NONE
 	auto_confirm_check.text = "自动确认"
 	auto_confirm_check.add_theme_font_override("font", font_bold)
-	auto_confirm_check.add_theme_font_size_override("font_size", 28)
+	auto_confirm_check.add_theme_font_size_override("font_size", 24)
 	for k in ["font_color", "font_hover_color", "font_pressed_color", "font_hover_pressed_color", "font_focus_color"]:
 		auto_confirm_check.add_theme_color_override(k, C_INK)
 	auto_confirm_check.set_pressed_no_signal(auto_confirm)
 	auto_confirm_check.toggled.connect(func(on: bool) -> void:
 		set_auto_confirm(on)
 		show_hint("自动确认：%s" % ("已开启——选够且无需再选时自动出牌/作答" if on else "已关闭——选中后需点「确定」才会出牌")))
-	vb.add_child(auto_confirm_check)
+	chk_row.add_child(auto_confirm_check)
 	double_tap_check = CheckButton.new()
 	double_tap_check.focus_mode = Control.FOCUS_NONE
 	double_tap_check.text = "双击手牌直出"
 	double_tap_check.add_theme_font_override("font", font_bold)
-	double_tap_check.add_theme_font_size_override("font_size", 26)
+	double_tap_check.add_theme_font_size_override("font_size", 24)
 	for k in ["font_color", "font_hover_color", "font_pressed_color", "font_hover_pressed_color", "font_focus_color"]:
 		double_tap_check.add_theme_color_override(k, C_INK)
 	double_tap_check.set_pressed_no_signal(double_tap_play)
 	double_tap_check.toggled.connect(func(on: bool) -> void:
 		set_double_tap(on)
 		show_hint("双击手牌直出：%s" % ("已开启——快速双击已选中的牌可直接打出" if on else "已关闭")))
-	vb.add_child(double_tap_check)
-	var desc := lbl("自动确认：选够目标后自动提交；双击手牌直出：450ms 内快速连点同一张牌直接出牌。", 21, C_INK_SOFT)
-	desc.custom_minimum_size = Vector2(520, 0)
-	desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	chk_row.add_child(double_tap_check)
+	var desc := lbl("自动确认：选够目标自动提交；双击直出：450ms 内双击同一张牌直出。", 19, C_INK_SOFT)
+	desc.autowrap_mode = TextServer.AUTOWRAP_OFF
 	vb.add_child(desc)
-	# V0.32 声音设置：总音量、音效/语音/背景音乐开关与音量
-	var at := lbl("声音", 26, C_PINK_DEEP, true)
+	# V0.32/V0.44 声音设置：总音量、音效/语音/背景音乐开关与音量
+	var at := lbl("声音与配音", 24, C_PINK_DEEP, true)
+	at.autowrap_mode = TextServer.AUTOWRAP_OFF
 	vb.add_child(at)
 	build_audio_rows(vb)
 	var bgm_hb := HBoxContainer.new()
@@ -6372,8 +6432,16 @@ func _build_settings_panel() -> void:
 	var hb := HBoxContainer.new()
 	hb.add_theme_constant_override("separation", 14)
 	vb.add_child(hb)
+	var hb_cv := plain_btn("🎙 试听语音", Color(0.95, 0.86, 0.96), C_PINK_DEEP, 23)
+	hb_cv.custom_minimum_size = Vector2(170, 52)
+	hb_cv.pressed.connect(func() -> void:
+		var cid_t := String(players[0]["char"]["id"]) if not players.is_empty() and players[0].has("char") else "sena"
+		if not play_cv_battle(0, "skill", 3):
+			AudioCfg.play_cv(self, cid_t, "skill")
+		show_hint("正在试听角色战斗语音（请在上方调节语音开关与音量）"))
+	hb.add_child(hb_cv)
 	var hb1 := plain_btn("新手说明", Color(1, 0.94, 0.80), C_INK, 24)
-	hb1.custom_minimum_size = Vector2(160, 52)
+	hb1.custom_minimum_size = Vector2(150, 52)
 	hb1.pressed.connect(func() -> void:
 		settings_panel.visible = false
 		open_info_overlay("新手说明", HelpText.bbcode(), true))
@@ -6418,7 +6486,7 @@ func build_audio_rows(vb: VBoxContainer) -> void:
 		sl.min_value = 0.0
 		sl.max_value = 1.0
 		sl.step = 0.05
-		sl.custom_minimum_size = Vector2(320, 44)
+		sl.custom_minimum_size = Vector2(360, 34)
 		sl.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 		sl.focus_mode = Control.FOCUS_NONE
 		sl.set_value_no_signal(float(AudioCfg.get_v(vol_key)))
@@ -6426,9 +6494,8 @@ func build_audio_rows(vb: VBoxContainer) -> void:
 		sl.drag_ended.connect(func(_c: bool) -> void: play_sfx("click"))
 		hb.add_child(sl)
 		audio_sliders[vol_key] = sl
-	var note := lbl("背景音乐：Kevin MacLeod（CC BY 4.0，署名见新手说明）。语音：本版未打包配音。", 19, C_INK_SOFT)
-	note.custom_minimum_size = Vector2(520, 0)
-	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	var note := lbl("语音：全 19 名角色二次元少女 CV 已实装；配乐支持樱华国风 / 经典交响切换。", 18, C_INK_SOFT)
+	note.autowrap_mode = TextServer.AUTOWRAP_OFF
 	vb.add_child(note)
 
 
