@@ -382,3 +382,7 @@ static func char_stats_by_name(cname: String) -> Dictionary:
 	var d := load_data()
 	var cs: Dictionary = (d.get("chars", {}) as Dictionary).get(cname, {})
 	return cs.duplicate()
+
+
+static func best_streak() -> int:
+	return int(load_data().get("best_streak", 0))

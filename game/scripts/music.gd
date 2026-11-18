@@ -1,12 +1,35 @@
 class_name MusicDirector
 extends Node
 
-# 场景背景音乐：主页 / 对局 / 紧张残局。
-# 曲目均来自 Kevin MacLeod (incompetech.com)，CC BY 4.0；署名见 data/help.gd。
+# V0.41 场景背景音乐：支持「樱华国风（二次元×手杀风）」与「经典交响（Kevin MacLeod CC BY 4.0）」双曲风切换。
+const AudioCfgM = preload("res://scripts/audio.gd")
+
 const TRACKS := {
+	"home": "res://assets/bgm/home_sakura.ogg",
+	"battle": "res://assets/bgm/battle_storm.ogg",
+	"tense": "res://assets/bgm/tense_climax.ogg",
+}
+const TRACKS_SAKURA := {
+	"home": "res://assets/bgm/home_sakura.ogg",
+	"battle": "res://assets/bgm/battle_storm.ogg",
+	"tense": "res://assets/bgm/tense_climax.ogg",
+}
+const TRACKS_CLASSIC := {
 	"home": "res://assets/bgm/home_carefree.ogg",
 	"battle": "res://assets/bgm/battle_volatile_reaction.ogg",
 	"tense": "res://assets/bgm/tense_hitman.ogg",
+}
+const TRACK_TITLES := {
+	"sakura": {
+		"home": "樱华序曲·星樱学园",
+		"battle": "绯樱战阵·破阵乐",
+		"tense": "宿命决战·残月",
+	},
+	"classic": {
+		"home": "Carefree·晴空序曲",
+		"battle": "Volatile·激战交响",
+		"tense": "Hitman·决胜时刻",
+	},
 }
 const FADE_SEC := 0.75
 const FADE_DB := -34.0
@@ -17,6 +40,31 @@ var _players: Array[AudioStreamPlayer] = []
 var _active_idx := 0
 var _fades: Array[Tween] = []
 var _switched_ms := -1000000
+
+
+static func style_key() -> String:
+	var s := String(AudioCfgM.get_v("bgm_style"))
+	return "classic" if s == "classic" else "sakura"
+
+
+static func style_label() -> String:
+	return "🌸 樱华国风" if style_key() == "sakura" else "🎻 经典交响"
+
+
+static func track_title(scene: String = "home") -> String:
+	var sk := style_key()
+	var mp: Dictionary = TRACK_TITLES.get(sk, TRACK_TITLES["sakura"])
+	return String(mp.get(scene if scene != "" and scene != "off" else "home", "樱华序曲·星樱学园"))
+
+
+func cycle_style() -> String:
+	var next_s := "classic" if style_key() == "sakura" else "sakura"
+	AudioCfgM.set_v("bgm_style", next_s)
+	var sc := current_scene if current_scene != "" else "home"
+	current_scene = ""
+	_switched_ms = -1000000
+	play_scene(sc)
+	return style_label()
 
 
 func _ready() -> void:
@@ -37,7 +85,7 @@ func _exit_tree() -> void:
 	for p in _players:
 		if is_instance_valid(p):
 			p.stop()
-			p.stream = null  # 释放 MP3 播放实例，避免退出时资源泄漏
+			p.stream = null
 
 
 func _notification(what: int) -> void:
@@ -59,11 +107,9 @@ func play_scene(scene: String) -> void:
 		_stop_all()
 		current_scene = "off"
 		return
-	# 紧张曲至少停留 TENSE_MIN_SEC 秒再回落到对局曲，避免体力在 1/2 之间反复时来回切歌
 	if current_scene == "tense" and scene == "battle" and Time.get_ticks_msec() - _switched_ms < int(TENSE_MIN_SEC * 1000.0):
 		return
 	_switched_ms = Time.get_ticks_msec()
-	# 无头运行（自测/导出）没有音频输出，只记场景不解码播放，也避免退出时 MP3 播放实例泄漏
 	if DisplayServer.get_name() == "headless":
 		current_scene = scene
 		return
@@ -103,7 +149,8 @@ func _fade(player: AudioStreamPlayer, target_db: float, stop_after: bool) -> voi
 
 
 func _stream_for(scene: String) -> AudioStream:
-	var path := String(TRACKS.get(scene, ""))
+	var table: Dictionary = TRACKS_CLASSIC if style_key() == "classic" else TRACKS_SAKURA
+	var path := String(table.get(scene, TRACKS.get(scene, "")))
 	if path == "" or not ResourceLoader.exists(path):
 		return null
 	var stream: AudioStream = load(path)

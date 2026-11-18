@@ -1,14 +1,28 @@
 extends RefCounted
-# V0.32 声音设置与总线：Master ← SFX / Voice / Music。
-# 设置存 user://settings.cfg [audio]。BGM 由 scripts/music.gd 播放，曲目为 CC BY 4.0 授权（署名见 data/help.gd）。
-# 语音文件放在 res://assets/voice/<事件>.ogg，当前版本没有打包语音（授权不明，见 voice_candidates/SOURCES.md）。
+# V0.32/V0.41 声音设置与总线：Master ← SFX / Voice / Music。
+# 设置存 user://settings.cfg [audio]。BGM 由 scripts/music.gd 播放（支持「樱华国风」与「经典交响」双曲风切换）。
 
 const SETTINGS_PATH := "user://settings.cfg"
-const DEFAULTS := {"master": 0.8, "sfx_on": true, "sfx_vol": 0.8, "voice_on": true, "voice_vol": 0.8, "music_on": true, "music_vol": 0.6}
-const SFX_FILES := ["hit", "heal", "dodge", "draw", "skill", "win", "lose", "dying", "click", "play", "turn", "card"]
+const DEFAULTS := {
+	"master": 0.8,
+	"sfx_on": true,
+	"sfx_vol": 0.8,
+	"voice_on": true,
+	"voice_vol": 0.8,
+	"music_on": true,
+	"music_vol": 0.65,
+	"bgm_style": "sakura",
+}
+const SFX_FILES := [
+	"hit", "fire_hit", "thunder_hit", "heal", "dodge", "draw", "skill",
+	"win", "lose", "dying", "death", "revive", "click", "play", "turn",
+	"card", "slash", "equip", "trick", "nullify", "judge", "chain",
+	"shield", "spree",
+]
 
 static var _inited := false
 static var _cfg := {}
+static var _sfx_cache := {}
 static var _voice_cache := {}
 
 
@@ -68,12 +82,14 @@ static func apply() -> void:
 		AudioServer.set_bus_mute(mu, not bool(_cfg["music_on"]) or float(_cfg["music_vol"]) <= 0.001)
 
 
-# 文件音效（assets/sfx/*.ogg，程序合成，见 art_src/sfx/gen_sfx.py）
+# 文件音效（assets/sfx/*.ogg，44.1kHz 立体声程序合成，见 素材/art_src/sfx/gen_sfx.py）
 static func sfx_stream(key: String) -> AudioStream:
+	if _sfx_cache.has(key):
+		return _sfx_cache[key]
 	var path := "res://assets/sfx/%s.ogg" % key
-	if ResourceLoader.exists(path):
-		return load(path)
-	return null
+	var st: AudioStream = load(path) if ResourceLoader.exists(path) else null
+	_sfx_cache[key] = st
+	return st
 
 
 # 语音：没有打包对应文件时返回 null（当前版本均为 null）
@@ -84,3 +100,24 @@ static func voice_stream(key: String) -> AudioStream:
 	var st: AudioStream = load(path) if ResourceLoader.exists(path) else null
 	_voice_cache[key] = st
 	return st
+
+
+# 大厅/局外 UI 通用音效触发（无头测试不解码，避免退出泄漏）
+static func play_ui(host: Node, key: String = "click") -> void:
+	if DisplayServer.get_name() == "headless" or host == null or not host.is_inside_tree():
+		return
+	ensure()
+	if not bool(_cfg.get("sfx_on", true)) or float(_cfg.get("master", 0.8)) <= 0.001:
+		return
+	var st := sfx_stream(key)
+	if st == null:
+		return
+	var rt := host.get_tree().root
+	var pl := rt.get_node_or_null("_UiSfxPlayer") as AudioStreamPlayer
+	if pl == null:
+		pl = AudioStreamPlayer.new()
+		pl.name = "_UiSfxPlayer"
+		pl.bus = "SFX"
+		rt.add_child(pl)
+	pl.stream = st
+	pl.play()

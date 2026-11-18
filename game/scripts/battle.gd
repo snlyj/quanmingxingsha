@@ -345,6 +345,7 @@ func show_setup() -> void:
 
 # 新增 UI 成员（V0.3 桌面布局）
 var phase_label: Label
+var phase_pills: Array = []
 var announce_label: Label
 var prompt_panel: PanelContainer
 var draft_layer: HBoxContainer
@@ -447,6 +448,16 @@ func show_played_card(card: Dictionary, owner: String, from_seat: int = -1) -> v
 func set_phase(text: String) -> void:
 	if phase_label:
 		phase_label.text = text
+	var keys := ["准备", "判定", "摸牌", "出牌", "弃牌", "结束"]
+	for i in mini(keys.size(), phase_pills.size()):
+		var pn := phase_pills[i] as Panel
+		if pn == null or not is_instance_valid(pn):
+			continue
+		var active := text.find(keys[i]) >= 0
+		pn.add_theme_stylebox_override("panel", style(Color(0.92, 0.28, 0.48, 0.96) if active else Color(0.18, 0.10, 0.26, 0.72), 11, C_GOLD if active else Color(0.91, 0.64, 0.24, 0.38), 2 if active else 1, active))
+		var lb := pn.get_node_or_null("PhLbl") as Label
+		if lb != null:
+			lb.add_theme_color_override("font_color", Color(1.0, 0.97, 0.88) if active else Color(0.82, 0.76, 0.86, 0.78))
 
 
 func show_hint(text: String) -> void:
@@ -479,6 +490,7 @@ func build_table() -> void:
 	seat_panels.clear()
 	diff_btns.clear()
 	glow_frames.clear()
+	phase_pills.clear()
 	sort_btn = null
 	puzzle_panel = null
 	puzzle_hint_btn = null
@@ -515,16 +527,48 @@ func build_table() -> void:
 	back.size = Vector2(132, 46)
 	back.pressed.connect(func() -> void: go_home.call())
 	add_child(back)
-	phase_label = Art.halo(lbl("", 34, C_INK, true, HORIZONTAL_ALIGNMENT_CENTER), 9)
-	# V0.27：阶段标题放到功能条与右侧信息胶囊之间，不再与功能按钮重叠
-	phase_label.position = Vector2(FEAT_END, 26)
-	phase_label.size = Vector2(maxf(vw - 530.0 - FEAT_END, 300.0), 46)
+	# V0.41 手杀式顶部深紫鎏金天幕横栏
+	var top_hud_bg := Panel.new()
+	top_hud_bg.position = Vector2(0, 0)
+	top_hud_bg.size = Vector2(vw, 90)
+	top_hud_bg.mouse_filter = MOUSE_FILTER_IGNORE
+	var th_sb := style(Color(0.14, 0.07, 0.20, 0.82), 0, C_GOLD, 0)
+	th_sb.border_width_bottom = 2
+	top_hud_bg.add_theme_stylebox_override("panel", th_sb)
+	add_child(top_hud_bg)
+	var ph_span_w := maxf(vw - 530.0 - FEAT_END, 300.0)
+	phase_label = lbl("", 28, Color(1.0, 0.95, 0.84), true, HORIZONTAL_ALIGNMENT_CENTER)
+	phase_label.add_theme_color_override("font_outline_color", Color(0.24, 0.08, 0.18, 0.92))
+	phase_label.add_theme_constant_override("outline_size", 6)
+	phase_label.position = Vector2(FEAT_END, 10)
+	phase_label.size = Vector2(ph_span_w, 36)
 	phase_label.clip_text = true
 	phase_label.autowrap_mode = TextServer.AUTOWRAP_OFF
 	add_child(phase_label)
-	turn_label = Art.halo(lbl("", 22, C_INK_SOFT, false, HORIZONTAL_ALIGNMENT_CENTER), 6)
-	turn_label.position = Vector2(FEAT_END, 84)
-	turn_label.size = Vector2(maxf(vw - 530.0 - FEAT_END, 300.0), 32)
+	# V0.41 手杀式六阶段进度指示铭牌（准备 · 判定 · 摸牌 · 出牌 · 弃牌 · 结束）
+	var ph_names := ["准备", "判定", "摸牌", "出牌", "弃牌", "结束"]
+	var pw := 68.0
+	var pgap := 8.0
+	var total_pw := ph_names.size() * pw + (ph_names.size() - 1) * pgap
+	var px0 := FEAT_END + (ph_span_w - total_pw) * 0.5
+	for pi in ph_names.size():
+		var pp := Panel.new()
+		pp.position = Vector2(px0 + pi * (pw + pgap), 50)
+		pp.size = Vector2(pw, 28)
+		pp.mouse_filter = MOUSE_FILTER_IGNORE
+		pp.add_theme_stylebox_override("panel", style(Color(0.18, 0.10, 0.26, 0.72), 11, Color(0.91, 0.64, 0.24, 0.38), 1))
+		var plb := lbl(ph_names[pi], 16, Color(0.82, 0.76, 0.86, 0.78), true, HORIZONTAL_ALIGNMENT_CENTER)
+		plb.name = "PhLbl"
+		plb.position = Vector2(0, 3)
+		plb.size = Vector2(pw, 22)
+		plb.autowrap_mode = TextServer.AUTOWRAP_OFF
+		plb.mouse_filter = MOUSE_FILTER_IGNORE
+		pp.add_child(plb)
+		add_child(pp)
+		phase_pills.append(pp)
+	turn_label = Art.halo(lbl("", 21, C_INK_SOFT, true, HORIZONTAL_ALIGNMENT_CENTER), 6)
+	turn_label.position = Vector2(FEAT_END, 92)
+	turn_label.size = Vector2(ph_span_w, 28)
 	turn_label.autowrap_mode = TextServer.AUTOWRAP_OFF
 	add_child(turn_label)
 	var pill_defs := [[vw - 520, 156], [vw - 352, 140], [vw - 200, 152]]
@@ -532,13 +576,13 @@ func build_table() -> void:
 	var pill_init := ["牌堆 --", "弃牌 0", "选将中"]  # 开局前（选将/叫分）不留空白胶囊
 	for pd in pill_defs:
 		var pill := Panel.new()
-		pill.position = Vector2(pd[0], 24)
+		pill.position = Vector2(pd[0], 20)
 		pill.size = Vector2(pd[1], 52)
 		pill.mouse_filter = MOUSE_FILTER_IGNORE
-		pill.add_theme_stylebox_override("panel", style(Color(1, 1, 1, 0.85), 26, Color(1, 1, 1, 0.7), 1, true))
+		pill.add_theme_stylebox_override("panel", style(Color(0.22, 0.11, 0.29, 0.92), 26, C_GOLD, 2, true))
 		add_child(pill)
-		var pl := lbl(String(pill_init[pill_lbls.size()]), 23, C_INK, true, HORIZONTAL_ALIGNMENT_CENTER)
-		pl.position = Vector2(pd[0], 36)
+		var pl := lbl(String(pill_init[pill_lbls.size()]), 22, Color(1.0, 0.95, 0.84), true, HORIZONTAL_ALIGNMENT_CENTER)
+		pl.position = Vector2(pd[0], 32)
 		pl.size = Vector2(pd[1], 32)
 		pl.autowrap_mode = TextServer.AUTOWRAP_OFF
 		add_child(pl)
@@ -553,10 +597,10 @@ func build_table() -> void:
 	announce_label.autowrap_mode = TextServer.AUTOWRAP_OFF
 	announce_label.modulate = Color(1, 1, 1, 0)
 	add_child(announce_label)
-	# 功能条（对着无名杀补：记牌器/战况记录/手牌排序/托管/认输）
+	# 功能条（手杀深紫鎏金胶囊样式）
 	var feat_defs := ["记牌", "记录", "排序", "托管", "认输", "倍速", "设置"]
 	for fi in feat_defs.size():
-		var fb := plain_btn(feat_defs[fi], Color(1, 1, 1, 0.92), C_INK, 24)
+		var fb := plain_btn(feat_defs[fi], Color(0.24, 0.12, 0.31, 0.92), Color(1.0, 0.94, 0.84), 23)
 		fb.position = Vector2(16 + fi * 118, 24)
 		fb.size = Vector2(108, 52)
 		add_child(fb)
@@ -855,6 +899,15 @@ func build_table() -> void:
 	skill_btns.add_theme_constant_override("separation", 14)
 	add_child(skill_btns)
 	table_nodes.append(skill_btns)
+	# V0.41 手杀式底部鎏金手牌护栏底座（Hand Dock）
+	var hand_dock := Panel.new()
+	hand_dock.position = Vector2(hand_x0 - 10.0, HAND_Y + 26.0)
+	hand_dock.size = Vector2(hand_x1 - hand_x0 + 20.0, HAND_H - 18.0)
+	hand_dock.mouse_filter = MOUSE_FILTER_IGNORE
+	hand_dock.add_theme_stylebox_override("panel", style(Color(0.14, 0.07, 0.20, 0.50), 22, Color(0.93, 0.70, 0.32, 0.65), 2, true))
+	Art.add_corners(hand_dock, hand_dock.size, 26.0, 0.0)
+	add_child(hand_dock)
+	table_nodes.append(hand_dock)
 	# 底部中央：手牌区
 	# V0.25 手牌层（对照无名杀 updatehl：重叠排布、放不下自动压缩；节点按牌复用，位置变化才补间）
 	hand_row = Control.new()
@@ -1042,9 +1095,10 @@ func make_seat_panel(seat_idx: int) -> Button:
 	var gem := Panel.new()
 	gem.name = "Gem"
 	gem.position = Vector2(12, 12)
+	gem.name = "Gem"
 	gem.size = Vector2(50, 50)
 	gem.mouse_filter = MOUSE_FILTER_IGNORE
-	gem.add_theme_stylebox_override("panel", style(C_PLATE, 25, Color(1, 1, 1), 3, true))
+	gem.add_theme_stylebox_override("panel", style(C_PLATE, 25, C_GOLD, 3, true))
 	b.add_child(gem)
 	var ghl := Panel.new()
 	ghl.position = Vector2(9, 7)
@@ -1081,7 +1135,7 @@ func make_seat_panel(seat_idx: int) -> Button:
 	info_bg.position = Vector2(7, 322)
 	info_bg.size = Vector2(236, 43)
 	info_bg.mouse_filter = MOUSE_FILTER_IGNORE
-	info_bg.add_theme_stylebox_override("panel", style(Color(0, 0, 0, 0.32), 10))
+	info_bg.add_theme_stylebox_override("panel", style(Color(0.14, 0.07, 0.20, 0.76), 10, Color(0.93, 0.70, 0.32, 0.55), 1))
 	b.add_child(info_bg)
 	var info := lbl("", 17, C_WHITE, false)
 	info.name = "Info"
@@ -1596,6 +1650,12 @@ func refresh() -> void:
 		var tr: TextureRect = panel.get_node("Portrait")
 		_seat_cg(panel, tr, p["char"], 236.0 / 358.0, Vector2(8, 66))
 		var idt := identity_visible(p)
+		var gem_pn := panel.get_node("Gem") as Panel
+		var gem_col := Color(0.28, 0.20, 0.36) if idt.begins_with("？") else (
+			Color(0.88, 0.22, 0.30) if (idt == "主公" or idt == "地主") else (
+			Color(0.86, 0.52, 0.18) if (idt in ["忠臣", "红方", "联军", "农民", "先手"]) else (
+			Color(0.26, 0.38, 0.76) if idt == "内奸" else Color(0.62, 0.18, 0.46))))
+		gem_pn.add_theme_stylebox_override("panel", style(gem_col, 25, C_GOLD, 3, true))
 		var gem_text: Label = panel.get_node("Gem/GemText")
 		gem_text.text = "?" if idt.begins_with("？") else idt.substr(0, 1)
 		var chip_text: Label = panel.get_node("Chip/ChipText")
@@ -1787,7 +1847,7 @@ func _build_card_face(cb: Control, c: Dictionary, sz: Vector2, sb: StyleBoxFlat)
 	chip.position = Vector2(8, 8) * k
 	chip.size = Vector2(62, 34) * k
 	chip.mouse_filter = MOUSE_FILTER_IGNORE
-	chip.add_theme_stylebox_override("panel", style(Color(1, 0.98, 0.95, 0.92), int(10 * k)))
+	chip.add_theme_stylebox_override("panel", style(Color(1, 0.98, 0.95, 0.95), int(10 * k), C_GOLD, 1))
 	cb.add_child(chip)
 	var top := lbl("%s%s" % [Art.suit_sym(String(c.get("suit", ""))), Art.point_str(int(c.get("point", 0)))], int(24 * k), Art.RED_SUIT if red else Art.BLACK_SUIT, true, HORIZONTAL_ALIGNMENT_CENTER)
 	top.name = "Top"
@@ -1796,14 +1856,22 @@ func _build_card_face(cb: Control, c: Dictionary, sz: Vector2, sb: StyleBoxFlat)
 	top.autowrap_mode = TextServer.AUTOWRAP_OFF
 	top.mouse_filter = MOUSE_FILTER_IGNORE
 	chip.add_child(top)
-	# 底部牌名条（类型色底）
+	# 底部牌名条（类型色底 + 手杀式顶部鎏金分割线）
 	var plate := Panel.new()
 	plate.position = Vector2(4, 176) * k
 	plate.size = Vector2(164, 88) * k
 	plate.mouse_filter = MOUSE_FILTER_IGNORE
-	plate.add_theme_stylebox_override("panel", style(fc, int(10 * k)))
+	plate.add_theme_stylebox_override("panel", style(fc.darkened(0.08), int(10 * k), Color(1.0, 0.86, 0.52, 0.65), 1))
 	cb.add_child(plate)
+	var gbar := ColorRect.new()
+	gbar.color = Color(0.96, 0.78, 0.38, 0.92)
+	gbar.position = Vector2(8, 174) * k
+	gbar.size = Vector2(156, maxf(2.0, 2.5 * k))
+	gbar.mouse_filter = MOUSE_FILTER_IGNORE
+	cb.add_child(gbar)
 	var nm := lbl(nm_text, int((28 if nm_text.length() <= 4 else 23) * k), C_WHITE, true, HORIZONTAL_ALIGNMENT_CENTER)
+	nm.add_theme_color_override("font_outline_color", Color(0.18, 0.06, 0.16, 0.88))
+	nm.add_theme_constant_override("outline_size", maxi(2, int(3 * k)))
 	nm.name = "Name"
 	nm.position = Vector2(0, 178) * k
 	nm.size = Vector2(172, 38) * k
@@ -1860,16 +1928,17 @@ func _make_action_btn(text: String, bg: Color, fg: Color) -> Button:
 	b.add_theme_color_override("font_hover_color", fg)
 	b.add_theme_color_override("font_pressed_color", fg)
 	b.add_theme_color_override("font_disabled_color", Color(0.55, 0.52, 0.58))
-	b.add_theme_stylebox_override("normal", style(bg, 32, Color(1, 1, 1, 0.85), 2, true))
-	b.add_theme_stylebox_override("hover", style(bg.lightened(0.08), 32, Color(1, 1, 1, 0.95), 2, true))
-	b.add_theme_stylebox_override("pressed", style(bg.darkened(0.08), 32, Color(1, 1, 1, 0.95), 2, false))
-	b.add_theme_stylebox_override("disabled", style(Color(0.86, 0.84, 0.88, 0.82), 32, Color(1, 1, 1, 0.5), 2))
+	b.add_theme_stylebox_override("normal", style(bg, 32, C_GOLD, 3, true))
+	b.add_theme_stylebox_override("hover", style(bg.lightened(0.08), 32, Color(1.0, 0.88, 0.52), 3, true))
+	b.add_theme_stylebox_override("pressed", style(bg.darkened(0.08), 32, C_GOLD, 3, false))
+	b.add_theme_stylebox_override("disabled", style(Color(0.42, 0.38, 0.46, 0.78), 32, Color(0.75, 0.70, 0.78, 0.45), 2))
 	var gl := Panel.new()
 	gl.mouse_filter = MOUSE_FILTER_IGNORE
 	gl.position = Vector2(10, 4)
 	gl.size = Vector2(176, 24)
-	gl.add_theme_stylebox_override("panel", style(Color(1, 1, 1, 0.18), 12))
+	gl.add_theme_stylebox_override("panel", style(Color(1, 1, 1, 0.22), 12))
 	b.add_child(gl)
+	b.pressed.connect(func() -> void: play_sfx("click"))
 	return b
 
 
@@ -4776,7 +4845,21 @@ const CHAR_LINES := {
 	"rin": {"attack": ["这一手，将军（王手）！", "棋路早已算定，无处可逃！"], "hurt": ["嗯…弃子争先罢了", "这一步，还在计算之内"], "dying": "终盘…还没分出胜负…", "death": "是我输了这局棋…", "skill": "妙算入神，一子定乾坤！", "heal": "复盘重整，再弈一局"},
 	"yukine": {"attack": ["违规预算，予以冻结！", "凝结吧，冰霜之刃！"], "hurt": ["账目…不容许任何差池！", "寒霜会记住这次冒犯"], "dying": "决算报告…还没交接…", "death": "冰雪…终究会融化吗…", "skill": "精算无遗，凛霜反噬！", "heal": "账目核销，状态恢复"},
 	"lilia": {"attack": ["以骑士团之名，突进！", "荣耀之剑，绝不偏斜！"], "hurt": ["圣盾尚在，无妨！", "休想越过我的防线！"], "dying": "骑士的誓言…永不磨灭…", "death": "请大家…继续前进吧…", "skill": "展开吧，圣纹护盾！", "heal": "荣光庇佑，重振旗鼓！"},
+	"sakuya": {"attack": ["时针指处，即是终局。", "星辰的轨迹，早已注定。"], "hurt": ["时间…出现了裂隙吗…", "这点波动，还在计算之内。"], "dying": "钟摆…快要停下了吗…", "death": "时间…在今夜静止了…", "skill": "拨转星盘，逆写此刻的宿命！", "heal": "发条重铸，时计再度运转。"},
+	"sana": {"attack": ["黑羽所至，一闪即斩！", "太慢了——看刀！"], "hurt": ["哼…这片影羽，我记下了。", "好重的剑气…再来！"], "dying": "刀锋…还没有折断…", "death": "绯色的樱花…落尽了吗…", "skill": "万羽归刃，破空连斩——！", "heal": "敛羽调息，锋芒更胜从前。"},
+	"yuu": {"attack": ["灵札指路，厄运难逃哦～", "卦象说，你这一下躲不开呢。"], "hurt": ["呀…占卜没有算到这一着…", "呜…护身符被震碎了…"], "dying": "星盘的光…正在消散…", "death": "命运的红线…到此为止了吗…", "skill": "天命流转，由我改写此签！", "heal": "吉签降临，神明大人保佑～"},
+	"mafuyu": {"attack": ["风纪肃清，连同呼吸一并冻结！", "吹雪之刃，绝不留情！"], "hurt": ["唔…冰层裂开了一道缝吗…", "冷静…寒霜不会因此动摇。"], "dying": "冬樱…要提前凋零了吗…", "death": "漫天飞雪…终究归于寂静…", "skill": "霜封万里，万物皆寂——破！", "heal": "冰心澄澈，寒气重凝。"},
 }
+
+
+static func line_for(cid: String, cat: String = "skill") -> String:
+	if not CHAR_LINES.has(cid):
+		return ""
+	var entry: Variant = CHAR_LINES[cid].get(cat, "")
+	if entry is Array:
+		var arr: Array = entry
+		return String(arr[0]) if not arr.is_empty() else ""
+	return String(entry)
 
 
 func show_bubble(seat: int, cat: String) -> void:
@@ -5225,7 +5308,7 @@ func _eng_fx(kind: String, data: Dictionary) -> void:
 			fx_flash(seat, Color(1.0, 0.25, 0.35))
 			if seat == 0:
 				fx_vignette()
-			play_sfx("hit")
+			play_sfx("fire_hit" if nat == "火" else ("thunder_hit" if nat == "雷" else "hit"))
 			if randf() < 0.35:
 				show_bubble(seat, "hurt")
 		"heal":
@@ -5304,6 +5387,7 @@ func _eng_fx(kind: String, data: Dictionary) -> void:
 			var htitle := "万夫莫敌 · 无双乱舞！" if hnum >= 3 else "雷霆万钧 · 癫狂屠戮！"
 			fx_spree_banner(htitle, "单次造成 %d 点高额伤害" % hnum, false)
 			fx_screen_shake()
+			play_sfx("spree")
 		"kill_spree":
 			var kcnt := int(data.get("kills", 1))
 			var knm := String(data.get("name", ""))
@@ -5311,6 +5395,7 @@ func _eng_fx(kind: String, data: Dictionary) -> void:
 			var ktitle := String(ktitles.get(kcnt, "四连 · 天下无双"))
 			fx_spree_banner(ktitle, "%s 已累计击杀 %d 人" % [knm, kcnt], true)
 			fx_screen_shake()
+			play_sfx("spree")
 		"awaken":
 			var awk_nm := String(data.get("name", "觉醒"))
 			var awk_ch := String(data.get("char", ""))
@@ -5340,7 +5425,7 @@ func _eng_fx(kind: String, data: Dictionary) -> void:
 			var sh_col := Color(0.35, 0.78, 1.0) if sh_d > 0 else (Color(1.0, 0.56, 0.25) if sh_now == 0 else Color(0.75, 0.85, 0.95))
 			var sh_msg := ("🛡护甲+%d" % sh_d) if sh_d > 0 else (("🛡抵消%d·碎甲" % (-sh_d)) if sh_now == 0 else ("🛡抵消%d" % (-sh_d)))
 			fx_float(seat, sh_msg, sh_col, 44, 62.0)
-			play_sfx("equip" if sh_d > 0 else "dodge")
+			play_sfx("shield" if sh_d > 0 else "dodge")
 		"mark":
 			var mk_n := String(data.get("name", ""))
 			var mk_d := int(data.get("delta", 1))
@@ -6041,6 +6126,24 @@ func _build_settings_panel() -> void:
 	var at := lbl("声音", 26, C_PINK_DEEP, true)
 	vb.add_child(at)
 	build_audio_rows(vb)
+	var bgm_hb := HBoxContainer.new()
+	bgm_hb.add_theme_constant_override("separation", 12)
+	vb.add_child(bgm_hb)
+	var bgm_lbl := lbl("配乐曲风", 24, C_INK, true)
+	bgm_lbl.custom_minimum_size = Vector2(190, 0)
+	bgm_hb.add_child(bgm_lbl)
+	var bgm_btn := plain_btn(MusicDirector.style_label(), Color(0.24, 0.12, 0.31, 0.92), Color(1.0, 0.94, 0.84), 22)
+	bgm_btn.custom_minimum_size = Vector2(300, 48)
+	bgm_btn.pressed.connect(func() -> void:
+		var md := get_tree().get_first_node_in_group("music_director") as MusicDirector
+		if md != null:
+			bgm_btn.text = md.cycle_style()
+		else:
+			var nx := "classic" if MusicDirector.style_key() == "sakura" else "sakura"
+			AudioCfg.set_v("bgm_style", nx)
+			bgm_btn.text = MusicDirector.style_label()
+		show_hint("已切换背景音乐曲风为：%s" % bgm_btn.text))
+	bgm_hb.add_child(bgm_btn)
 	var hb := HBoxContainer.new()
 	hb.add_theme_constant_override("separation", 14)
 	vb.add_child(hb)

@@ -5,6 +5,7 @@ const Art = preload("res://scripts/art.gd")
 const Puzzles = preload("res://data/puzzles.gd")
 const Meta = preload("res://scripts/meta.gd")
 const MusicDirector = preload("res://scripts/music.gd")
+const AudioCfg = preload("res://scripts/audio.gd")
 
 # 《全明星杀》V0.1 单机版外壳：
 # 主页（5人身份场入口 + 人物图鉴入口）/ 人物图鉴（按系列分类）/ 角色详情 / 对战占位页
@@ -451,27 +452,40 @@ func cute_button(text: String, sub: String, bg_color: Color, min_size: Vector2) 
 	var b := Button.new()
 	b.custom_minimum_size = min_size
 	b.focus_mode = Control.FOCUS_NONE
-	b.add_theme_stylebox_override("normal", style(bg_color, 32, Color(1, 1, 1, 0.85), 3, true))
-	b.add_theme_stylebox_override("hover", style(bg_color.lightened(0.08), 32, Color(1, 1, 1, 0.95), 3, true))
-	b.add_theme_stylebox_override("pressed", style(bg_color.darkened(0.08), 32, Color(1, 1, 1, 0.95), 3, false))
+	b.add_theme_stylebox_override("normal", style(bg_color, 26, C_GOLD, 3, true))
+	b.add_theme_stylebox_override("hover", style(bg_color.lightened(0.08), 26, Color(1.0, 0.88, 0.52), 3, true))
+	b.add_theme_stylebox_override("pressed", style(bg_color.darkened(0.08), 26, C_GOLD, 3, false))
 	var gloss := Panel.new()
 	gloss.mouse_filter = MOUSE_FILTER_IGNORE
 	gloss.set_anchors_preset(Control.PRESET_TOP_WIDE)
-	gloss.size = Vector2(0, 62)
-	gloss.add_theme_stylebox_override("panel", style(Color(1, 1, 1, 0.20), 30))
+	gloss.size = Vector2(0, maxf(28.0, min_size.y * 0.42))
+	gloss.add_theme_stylebox_override("panel", style(Color(1, 1, 1, 0.18), 24))
 	b.add_child(gloss)
+	var rim := Panel.new()
+	rim.mouse_filter = MOUSE_FILTER_IGNORE
+	rim.position = Vector2(5, 5)
+	rim.size = min_size - Vector2(10, 10)
+	rim.add_theme_stylebox_override("panel", style(Color(0, 0, 0, 0), 21, Color(1.0, 0.94, 0.78, 0.40), 1))
+	b.add_child(rim)
+	Art.add_corners(b, min_size, clampf(min_size.y * 0.24, 20.0, 32.0), 1.0)
 	var vb := VBoxContainer.new()
 	vb.alignment = BoxContainer.ALIGNMENT_CENTER
+	vb.add_theme_constant_override("separation", 4)
 	vb.mouse_filter = MOUSE_FILTER_IGNORE
-	var t := lbl(text, 52, C_WHITE, true, HORIZONTAL_ALIGNMENT_CENTER)
+	var t_fs := 44 if sub != "" else 34
+	var t := lbl(text, t_fs, Color(1.0, 0.98, 0.92), true, HORIZONTAL_ALIGNMENT_CENTER)
+	t.add_theme_color_override("font_outline_color", Color(0.22, 0.08, 0.18, 0.88))
+	t.add_theme_constant_override("outline_size", 6)
 	t.mouse_filter = MOUSE_FILTER_IGNORE
-	var s := lbl(sub, 28, Color(1, 1, 1, 0.92), false, HORIZONTAL_ALIGNMENT_CENTER)
-	s.mouse_filter = MOUSE_FILTER_IGNORE
 	vb.add_child(t)
-	vb.add_child(s)
+	if sub != "":
+		var s := lbl(sub, 23, Color(1.0, 0.96, 0.86, 0.96), true, HORIZONTAL_ALIGNMENT_CENTER)
+		s.add_theme_color_override("font_outline_color", Color(0.18, 0.06, 0.16, 0.82))
+		s.add_theme_constant_override("outline_size", 4)
+		s.mouse_filter = MOUSE_FILTER_IGNORE
+		vb.add_child(s)
 	vb.set_anchors_preset(Control.PRESET_FULL_RECT)
 	b.add_child(vb)
-	# 按压脉冲：按下时轻微缩小、松开弹回（ pivot 取按钮中心，容器布局不受影响）
 	b.ready.connect(func() -> void: b.pivot_offset = b.size / 2.0)
 	b.button_down.connect(func() -> void:
 		var tw := create_tween().bind_node(b)
@@ -479,6 +493,7 @@ func cute_button(text: String, sub: String, bg_color: Color, min_size: Vector2) 
 	b.button_up.connect(func() -> void:
 		var tw2 := create_tween().bind_node(b)
 		tw2.tween_property(b, "scale", Vector2.ONE, 0.16).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT))
+	b.pressed.connect(func() -> void: AudioCfg.play_ui(self, "click"))
 	return b
 
 
@@ -496,7 +511,9 @@ func back_bar(title: String, back_to: Callable, back_text: String = "← 返回�
 	back.add_theme_stylebox_override("normal", style(Color(1, 1, 1, 0.88), 20, C_GOLD, 2))
 	back.add_theme_stylebox_override("hover", style(Color(1, 0.95, 0.97, 0.95), 20, C_PINK, 2))
 	back.add_theme_stylebox_override("pressed", style(Color(1, 0.90, 0.94, 1.0), 20, C_PINK, 2))
-	back.pressed.connect(back_to)
+	back.pressed.connect(func() -> void:
+		AudioCfg.play_ui(self, "click")
+		back_to.call())
 	bar.add_child(back)
 	var t := Art.halo(lbl(title, 46, C_INK, true), 10)
 	t.autowrap_mode = TextServer.AUTOWRAP_OFF
@@ -525,26 +542,72 @@ func show_home() -> void:
 		music.play_scene("home")
 	clear_screen()
 	var m := page_margin()
+	m.add_theme_constant_override("margin_top", 20)
+	m.add_theme_constant_override("margin_bottom", 20)
 	var vb := VBoxContainer.new()
-	vb.add_theme_constant_override("separation", 10)
+	vb.add_theme_constant_override("separation", 8)
 	m.add_child(vb)
 
-	var title := lbl("全明星杀", 120, C_PINK_DEEP, true, HORIZONTAL_ALIGNMENT_CENTER)
+	# V0.41 手杀式顶部玩家状态与曲风金栏
+	var top_bar := PanelContainer.new()
+	var tb_sb := style(Color(0.16, 0.08, 0.22, 0.86), 18, C_GOLD, 2, true)
+	tb_sb.content_margin_left = 20
+	tb_sb.content_margin_right = 20
+	tb_sb.content_margin_top = 8
+	tb_sb.content_margin_bottom = 8
+	top_bar.add_theme_stylebox_override("panel", tb_sb)
+	var top_hb := HBoxContainer.new()
+	top_hb.add_theme_constant_override("separation", 18)
+	top_bar.add_child(top_hb)
+	var rate_str := Meta.win_rate_text("all")
+	var bstrk := Meta.best_streak()
+	var prof_txt := "🌸 星樱首席牌手  ·  战绩 %s%s" % [rate_str if rate_str != "—" else "0 局", ("  ·  🔥最高 %d 连胜" % bstrk) if bstrk > 0 else ""]
+	var prof_l := lbl(prof_txt, 22, Color(1.0, 0.95, 0.86), true)
+	prof_l.autowrap_mode = TextServer.AUTOWRAP_OFF
+	top_hb.add_child(prof_l)
+	var bgm_l := lbl("🎵 正在播放：《%s》" % MusicDirector.track_title("home"), 21, Color(1.0, 0.84, 0.52), true, HORIZONTAL_ALIGNMENT_CENTER)
+	bgm_l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	bgm_l.autowrap_mode = TextServer.AUTOWRAP_OFF
+	top_hb.add_child(bgm_l)
+	var beans_l := lbl("🪙 欢斗豆：%d" % Meta.beans(), 22, Color(1.0, 0.86, 0.36), true)
+	beans_l.autowrap_mode = TextServer.AUTOWRAP_OFF
+	top_hb.add_child(beans_l)
+	var style_b := Button.new()
+	style_b.focus_mode = Control.FOCUS_NONE
+	style_b.text = "🎼 " + MusicDirector.style_label()
+	style_b.custom_minimum_size = Vector2(184, 40)
+	style_b.add_theme_font_override("font", font_bold)
+	style_b.add_theme_font_size_override("font_size", 20)
+	style_b.add_theme_color_override("font_color", Color(1.0, 0.96, 0.86))
+	style_b.add_theme_stylebox_override("normal", style(Color(0.32, 0.16, 0.42, 0.95), 14, C_GOLD, 2))
+	style_b.add_theme_stylebox_override("hover", style(Color(0.42, 0.22, 0.54, 0.98), 14, C_GOLD, 2))
+	style_b.pressed.connect(func() -> void:
+		AudioCfg.play_ui(self, "click")
+		if music != null:
+			music.cycle_style()
+		else:
+			var nx := "classic" if MusicDirector.style_key() == "sakura" else "sakura"
+			AudioCfg.set_v("bgm_style", nx)
+		show_home())
+	top_hb.add_child(style_b)
+	vb.add_child(top_bar)
+
+	var title := lbl("全明星杀", 86, C_PINK_DEEP, true, HORIZONTAL_ALIGNMENT_CENTER)
+	title.autowrap_mode = TextServer.AUTOWRAP_OFF
 	title.add_theme_constant_override("outline_size", 10)
-	title.add_theme_color_override("font_outline_color", Color(1, 1, 1, 0.55))
-	title.add_theme_color_override("font_shadow_color", Color(0.92, 0.30, 0.52, 0.35))
-	title.add_theme_constant_override("shadow_offset_x", 5)
+	title.add_theme_color_override("font_outline_color", Color(1, 0.97, 0.90, 0.92))
+	title.add_theme_color_override("font_shadow_color", Color(0.28, 0.08, 0.20, 0.55))
+	title.add_theme_constant_override("shadow_offset_x", 4)
 	title.add_theme_constant_override("shadow_offset_y", 5)
 	vb.add_child(title)
-	var en := lbl("A L L   S T A R   K I L L", 26, C_GOLD, true, HORIZONTAL_ALIGNMENT_CENTER)
-	vb.add_child(en)
-	var sub := Art.halo(lbl("二次元明星大乱斗 · 身份对局", 36, C_INK_SOFT, false, HORIZONTAL_ALIGNMENT_CENTER), 8)
+	var sub := Art.halo(lbl("━━ ✦  A L L   S T A R   K I L L  ·  二次元学园策略卡牌对战  ✦ ━━", 24, C_INK, true, HORIZONTAL_ALIGNMENT_CENTER), 8)
+	sub.autowrap_mode = TextServer.AUTOWRAP_OFF
 	vb.add_child(sub)
 
-	# 主页看板角色卡带（V0.35：支持点击互动换看板角色，长按查看角色详情）
+	# 主页看板角色卡带 + 二次元语音台词互动气泡
 	var strip := HBoxContainer.new()
 	strip.alignment = BoxContainer.ALIGNMENT_CENTER
-	strip.add_theme_constant_override("separation", 18)
+	strip.add_theme_constant_override("separation", 22)
 	home_showcase_ids = Meta.get_showcase(Characters.LIST)
 	for slot_i in home_showcase_ids.size():
 		var pid := String(home_showcase_ids[slot_i])
@@ -554,40 +617,52 @@ func show_home() -> void:
 		var wrap_b := Button.new()
 		wrap_b.flat = true
 		wrap_b.focus_mode = Control.FOCUS_NONE
-		wrap_b.custom_minimum_size = Vector2(200, 264)
-		var cc := Art.cg_card(ch_d, Vector2(200, 264), {"zoom": 0.62, "face_y": 0.34, "title": false, "hp": false, "fs": 22})
+		wrap_b.custom_minimum_size = Vector2(196, 248)
+		var cc := Art.cg_card(ch_d, Vector2(196, 248), {"zoom": 0.62, "face_y": 0.34, "title": true, "hp": false, "fs": 21})
 		wrap_b.add_child(cc)
 		wrap_b.set_meta("intro", IntroPop.char_spec(ch_d))
 		var idx_s := slot_i
-		wrap_b.pressed.connect(func() -> void: _on_home_showcase_clicked(idx_s))
+		wrap_b.pressed.connect(func() -> void:
+			AudioCfg.play_ui(self, "skill")
+			_on_home_showcase_clicked(idx_s))
 		strip.add_child(wrap_b)
 	vb.add_child(strip)
+
+	var lead_id := String(home_showcase_ids[0]) if not home_showcase_ids.is_empty() else "sena"
+	var lead_ch := Characters.by_id(lead_id)
+	var lead_nm := String(lead_ch.get("name", "白石星奈"))
+	var lead_line := BattleScreen.line_for(lead_id, "skill")
+	if lead_line == "":
+		lead_line = "星樱学园全明星集结，请指示下一场对局！"
+	var bub_lbl := Art.halo(lbl("💬 【%s】：「%s」（点击看板切换角色 · 长按查看详情）" % [lead_nm, lead_line], 21, C_PINK_DEEP, true, HORIZONTAL_ALIGNMENT_CENTER), 7)
+	bub_lbl.autowrap_mode = TextServer.AUTOWRAP_OFF
+	vb.add_child(bub_lbl)
 
 	var btn_row := HBoxContainer.new()
 	btn_row.alignment = BoxContainer.ALIGNMENT_CENTER
 	btn_row.add_theme_constant_override("separation", 24)
-	var b_battle := cute_button("5人身份场", "主公 / 忠臣 / 反贼 / 内奸", C_PLATE, Vector2(372, 134))
+	var b_battle := cute_button("⚔ 5人身份场", "主公 / 忠臣 / 反贼 / 内奸", C_PLATE, Vector2(384, 122))
 	b_battle.pressed.connect(show_battle)
 	btn_row.add_child(b_battle)
-	var b_ddz := cute_button("斗地主", "3人叫分加倍 · 🪙%d 欢斗豆" % Meta.beans(), Color(0.98, 0.62, 0.25), Vector2(372, 134))
+	var b_ddz := cute_button("👑 斗地主", "叫分明牌加倍 · 🪙%d 欢斗豆" % Meta.beans(), Color(0.92, 0.54, 0.18), Vector2(384, 122))
 	b_ddz.pressed.connect(func() -> void: show_battle_mode("doudizhu"))
 	btn_row.add_child(b_ddz)
-	var b_2v2 := cute_button("欢乐 2v2", "4 人同盟排位 · 队友协同", Color(0.88, 0.38, 0.52), Vector2(372, 134))
+	var b_2v2 := cute_button("🤝 欢乐 2v2", "4 人同盟排位 · 手牌互通", Color(0.84, 0.32, 0.50), Vector2(384, 122))
 	b_2v2.pressed.connect(func() -> void: show_battle_mode("twovtwo"))
 	btn_row.add_child(b_2v2)
 	vb.add_child(btn_row)
 	var btn_row2 := HBoxContainer.new()
 	btn_row2.alignment = BoxContainer.ALIGNMENT_CENTER
 	btn_row2.add_theme_constant_override("separation", 24)
-	var b_boss := cute_button("魔王挑战", "3v1 联军讨伐 8 血魔王", Color(0.62, 0.34, 0.86), Vector2(372, 134))
+	var b_boss := cute_button("👹 魔王挑战", "3v1 联军讨伐 8 血魔王", Color(0.54, 0.28, 0.78), Vector2(384, 122))
 	b_boss.pressed.connect(func() -> void: show_battle_mode("boss"))
 	btn_row2.add_child(b_boss)
-	var b_duel := cute_button("单挑对决", "1 对 1 · 先手3张 / 后手4张", Color(0.45, 0.55, 0.95), Vector2(372, 134))
+	var b_duel := cute_button("⚡ 单挑对决", "1 对 1 · 先手3张 / 后手4张", Color(0.32, 0.48, 0.88), Vector2(384, 122))
 	b_duel.pressed.connect(func() -> void: show_battle_mode("duel"))
 	btn_row2.add_child(b_duel)
 	var pz_done := Meta.puzzles_cleared_count()
 	var pz_all := Puzzles.count()
-	var b_pz := cute_button("残局闯关", "10 关一回合绝杀 · 已破 %d/%d" % [pz_done, pz_all], Color(0.84, 0.42, 0.22), Vector2(372, 134))
+	var b_pz := cute_button("🧩 残局闯关", "%d 关一回合绝杀 · 已破 %d/%d" % [pz_all, pz_done, pz_all], Color(0.82, 0.38, 0.20), Vector2(384, 122))
 	b_pz.pressed.connect(show_puzzles)
 	btn_row2.add_child(b_pz)
 	vb.add_child(btn_row2)
@@ -595,20 +670,19 @@ func show_home() -> void:
 	var theme_row := HBoxContainer.new()
 	theme_row.alignment = BoxContainer.ALIGNMENT_CENTER
 	theme_row.add_theme_constant_override("separation", 16)
-	# V0.37：第三排 5 个入口——图鉴百科 / 战绩成就 / 教学关 / 新手说明 / 昼夜主题
-	var b_chars := cute_button("图鉴百科", "", C_SKY, Vector2(224, 108))
+	var b_chars := cute_button("👤 图鉴百科", "", C_SKY, Vector2(228, 92))
 	b_chars.pressed.connect(show_gallery)
 	theme_row.add_child(b_chars)
-	var b_meta := cute_button("战绩·成就", "", Color(0.93, 0.55, 0.62), Vector2(224, 108))
+	var b_meta := cute_button("🏆 战绩·成就", "", Color(0.88, 0.45, 0.56), Vector2(228, 92))
 	b_meta.pressed.connect(show_records)
 	theme_row.add_child(b_meta)
-	var b_tut := cute_button("教学关", "", Color(0.98, 0.66, 0.38), Vector2(224, 108))
+	var b_tut := cute_button("🎓 教学关", "", Color(0.92, 0.58, 0.28), Vector2(228, 92))
 	b_tut.pressed.connect(show_tutorial)
 	theme_row.add_child(b_tut)
-	var b_help := cute_button("新手说明", "", Color(0.36, 0.70, 0.55), Vector2(224, 108))
+	var b_help := cute_button("📖 新手说明", "", Color(0.28, 0.64, 0.50), Vector2(228, 92))
 	b_help.pressed.connect(show_help)
 	theme_row.add_child(b_help)
-	var b_theme := cute_button("昼樱主题" if theme_night else "祭典夜", "", Color(0.98, 0.72, 0.30) if theme_night else Color(0.35, 0.32, 0.62), Vector2(224, 108))
+	var b_theme := cute_button("🌸 昼樱主题" if theme_night else "🌙 祭典夜", "", Color(0.92, 0.66, 0.24) if theme_night else Color(0.32, 0.28, 0.58), Vector2(228, 92))
 	b_theme.pressed.connect(toggle_theme)
 	theme_row.add_child(b_theme)
 	vb.add_child(theme_row)
@@ -789,22 +863,31 @@ func show_detail(c: Dictionary) -> void:
 	right.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	right.add_theme_stylebox_override("panel", style(Color(1, 1, 1, 0.90), 28, C_GOLD, 3, true))
 	var rv := VBoxContainer.new()
-	rv.add_theme_constant_override("separation", 14)
+	rv.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	rv.add_theme_constant_override("separation", 10)
 	right.add_child(rv)
-	rv.add_child(lbl(c["name"], 64, C_PINK_DEEP, true))
-	rv.add_child(lbl("%s · 系列：%s" % [String(c.get("title", "")), String(c["work"])], 28, C_INK_SOFT))
+	var nm_d := lbl(c["name"], 54, C_PINK_DEEP, true)
+	nm_d.autowrap_mode = TextServer.AUTOWRAP_OFF
+	rv.add_child(nm_d)
+	var wk_d := lbl("%s · 系列：%s" % [String(c.get("title", "")), String(c["work"])], 25, C_INK_SOFT)
+	wk_d.autowrap_mode = TextServer.AUTOWRAP_OFF
+	rv.add_child(wk_d)
 	var hp_text := ""
 	for i in int(c["hp"]):
 		hp_text += "♥"
-	rv.add_child(lbl("体力：%s（%d 点）" % [hp_text, int(c["hp"])], 30, C_INK))
-	var intro := lbl(c["intro"], 28, C_INK)
+	var hp_d := lbl("体力：%s（%d 点）" % [hp_text, int(c["hp"])], 26, C_INK)
+	hp_d.autowrap_mode = TextServer.AUTOWRAP_OFF
+	rv.add_child(hp_d)
+	var intro := lbl(c["intro"], 25, C_INK)
 	intro.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	rv.add_child(intro)
 	var sep := HSeparator.new()
 	rv.add_child(sep)
 	for sk in c["skills"]:
-		rv.add_child(lbl("技能 · %s" % sk["name"], 36, C_PINK_DEEP, true))
-		var st := lbl(sk["text"], 28, C_INK)
+		var sk_t := lbl("技能 · %s" % sk["name"], 31, C_PINK_DEEP, true)
+		sk_t.autowrap_mode = TextServer.AUTOWRAP_OFF
+		rv.add_child(sk_t)
+		var st := lbl(sk["text"], 25, C_INK)
 		st.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		rv.add_child(st)
 	var sep2 := HSeparator.new()
@@ -848,6 +931,21 @@ func show_detail(c: Dictionary) -> void:
 		else:
 			ban_msg.text = "至少需保留 8 名启用武将，无法继续禁用！")
 	act_hb.add_child(ban_b)
+	var v_cats := ["skill", "attack", "heal", "hurt", "dying"]
+	var v_names := ["必杀台词", "出击台词", "回复台词", "受创台词", "绝境台词"]
+	var v_idx := [0]
+	var v_lbl := lbl("🎙 必杀台词：「%s」" % BattleScreen.line_for(cid_d, "skill"), 23, C_PINK_DEEP, true)
+	v_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	var voice_b: Button = mk_det_btn.call("🎙 台词鉴赏", Color(0.62, 0.36, 0.78))
+	voice_b.custom_minimum_size = Vector2(220, 58)
+	voice_b.pressed.connect(func() -> void:
+		AudioCfg.play_ui(self, "skill")
+		v_idx[0] = (int(v_idx[0]) + 1) % v_cats.size()
+		var cat_k := String(v_cats[int(v_idx[0])])
+		var cat_n := String(v_names[int(v_idx[0])])
+		v_lbl.text = "🎙 %s：「%s」" % [cat_n, BattleScreen.line_for(cid_d, cat_k)])
+	act_hb.add_child(voice_b)
+	rv.add_child(v_lbl)
 	rv.add_child(ban_msg)
 	row.add_child(right)
 

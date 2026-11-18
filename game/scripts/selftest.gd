@@ -369,6 +369,7 @@ func _run_reg_test() -> void:
 	await _reg_v38()
 	await _reg_v39()
 	await _reg_v40()
+	await _reg_v41()
 	_reg_lines.append("REGTEST_DONE tests=%d fails=%d" % [_reg_n, _reg_fails])
 	_write("/tmp/ask_regtest.txt", _reg_lines)
 	print(_reg_lines[_reg_lines.size() - 1])
@@ -3482,3 +3483,54 @@ func _reg_v40() -> void:
 	eng_open.set_ui({})
 	Meta40.reset_for_test("/tmp/qmxs_v40_meta_test.json")
 	Meta40.path = old_path
+
+
+func _reg_v41() -> void:
+	const Audio41 = preload("res://scripts/audio.gd")
+	const Music41 = preload("res://scripts/music.gd")
+	const BS41 = preload("res://scripts/battle.gd")
+	Audio41.ensure()
+
+	# V41-1: 全部 24 种高保真立体声 SFX 音效文件可加载
+	var sfx_miss: Array = []
+	for k in Audio41.SFX_FILES:
+		if Audio41.sfx_stream(String(k)) == null:
+			sfx_miss.append(k)
+	_ok(Audio41.SFX_FILES.size() >= 24 and sfx_miss.is_empty(), "V41-1 全部 %d 种手杀×二次元立体声音效齐全" % Audio41.SFX_FILES.size())
+
+	# V41-2: 樱华国风与经典交响 6 首 BGM 齐全且支持双曲风切换
+	var bgm_ok := ResourceLoader.exists("res://assets/bgm/home_sakura.ogg") and ResourceLoader.exists("res://assets/bgm/battle_storm.ogg") and ResourceLoader.exists("res://assets/bgm/tense_climax.ogg") and ResourceLoader.exists("res://assets/bgm/home_carefree.ogg")
+	var old_style := String(Audio41.get_v("bgm_style"))
+	Audio41.set_v("bgm_style", "sakura", false)
+	var t_sak := Music41.track_title("home")
+	var t_cls := ""
+	if main_ref.music != null:
+		main_ref.music.cycle_style()
+		t_cls = Music41.track_title("home")
+		main_ref.music.cycle_style()
+	Audio41.set_v("bgm_style", old_style, false)
+	_ok(bgm_ok and t_sak.find("樱华") >= 0 and t_cls.find("Carefree") >= 0, "V41-2 樱华国风与经典交响双套 BGM 及一键切换生效")
+
+	# V41-3: 全部 19 名角色战斗与互动台词（CHAR_LINES）100% 覆盖
+	var line_miss: Array = []
+	for c in Characters.LIST:
+		var cid := String(c["id"])
+		for cat in ["attack", "hurt", "dying", "death", "skill", "heal"]:
+			if BS41.line_for(cid, cat) == "":
+				line_miss.append(cid + ":" + cat)
+	_ok(line_miss.is_empty(), "V41-3 全部 %d 名角色 6 类二次元台词 100%% 覆盖" % Characters.LIST.size())
+
+	# V41-4: 牌桌六阶段指示器与新版大厅/详情页渲染
+	main_ref.clear_screen()
+	var bs41 = BS41.new()
+	bs41.set_anchors_preset(Control.PRESET_FULL_RECT)
+	bs41.go_home = Callable(main_ref, "show_home")
+	main_ref.screen_root.add_child(bs41)
+	bs41.build_table()
+	bs41.set_phase("出牌阶段")
+	_ok(bs41.phase_pills.size() == 6, "V41-4 牌桌顶部手杀式六阶段进度指示器正常构建")
+	await _close_battle(bs41)
+	main_ref.show_detail(Characters.by_id("mafuyu"))
+	await _frames(2)
+	main_ref.show_home()
+	await _frames(2)
