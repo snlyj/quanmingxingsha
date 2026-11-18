@@ -234,12 +234,13 @@ static func name_plate(ch: Dictionary, fs: int, with_emblem: bool = true) -> Pan
 		pl.add_child(e)
 	var l := Label.new()
 	l.name = "SeatName"
+	var nfs := int(round(float(fs) * 0.80)) if nm.length() >= 6 else fs
 	var chars := PackedStringArray()
 	for ci in nm.length():
 		chars.append(nm[ci])
 	l.text = "\n".join(chars)
 	l.add_theme_font_override("font", bold_font())
-	l.add_theme_font_size_override("font_size", fs)
+	l.add_theme_font_size_override("font_size", nfs)
 	l.add_theme_color_override("font_color", Color(1.0, 0.97, 0.92))
 	l.add_theme_color_override("font_outline_color", Color(0.35, 0.12, 0.25))
 	l.add_theme_constant_override("outline_size", maxi(3, fs / 6))

@@ -472,7 +472,7 @@ func cute_button(text: String, sub: String, bg_color: Color, min_size: Vector2) 
 	vb.alignment = BoxContainer.ALIGNMENT_CENTER
 	vb.add_theme_constant_override("separation", 4)
 	vb.mouse_filter = MOUSE_FILTER_IGNORE
-	var t_fs := 44 if sub != "" else 34
+	var t_fs := (38 if min_size.y <= 112 else 44) if sub != "" else 32
 	var t := lbl(text, t_fs, Color(1.0, 0.98, 0.92), true, HORIZONTAL_ALIGNMENT_CENTER)
 	t.add_theme_color_override("font_outline_color", Color(0.22, 0.08, 0.18, 0.88))
 	t.add_theme_constant_override("outline_size", 6)
@@ -542,10 +542,10 @@ func show_home() -> void:
 		music.play_scene("home")
 	clear_screen()
 	var m := page_margin()
-	m.add_theme_constant_override("margin_top", 20)
-	m.add_theme_constant_override("margin_bottom", 20)
+	m.add_theme_constant_override("margin_top", 12)
+	m.add_theme_constant_override("margin_bottom", 12)
 	var vb := VBoxContainer.new()
-	vb.add_theme_constant_override("separation", 8)
+	vb.add_theme_constant_override("separation", 5)
 	m.add_child(vb)
 
 	# V0.41 手杀式顶部玩家状态与曲风金栏
@@ -592,7 +592,7 @@ func show_home() -> void:
 	top_hb.add_child(style_b)
 	vb.add_child(top_bar)
 
-	var title := lbl("全明星杀", 86, C_PINK_DEEP, true, HORIZONTAL_ALIGNMENT_CENTER)
+	var title := lbl("全明星杀", 72, C_PINK_DEEP, true, HORIZONTAL_ALIGNMENT_CENTER)
 	title.autowrap_mode = TextServer.AUTOWRAP_OFF
 	title.add_theme_constant_override("outline_size", 10)
 	title.add_theme_color_override("font_outline_color", Color(1, 0.97, 0.90, 0.92))
@@ -617,8 +617,8 @@ func show_home() -> void:
 		var wrap_b := Button.new()
 		wrap_b.flat = true
 		wrap_b.focus_mode = Control.FOCUS_NONE
-		wrap_b.custom_minimum_size = Vector2(196, 248)
-		var cc := Art.cg_card(ch_d, Vector2(196, 248), {"zoom": 0.62, "face_y": 0.34, "title": true, "hp": false, "fs": 21})
+		wrap_b.custom_minimum_size = Vector2(166, 198)
+		var cc := Art.cg_card(ch_d, Vector2(166, 198), {"zoom": 0.62, "face_y": 0.34, "title": true, "hp": false, "fs": 19})
 		wrap_b.add_child(cc)
 		wrap_b.set_meta("intro", IntroPop.char_spec(ch_d))
 		var idx_s := slot_i
@@ -637,35 +637,46 @@ func show_home() -> void:
 	var lead_line := BattleScreen.line_for(lead_id, "skill")
 	if lead_line == "":
 		lead_line = "星樱学园全明星集结，请指示下一场对局！"
-	var bub_lbl := Art.halo(lbl("💬 【%s】：「%s」（点击看板切换角色 · 长按查看详情）" % [lead_nm, lead_line], 21, C_PINK_DEEP, true, HORIZONTAL_ALIGNMENT_CENTER), 7)
-	bub_lbl.autowrap_mode = TextServer.AUTOWRAP_OFF
-	vb.add_child(bub_lbl)
+	var bub_box := PanelContainer.new()
+	bub_box.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	bub_box.custom_minimum_size = Vector2(1180, 0)
+	var bub_sb := style(Color(1.0, 0.97, 0.98, 0.88), 20, C_GOLD, 2, true)
+	bub_sb.content_margin_left = 24
+	bub_sb.content_margin_right = 24
+	bub_sb.content_margin_top = 8
+	bub_sb.content_margin_bottom = 8
+	bub_box.add_theme_stylebox_override("panel", bub_sb)
+	var bub_lbl := lbl("💬 【%s】：「%s」  （点击看板切换角色 · 长按查看详情）" % [lead_nm, lead_line], 19, C_PINK_DEEP, true, HORIZONTAL_ALIGNMENT_CENTER)
+	bub_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	bub_lbl.custom_minimum_size = Vector2(1120, 0)
+	bub_box.add_child(bub_lbl)
+	vb.add_child(bub_box)
 
 	var btn_row := HBoxContainer.new()
 	btn_row.alignment = BoxContainer.ALIGNMENT_CENTER
 	btn_row.add_theme_constant_override("separation", 24)
-	var b_battle := cute_button("⚔ 5人身份场", "主公 / 忠臣 / 反贼 / 内奸", C_PLATE, Vector2(384, 122))
+	var b_battle := cute_button("⚔ 5人身份场", "主公 / 忠臣 / 反贼 / 内奸", C_PLATE, Vector2(384, 108))
 	b_battle.pressed.connect(show_battle)
 	btn_row.add_child(b_battle)
-	var b_ddz := cute_button("👑 斗地主", "叫分明牌加倍 · 🪙%d 欢斗豆" % Meta.beans(), Color(0.92, 0.54, 0.18), Vector2(384, 122))
+	var b_ddz := cute_button("👑 斗地主", "叫分明牌加倍 · 🪙%d 欢斗豆" % Meta.beans(), Color(0.92, 0.54, 0.18), Vector2(384, 108))
 	b_ddz.pressed.connect(func() -> void: show_battle_mode("doudizhu"))
 	btn_row.add_child(b_ddz)
-	var b_2v2 := cute_button("🤝 欢乐 2v2", "4 人同盟排位 · 手牌互通", Color(0.84, 0.32, 0.50), Vector2(384, 122))
+	var b_2v2 := cute_button("🤝 欢乐 2v2", "4 人同盟排位 · 手牌互通", Color(0.84, 0.32, 0.50), Vector2(384, 108))
 	b_2v2.pressed.connect(func() -> void: show_battle_mode("twovtwo"))
 	btn_row.add_child(b_2v2)
 	vb.add_child(btn_row)
 	var btn_row2 := HBoxContainer.new()
 	btn_row2.alignment = BoxContainer.ALIGNMENT_CENTER
 	btn_row2.add_theme_constant_override("separation", 24)
-	var b_boss := cute_button("👹 魔王挑战", "3v1 联军讨伐 8 血魔王", Color(0.54, 0.28, 0.78), Vector2(384, 122))
+	var b_boss := cute_button("👹 魔王挑战", "3v1 联军讨伐 8 血魔王", Color(0.54, 0.28, 0.78), Vector2(384, 108))
 	b_boss.pressed.connect(func() -> void: show_battle_mode("boss"))
 	btn_row2.add_child(b_boss)
-	var b_duel := cute_button("⚡ 单挑对决", "1 对 1 · 先手3张 / 后手4张", Color(0.32, 0.48, 0.88), Vector2(384, 122))
+	var b_duel := cute_button("⚡ 单挑对决", "1 对 1 · 先手3张 / 后手4张", Color(0.32, 0.48, 0.88), Vector2(384, 108))
 	b_duel.pressed.connect(func() -> void: show_battle_mode("duel"))
 	btn_row2.add_child(b_duel)
 	var pz_done := Meta.puzzles_cleared_count()
 	var pz_all := Puzzles.count()
-	var b_pz := cute_button("🧩 残局闯关", "%d 关一回合绝杀 · 已破 %d/%d" % [pz_all, pz_done, pz_all], Color(0.82, 0.38, 0.20), Vector2(384, 122))
+	var b_pz := cute_button("🧩 残局闯关", "%d 关一回合绝杀 · 已破 %d/%d" % [pz_all, pz_done, pz_all], Color(0.82, 0.38, 0.20), Vector2(384, 108))
 	b_pz.pressed.connect(show_puzzles)
 	btn_row2.add_child(b_pz)
 	vb.add_child(btn_row2)
@@ -673,19 +684,19 @@ func show_home() -> void:
 	var theme_row := HBoxContainer.new()
 	theme_row.alignment = BoxContainer.ALIGNMENT_CENTER
 	theme_row.add_theme_constant_override("separation", 16)
-	var b_chars := cute_button("👤 图鉴百科", "", C_SKY, Vector2(228, 92))
+	var b_chars := cute_button("👤 图鉴百科", "", C_SKY, Vector2(228, 78))
 	b_chars.pressed.connect(show_gallery)
 	theme_row.add_child(b_chars)
-	var b_meta := cute_button("🏆 战绩·成就", "", Color(0.88, 0.45, 0.56), Vector2(228, 92))
+	var b_meta := cute_button("🏆 战绩·成就", "", Color(0.88, 0.45, 0.56), Vector2(228, 78))
 	b_meta.pressed.connect(show_records)
 	theme_row.add_child(b_meta)
-	var b_tut := cute_button("🎓 教学关", "", Color(0.92, 0.58, 0.28), Vector2(228, 92))
+	var b_tut := cute_button("🎓 教学关", "", Color(0.92, 0.58, 0.28), Vector2(228, 78))
 	b_tut.pressed.connect(show_tutorial)
 	theme_row.add_child(b_tut)
-	var b_help := cute_button("📖 新手说明", "", Color(0.28, 0.64, 0.50), Vector2(228, 92))
+	var b_help := cute_button("📖 新手说明", "", Color(0.28, 0.64, 0.50), Vector2(228, 78))
 	b_help.pressed.connect(show_help)
 	theme_row.add_child(b_help)
-	var b_theme := cute_button("🌸 昼樱主题" if theme_night else "🌙 祭典夜", "", Color(0.92, 0.66, 0.24) if theme_night else Color(0.32, 0.28, 0.58), Vector2(228, 92))
+	var b_theme := cute_button("🌸 昼樱主题" if theme_night else "🌙 祭典夜", "", Color(0.92, 0.66, 0.24) if theme_night else Color(0.32, 0.28, 0.58), Vector2(228, 78))
 	b_theme.pressed.connect(toggle_theme)
 	theme_row.add_child(b_theme)
 	vb.add_child(theme_row)
@@ -785,6 +796,28 @@ func show_gallery() -> void:
 	inner.add_child(soon)
 
 
+func _wire_scroll_drag(ctrl: BaseButton, scroll: ScrollContainer) -> void:
+	ctrl.set_meta("drag_px", 0.0)
+	ctrl.button_down.connect(func() -> void: ctrl.set_meta("drag_px", 0.0))
+	if scroll == null:
+		return
+	var sc: ScrollContainer = scroll
+	ctrl.gui_input.connect(func(event: InputEvent) -> void:
+		var dy := 0.0
+		if event is InputEventScreenTouch and (event as InputEventScreenTouch).pressed:
+			ctrl.set_meta("drag_px", 0.0)
+		elif event is InputEventMouseButton and (event as InputEventMouseButton).pressed and (event as InputEventMouseButton).button_index == MOUSE_BUTTON_LEFT:
+			ctrl.set_meta("drag_px", 0.0)
+		elif event is InputEventMouseMotion and ((event as InputEventMouseMotion).button_mask & MOUSE_BUTTON_MASK_LEFT) != 0:
+			dy = (event as InputEventMouseMotion).relative.y
+		elif event is InputEventScreenDrag:
+			dy = (event as InputEventScreenDrag).relative.y
+		if dy != 0.0:
+			if is_instance_valid(sc):
+				sc.scroll_vertical -= int(roundf(dy))
+			ctrl.set_meta("drag_px", float(ctrl.get_meta("drag_px", 0.0)) + absf(dy)))
+
+
 func make_char_card(c: Dictionary, scroll: ScrollContainer = null) -> Button:
 	var b := Button.new()
 	b.focus_mode = Control.FOCUS_NONE
@@ -813,28 +846,23 @@ func make_char_card(c: Dictionary, scroll: ScrollContainer = null) -> Button:
 	var blv_m := Meta.bond_level(cid_m)
 	var bond_tag := (" · 💍誓约" if blv_m >= 5 else (" · ♥Lv%d" % blv_m if Meta.affection(cid_m) > 0 else ""))
 	var stat_suf := " · 🚫已禁用" if banned_m else (bond_tag + (" · %d胜" % cw_n if cw_n > 0 else ""))
-	var skl := lbl(" ".join(PackedStringArray(sk_names)) + stat_suf, 21, C_PINK_DEEP if banned_m else C_INK_SOFT, banned_m, HORIZONTAL_ALIGNMENT_CENTER)
+	var sk_mg := MarginContainer.new()
+	sk_mg.mouse_filter = MOUSE_FILTER_IGNORE
+	sk_mg.add_theme_constant_override("margin_left", 14)
+	sk_mg.add_theme_constant_override("margin_right", 14)
+	var skl := lbl(" ".join(PackedStringArray(sk_names)) + stat_suf, 20, C_PINK_DEEP if banned_m else C_INK_SOFT, banned_m, HORIZONTAL_ALIGNMENT_CENTER)
+	skl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	skl.custom_minimum_size = Vector2(368, 0)
 	skl.mouse_filter = MOUSE_FILTER_IGNORE
-	vb.add_child(skl)
+	sk_mg.add_child(skl)
+	vb.add_child(sk_mg)
 	if banned_m:
 		b.modulate = Color(0.84, 0.80, 0.86, 0.90)
 	b.add_child(vb)
 	b.set_meta("intro", IntroPop.char_spec(c))
-	b.set_meta("drag_px", 0.0)
-	b.button_down.connect(func() -> void: b.set_meta("drag_px", 0.0))
-	if scroll != null:
-		var sc: ScrollContainer = scroll
-		b.gui_input.connect(func(event: InputEvent) -> void:
-			var dy := 0.0
-			if event is InputEventMouseMotion and (event.button_mask & MOUSE_BUTTON_MASK_LEFT) != 0:
-				dy = (event as InputEventMouseMotion).relative.y
-			elif event is InputEventScreenDrag:
-				dy = (event as InputEventScreenDrag).relative.y
-			if dy != 0.0:
-				sc.scroll_vertical -= int(dy)
-				b.set_meta("drag_px", float(b.get_meta("drag_px")) + abs(dy)))
+	_wire_scroll_drag(b, scroll)
 	b.pressed.connect(func() -> void:
-		if float(b.get_meta("drag_px")) > 24.0:
+		if float(b.get_meta("drag_px", 0.0)) > 18.0:
 			b.set_meta("drag_px", 0.0)
 			return
 		show_detail(c))
@@ -869,33 +897,39 @@ func show_detail(c: Dictionary) -> void:
 
 	var right := PanelContainer.new()
 	right.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	right.add_theme_stylebox_override("panel", style(Color(1, 1, 1, 0.90), 28, C_GOLD, 3, true))
+	right.add_theme_stylebox_override("panel", style(Color(1, 1, 1, 0.92), 28, C_GOLD, 3, true))
+	var r_sc := ScrollContainer.new()
+	r_sc.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	r_sc.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	r_sc.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	right.add_child(r_sc)
 	var rv := VBoxContainer.new()
 	rv.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	rv.add_theme_constant_override("separation", 10)
-	right.add_child(rv)
-	var nm_d := lbl(c["name"], 54, C_PINK_DEEP, true)
-	nm_d.autowrap_mode = TextServer.AUTOWRAP_OFF
+	rv.add_theme_constant_override("separation", 12)
+	r_sc.add_child(rv)
+	var nm_d := lbl(c["name"], 52, C_PINK_DEEP, true)
+	nm_d.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	rv.add_child(nm_d)
-	var wk_d := lbl("%s · 系列：%s" % [String(c.get("title", "")), String(c["work"])], 25, C_INK_SOFT)
-	wk_d.autowrap_mode = TextServer.AUTOWRAP_OFF
+	var wk_d := lbl("%s · 系列：%s" % [String(c.get("title", "")), String(c["work"])], 24, C_INK_SOFT)
+	wk_d.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	rv.add_child(wk_d)
 	var hp_text := ""
 	for i in int(c["hp"]):
 		hp_text += "♥"
-	var hp_d := lbl("体力：%s（%d 点）" % [hp_text, int(c["hp"])], 26, C_INK)
-	hp_d.autowrap_mode = TextServer.AUTOWRAP_OFF
+	var hp_d := lbl("体力：%s（%d 点）" % [hp_text, int(c["hp"])], 25, C_INK, true)
+	hp_d.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	rv.add_child(hp_d)
-	var intro := lbl(c["intro"], 25, C_INK)
+	var intro := lbl(c["intro"], 24, C_INK)
 	intro.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	rv.add_child(intro)
 	var sep := HSeparator.new()
 	rv.add_child(sep)
 	for sk in c["skills"]:
-		var sk_t := lbl("技能 · %s" % sk["name"], 31, C_PINK_DEEP, true)
-		sk_t.autowrap_mode = TextServer.AUTOWRAP_OFF
+		var sk_t := lbl("技能 · %s" % sk["name"], 29, C_PINK_DEEP, true)
+		sk_t.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		rv.add_child(sk_t)
-		var st := lbl(sk["text"], 25, C_INK)
+		var st := lbl(sk["text"], 23, C_INK)
+		st.add_theme_constant_override("line_spacing", 4)
 		st.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		rv.add_child(st)
 	var sep2 := HSeparator.new()
@@ -907,9 +941,36 @@ func show_detail(c: Dictionary) -> void:
 	var cxp := int(cstat.get("xp", 0))
 	var lv_d := Meta.level_of(cxp)
 	var rate_s := (" · 胜率 %.0f%%" % (100.0 * float(cw) / float(cg))) if cg > 0 else ""
-	var stat_lbl := lbl("战绩：Lv.%d · %d 胜 / %d 局%s  |  羁绊：%s  |  🪙欢斗豆：%d" % [lv_d, cw, cg, rate_s, Meta.bond_title(cid_d), Meta.beans()], 23, C_INK_SOFT, true)
-	stat_lbl.autowrap_mode = TextServer.AUTOWRAP_OFF
-	rv.add_child(stat_lbl)
+	var stat_card := PanelContainer.new()
+	var sc_sb := style(Color(0.99, 0.95, 0.97), 18, Color(0.91, 0.64, 0.24, 0.55), 2)
+	sc_sb.content_margin_left = 18
+	sc_sb.content_margin_right = 18
+	sc_sb.content_margin_top = 10
+	sc_sb.content_margin_bottom = 10
+	stat_card.add_theme_stylebox_override("panel", sc_sb)
+	var sc_vb := VBoxContainer.new()
+	sc_vb.add_theme_constant_override("separation", 6)
+	stat_card.add_child(sc_vb)
+	var stat_lbl := lbl("⚔ 熟练度 Lv.%d · 战绩 %d 胜 / %d 局%s   |   🪙 欢斗豆：%d" % [lv_d, cw, cg, rate_s, Meta.beans()], 22, C_INK, true)
+	stat_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	sc_vb.add_child(stat_lbl)
+	var bond_row := HBoxContainer.new()
+	bond_row.add_theme_constant_override("separation", 12)
+	var bond_lbl := lbl("💕 羁绊：%s" % Meta.bond_title(cid_d), 22, C_PINK_DEEP, true)
+	bond_lbl.autowrap_mode = TextServer.AUTOWRAP_OFF
+	bond_row.add_child(bond_lbl)
+	var bond_bar := ProgressBar.new()
+	bond_bar.show_percentage = false
+	bond_bar.custom_minimum_size = Vector2(260, 16)
+	bond_bar.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	bond_bar.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	bond_bar.max_value = 500.0
+	bond_bar.value = float(clampi(Meta.affection(cid_d), 0, 500))
+	bond_bar.add_theme_stylebox_override("background", style(Color(0.94, 0.86, 0.90), 8))
+	bond_bar.add_theme_stylebox_override("fill", style(C_PINK_DEEP, 8))
+	bond_row.add_child(bond_bar)
+	sc_vb.add_child(bond_row)
+	rv.add_child(stat_card)
 	var act_hb := HBoxContainer.new()
 	act_hb.add_theme_constant_override("separation", 12)
 	rv.add_child(act_hb)
@@ -935,7 +996,7 @@ func show_detail(c: Dictionary) -> void:
 	var is_ban := Meta.is_char_banned(cid_d)
 	var ban_b: Button = mk_det_btn.call("✓ 已禁用(恢复)" if is_ban else "🚫 禁用点将", Color(0.55, 0.36, 0.42) if is_ban else Color(0.45, 0.45, 0.56), 196.0)
 	var ban_msg := lbl("", 21, C_PINK_DEEP, true)
-	ban_msg.autowrap_mode = TextServer.AUTOWRAP_OFF
+	ban_msg.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	ban_b.pressed.connect(func() -> void:
 		AudioCfg.play_ui(self, "click")
 		if Meta.toggle_ban_char(cid_d, Characters.LIST.size()):
@@ -970,7 +1031,9 @@ func show_detail(c: Dictionary) -> void:
 			return
 		if not AudioCfg.play_cv(self, cid_d, "touch"):
 			AudioCfg.play_ui(self, "heal")
-		stat_lbl.text = "战绩：Lv.%d · %d 胜 / %d 局%s  |  羁绊：%s  |  🪙欢斗豆：%d" % [lv_d, cw, cg, rate_s, Meta.bond_title(cid_d), Meta.beans()]
+		stat_lbl.text = "⚔ 熟练度 Lv.%d · 战绩 %d 胜 / %d 局%s   |   🪙 欢斗豆：%d" % [lv_d, cw, cg, rate_s, Meta.beans()]
+		bond_lbl.text = "💕 羁绊：%s" % Meta.bond_title(cid_d)
+		bond_bar.value = float(clampi(Meta.affection(cid_d), 0, 500))
 		var g_line := BattleScreen.line_for(cid_d, "vow" if bool(gr.get("vowed", false)) else "head")
 		v_lbl.text = ("💍 【达成永恒誓约！】「%s」" % g_line) if bool(gr.get("vowed", false)) else ("🎁 【收到礼物 · 好感+35♥】「%s」" % g_line))
 	act_hb.add_child(gift_b)
@@ -984,7 +1047,9 @@ func show_detail(c: Dictionary) -> void:
 			Meta.add_affection(cid_d, 2)
 			if not AudioCfg.play_cv(self, cid_d, cv_cat):
 				AudioCfg.play_ui(self, "heal")
-			stat_lbl.text = "战绩：Lv.%d · %d 胜 / %d 局%s  |  羁绊：%s  |  🪙欢斗豆：%d" % [lv_d, cw, cg, rate_s, Meta.bond_title(cid_d), Meta.beans()]
+			stat_lbl.text = "⚔ 熟练度 Lv.%d · 战绩 %d 胜 / %d 局%s   |   🪙 欢斗豆：%d" % [lv_d, cw, cg, rate_s, Meta.beans()]
+			bond_lbl.text = "💕 羁绊：%s" % Meta.bond_title(cid_d)
+			bond_bar.value = float(clampi(Meta.affection(cid_d), 0, 500))
 			v_lbl.text = "%s：「%s」" % [zone_nm, BattleScreen.line_for(cid_d, zone_cat)])
 	rv.add_child(v_lbl)
 	rv.add_child(ban_msg)
@@ -1057,45 +1122,68 @@ func show_puzzles() -> void:
 		var stars := int(ps.get("stars", 1))
 		var star_s := "★".repeat(stars) + "☆".repeat(maxi(0, 4 - stars))
 		var card := PanelContainer.new()
+		card.mouse_filter = Control.MOUSE_FILTER_PASS
 		card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		card.add_theme_stylebox_override("panel", style(Color(0.94, 1.0, 0.95, 0.95) if cleared else Color(1, 0.99, 1, 0.94), 20, Color(0.28, 0.72, 0.42) if cleared else C_GOLD, 3, true))
 		var mg := MarginContainer.new()
+		mg.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		for side in ["left", "right", "top", "bottom"]:
 			mg.add_theme_constant_override("margin_" + side, 16)
 		card.add_child(mg)
 		var row := HBoxContainer.new()
+		row.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		row.add_theme_constant_override("separation", 16)
 		mg.add_child(row)
 		var ch0 := Characters.by_id(String((ps["me"] as Dictionary).get("char", "hina")))
 		if not ch0.is_empty():
 			var port := Art.cg_card(ch0, Vector2(126, 164), {"zoom": 0.56, "face_y": 0.34, "title": false, "hp": false, "fs": 16})
+			port.mouse_filter = Control.MOUSE_FILTER_IGNORE
 			row.add_child(port)
 		var info := VBoxContainer.new()
+		info.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		info.add_theme_constant_override("separation", 6)
 		row.add_child(info)
 		var hd := HBoxContainer.new()
-		hd.add_theme_constant_override("separation", 12)
-		hd.add_child(lbl("第 %d 关 · %s" % [i + 1, String(ps["name"])], 28, C_INK, true))
-		hd.add_child(lbl(star_s, 22, C_GOLD, true))
-		hd.add_child(lbl("✓ 已破关" if cleared else "待挑战", 21, Color(0.18, 0.62, 0.32) if cleared else C_PINK_DEEP, true))
+		hd.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		hd.add_theme_constant_override("separation", 10)
+		var p_ttl := lbl("第 %d 关 · %s" % [i + 1, String(ps["name"])], 26, C_INK, true)
+		p_ttl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		p_ttl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		p_ttl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		hd.add_child(p_ttl)
+		var p_st := lbl(star_s, 20, C_GOLD, true)
+		p_st.autowrap_mode = TextServer.AUTOWRAP_OFF
+		p_st.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		hd.add_child(p_st)
+		var p_ok := lbl("✓ 已破关" if cleared else "待挑战", 20, Color(0.18, 0.62, 0.32) if cleared else C_PINK_DEEP, true)
+		p_ok.autowrap_mode = TextServer.AUTOWRAP_OFF
+		p_ok.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		hd.add_child(p_ok)
 		info.add_child(hd)
 		var br_lbl := lbl(String(ps["brief"]), 21, C_INK_SOFT)
 		br_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		br_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		info.add_child(br_lbl)
 		var gl_lbl := lbl("目标：" + String(ps["goal"]), 20, C_INK, true)
 		gl_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		gl_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		info.add_child(gl_lbl)
 		var go_b := Button.new()
 		go_b.text = "重玩此关" if cleared else "挑战本关"
-		go_b.custom_minimum_size = Vector2(150, 56)
+		go_b.custom_minimum_size = Vector2(146, 56)
 		go_b.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 		go_b.focus_mode = Control.FOCUS_NONE
 		go_b.add_theme_font_override("font", font_bold)
-		go_b.add_theme_font_size_override("font_size", 24)
+		go_b.add_theme_font_size_override("font_size", 23)
 		go_b.add_theme_color_override("font_color", C_WHITE)
 		go_b.add_theme_stylebox_override("normal", style(Color(0.32, 0.68, 0.44) if cleared else C_PLATE, 16, C_GOLD, 2, true))
-		go_b.pressed.connect(func() -> void: start_puzzle(pid))
+		_wire_scroll_drag(go_b, sc)
+		go_b.pressed.connect(func() -> void:
+			if float(go_b.get_meta("drag_px", 0.0)) > 18.0:
+				go_b.set_meta("drag_px", 0.0)
+				return
+			start_puzzle(pid))
 		row.add_child(go_b)
 		grid_tgt.add_child(card)
 	for ch_no in [1, 2]:
@@ -1182,7 +1270,9 @@ func show_records() -> void:
 	cols.add_child(right)
 	# 战绩汇总（按模式 / 按身份胜率）
 	var sv := _meta_panel(left, "战绩")
-	sv.add_child(lbl("总计：%s　｜　🔥连胜 %d（最高 %d）　｜　残局：%d/%d　｜　🪙%d豆" % [Meta.win_rate_text("all"), int(d.get("win_streak", 0)), int(d.get("best_streak", 0)), Meta.puzzles_cleared_count(), Puzzles.count(), Meta.beans()], 22, C_INK, true))
+	var sum_lbl := lbl("总计：%s　｜　🔥连胜 %d（最高 %d）　｜　残局：%d/%d　｜　🪙%d豆" % [Meta.win_rate_text("all"), int(d.get("win_streak", 0)), int(d.get("best_streak", 0)), Meta.puzzles_cleared_count(), Puzzles.count(), Meta.beans()], 22, C_INK, true)
+	sum_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	sv.add_child(sum_lbl)
 	var tops: Array = Meta.top_chars(3)
 	if not tops.is_empty():
 		var tv := _meta_panel(left, "🏆 本命武将榜 Top%d" % tops.size())
@@ -1250,13 +1340,23 @@ func show_records() -> void:
 	for a in Meta.ACHIEVEMENTS:
 		var got := (d["ach"] as Dictionary).has(String(a[0]))
 		var cell := PanelContainer.new()
-		cell.custom_minimum_size = Vector2(440, 0)
-		cell.add_theme_stylebox_override("panel", style(Color(1.0, 0.93, 0.96) if got else Color(0.93, 0.92, 0.94), 14, C_GOLD if got else Color(0.8, 0.78, 0.82), 2))
+		cell.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		cell.custom_minimum_size = Vector2(360, 0)
+		var ach_sb := style(Color(1.0, 0.93, 0.96) if got else Color(0.93, 0.92, 0.94), 14, C_GOLD if got else Color(0.8, 0.78, 0.82), 2)
+		ach_sb.content_margin_left = 14
+		ach_sb.content_margin_right = 14
+		ach_sb.content_margin_top = 10
+		ach_sb.content_margin_bottom = 10
+		cell.add_theme_stylebox_override("panel", ach_sb)
 		var cv := VBoxContainer.new()
-		cv.add_theme_constant_override("separation", 0)
+		cv.add_theme_constant_override("separation", 4)
 		cell.add_child(cv)
-		cv.add_child(lbl(("★ " if got else "☆ ") + String(a[1]), 22, C_PINK_DEEP if got else Color(0.55, 0.52, 0.58), true))
-		cv.add_child(lbl(String(a[2]), 18, C_INK_SOFT))
+		var ach_t := lbl(("★ " if got else "☆ ") + String(a[1]), 21, C_PINK_DEEP if got else Color(0.55, 0.52, 0.58), true)
+		ach_t.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		cv.add_child(ach_t)
+		var ach_d := lbl(String(a[2]), 18, C_INK_SOFT)
+		ach_d.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		cv.add_child(ach_d)
 		grid.add_child(cell)
 	# 最近战绩
 	var rv := _meta_panel(right, "最近对局")
@@ -1270,7 +1370,7 @@ func show_records() -> void:
 		var tt := Time.get_datetime_string_from_unix_time(int(r.get("t", 0)) + int(Time.get_time_zone_from_system().get("bias", 0)) * 60, true).substr(5, 11)
 		var line := "%s　%s　%s·%s　%s　输出 %d 击杀 %d%s" % [tt, String(mode_cn.get(String(r.get("mode", "")), "")), String(r.get("char", "")), String(r.get("identity", "")), String(res_cn.get(String(r.get("result", "")), "")), int(r.get("dmg", 0)), int(r.get("kills", 0)), "　★MVP" if bool(r.get("mvp", false)) else ""]
 		var rl := lbl(line, 20, C_INK if String(r.get("result", "")) == "win" else C_INK_SOFT)
-		rl.autowrap_mode = TextServer.AUTOWRAP_OFF
+		rl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		rv.add_child(rl)
 
 
@@ -2278,14 +2378,17 @@ func show_card_gallery() -> void:
 	]
 	for g in groups:
 		var head := PanelContainer.new()
-		head.add_theme_stylebox_override("panel", style(Color(1, 1, 1, 0.85), 22, C_GOLD, 2, true))
+		head.mouse_filter = Control.MOUSE_FILTER_PASS
+		head.add_theme_stylebox_override("panel", style(Color(1, 1, 1, 0.88), 22, C_GOLD, 2, true))
 		var hv := VBoxContainer.new()
-		hv.add_child(lbl("分类 · %s" % String(g[0]), 36, C_PINK_DEEP, true))
-		hv.add_child(lbl(String(g[2]), 24, C_INK_SOFT))
+		hv.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		hv.add_child(lbl("分类 · %s" % String(g[0]), 34, C_PINK_DEEP, true))
+		hv.add_child(lbl(String(g[2]), 22, C_INK_SOFT))
 		head.add_child(hv)
 		inner.add_child(head)
 		var grid := GridContainer.new()
-		grid.columns = 5
+		grid.columns = 4
+		grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		grid.add_theme_constant_override("h_separation", 20)
 		grid.add_theme_constant_override("v_separation", 20)
 		inner.add_child(grid)
@@ -2296,42 +2399,49 @@ func show_card_gallery() -> void:
 				continue
 			var cb := Button.new()
 			cb.focus_mode = Control.FOCUS_NONE
-			cb.custom_minimum_size = Vector2(340, 220)
+			cb.custom_minimum_size = Vector2(432, 224)
 			var fcol := Art.frame_color(String(nm))
-			cb.add_theme_stylebox_override("normal", style(Color(1, 1, 1, 0.94), 20, fcol, 3, true))
+			cb.add_theme_stylebox_override("normal", style(Color(1, 1, 1, 0.95), 20, fcol, 3, true))
 			cb.add_theme_stylebox_override("hover", style(Color(1, 0.97, 0.99, 1.0), 20, C_GOLD, 3, true))
 			var hb := HBoxContainer.new()
 			hb.mouse_filter = MOUSE_FILTER_IGNORE
 			hb.set_anchors_preset(Control.PRESET_FULL_RECT)
-			hb.offset_left = 12
-			hb.offset_right = -12
-			hb.offset_top = 10
-			hb.offset_bottom = -10
-			hb.add_theme_constant_override("separation", 12)
+			hb.offset_left = 14
+			hb.offset_right = -14
+			hb.offset_top = 12
+			hb.offset_bottom = -12
+			hb.add_theme_constant_override("separation", 14)
 			var tr := TextureRect.new()
 			tr.texture = Art.card_tex(String(nm))
 			tr.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 			tr.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
-			tr.custom_minimum_size = Vector2(124, 176)
+			tr.custom_minimum_size = Vector2(130, 186)
 			tr.mouse_filter = MOUSE_FILTER_IGNORE
 			hb.add_child(tr)
 			var tv := VBoxContainer.new()
 			tv.mouse_filter = MOUSE_FILTER_IGNORE
 			tv.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-			tv.add_theme_constant_override("separation", 4)
-			tv.add_child(lbl("%s（×%d）" % [String(nm), int(d.get("n", 1))], 26, C_INK, true))
+			tv.add_theme_constant_override("separation", 6)
+			var title_l := lbl("%s（×%d）" % [String(nm), int(d.get("n", 1))], 25, C_INK, true)
+			title_l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+			tv.add_child(title_l)
 			tv.add_child(lbl(String(d.get("kind", "")), 19, fcol, true))
 			var desc := String(d.get("effect", ""))
-			if desc.length() > 46:
-				desc = desc.substr(0, 46) + "…"
+			if desc.length() > 74:
+				desc = desc.substr(0, 74) + "…"
 			var dl := lbl(desc, 18, C_INK_SOFT)
-			dl.autowrap_mode = TextServer.AUTOWRAP_ARBITRARY
+			dl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+			dl.add_theme_constant_override("line_spacing", 2)
 			tv.add_child(dl)
 			hb.add_child(tv)
 			cb.add_child(hb)
 			var spec := IntroPop.card_spec({"name": String(nm), "suit": "", "point": 0})
 			cb.set_meta("intro", spec)
+			_wire_scroll_drag(cb, scroll)
 			cb.pressed.connect(func() -> void:
+				if float(cb.get_meta("drag_px", 0.0)) > 18.0:
+					cb.set_meta("drag_px", 0.0)
+					return
 				if IntroPop.inst != null and not IntroPop.inst.swallowing():
 					IntroPop.inst.show_spec(spec, cb.get_global_rect().get_center(), "sticky"))
 			grid.add_child(cb)

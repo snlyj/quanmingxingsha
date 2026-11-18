@@ -371,6 +371,7 @@ func _run_reg_test() -> void:
 	await _reg_v40()
 	await _reg_v41()
 	await _reg_v42()
+	await _reg_v43()
 	_reg_lines.append("REGTEST_DONE tests=%d fails=%d" % [_reg_n, _reg_fails])
 	_write("/tmp/ask_regtest.txt", _reg_lines)
 	print(_reg_lines[_reg_lines.size() - 1])
@@ -3588,5 +3589,102 @@ func _reg_v42() -> void:
 	await _close_battle(bs42)
 	Meta42.reset_for_test("/tmp/qmxs_v42_meta_test.json")
 	Meta42.path = old_p42
+	main_ref.show_home()
+	await _frames(2)
+
+
+func _reg_v43() -> void:
+	const BS43 = preload("res://scripts/battle.gd")
+
+	# V43-1: 水淹七军 UI 执行链路 + 宝物(木牛流马)通过 play_card 正常装备
+	var e43 = _clean_eng()
+	for i_c in e43.players.size():
+		var ch43: Dictionary = Characters.LIST[i_c % Characters.LIST.size()]
+		e43.players[i_c]["char"] = ch43
+		e43.players[i_c]["char_name"] = String(ch43["name"])
+	e43.ui.erase("played")
+	var sy := _give(e43, e43.players[0], "水淹七军")
+	var target_hp0 := int(e43.players[1]["hp"])
+	e43.players[1]["equip"] = {"weapon": {}, "armor": {}, "minus": {}, "plus": {}, "treasure": {}}
+	main_ref.clear_screen()
+	var bs43 = BS43.new()
+	bs43.fast = true
+	bs43.set_anchors_preset(Control.PRESET_FULL_RECT)
+	bs43.go_home = Callable(main_ref, "show_home")
+	main_ref.screen_root.add_child(bs43)
+	bs43.build_table()
+	bs43.eng = e43
+	bs43.players = e43.players
+	await bs43.execute_targeted_card(e43.players[0], sy, e43.players[1])
+	_ok(not (e43.players[0]["hand"] as Array).has(sy) and int(e43.players[1]["hp"]) == target_hp0 - 1, "V43-1a 水淹七军在 UI 点选执行后离手并造成 1 点雷伤")
+	var mn := _give(e43, e43.players[0], "木牛流马")
+	await e43.play_card(e43.players[0], mn, {})
+	_ok(String((e43.players[0]["equip"]["treasure"] as Dictionary).get("name", "")) == "木牛流马", "V43-1b 宝物类手牌木牛流马通过 play_card 正常装备")
+
+	# V43-2: 濒死时手牌「特饮」亮起可读 + 借力打力无目标提示 + 继往开来无目标不误亮
+	e43.players[0]["hand"].clear()
+	var dr43 := _give(e43, e43.players[0], "特饮")
+	bs43.respond_names = ["补给", "特饮"]
+	bs43.asking = true
+	bs43.ask_mode = "respond"
+	_ok(bs43._card_state_key(dr43) == "r1" and bs43._respond_card_ok(dr43), "V43-2a 濒死自救响应时特饮正确亮起并可点击选中")
+	bs43.asking = false
+	bs43.ask_mode = ""
+	bs43.respond_names = []
+	e43.players[0]["hand"].clear()
+	var jw43 := _give(e43, e43.players[0], "继往开来")
+	e43.players[1]["hand"] = []
+	for s_clr in [2, 3, 4]:
+		e43.players[s_clr]["alive"] = false
+	_ok(bs43.unusable_reason(e43.players[0], jw43) != "", "V43-2b 只剩自己持1张继往开来且对方无牌时正确阻止无效高亮")
+	var jl43 := _give(e43, e43.players[0], "借力打力")
+	e43.players[1]["equip"]["weapon"] = {"name": "护心扇", "range": 1}
+	e43.players[0]["dream_guard"] = true
+	_ok(bs43.unusable_reason(e43.players[0], jl43) != "", "V43-2c 武器持有者攻击范围内无有效目标时借力打力给出提示不空放")
+	e43.players[0]["dream_guard"] = false
+
+	# V43-3: 自由点将滑动防误触 + 出牌播报条 & 回合横幅可见性
+	bs43.turn_seat = 1
+	bs43.show_turn_banner(String(e43.players[1]["char_name"]))
+	_ok(bs43.turn_banner_panel != null and bs43.turn_banner.text.find("的回合") >= 0, "V43-3a 回合切换弹出带底座的高对比回合播报条")
+	bs43._eng_played({"name": "突击", "suit": "黑桃", "point": 7}, bs43.pname(e43.players[1]), bs43.pname(e43.players[0]))
+	_ok(bs43.play_callout_panel != null and bs43.play_callout_panel.visible and bs43.play_callout_label.text.find("突击") >= 0, "V43-3b AI 出牌后桌面播报条清晰展示谁对谁使用了什么牌")
+	bs43.draft_layer.visible = true
+	bs43._open_free_pick()
+	await _frames(2)
+	var fp_scroll: ScrollContainer = null
+	var fp_btn: Button = null
+	if bs43.free_pick_overlay != null:
+		for n in bs43.free_pick_overlay.find_children("*", "ScrollContainer", true, false):
+			fp_scroll = n as ScrollContainer
+		for b in bs43.free_pick_overlay.find_children("*", "Button", true, false):
+			if (b as Button).custom_minimum_size.y >= 300:
+				fp_btn = b as Button
+				break
+	if fp_btn != null and fp_scroll != null:
+		var drag_ev := InputEventScreenDrag.new()
+		drag_ev.relative = Vector2(0, -120)
+		fp_btn.gui_input.emit(drag_ev)
+		await _frames(1)
+		_ok(fp_scroll.scroll_vertical > 0 and float(fp_btn.get_meta("drag_px", 0.0)) > 18.0, "V43-3c 自由点将触控拖拽卡牌可顺畅上下滚动并拦截误点选")
+	await _close_battle(bs43)
+
+	# V43-4: 卡牌图鉴 55 种触控滑动响应
+	main_ref.show_card_gallery()
+	await _frames(2)
+	var cg_scroll: ScrollContainer = null
+	var cg_btn: Button = null
+	for n in main_ref.screen_root.find_children("*", "ScrollContainer", true, false):
+		cg_scroll = n as ScrollContainer
+	for b in main_ref.screen_root.find_children("*", "Button", true, false):
+		if (b as Button).custom_minimum_size.y >= 200:
+			cg_btn = b as Button
+			break
+	if cg_btn != null and cg_scroll != null:
+		var cg_drag := InputEventScreenDrag.new()
+		cg_drag.relative = Vector2(0, -150)
+		cg_btn.gui_input.emit(cg_drag)
+		await _frames(1)
+		_ok(cg_scroll.scroll_vertical > 0, "V43-4 卡牌图鉴按住卡面上下滑动顺畅滚动")
 	main_ref.show_home()
 	await _frames(2)

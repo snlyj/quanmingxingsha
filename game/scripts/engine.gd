@@ -833,7 +833,7 @@ func damage(src: Dictionary, tgt: Dictionary, num: int, cause: String, nature: S
 		log_msg("%s 的「羁绊锁链」因属性伤害而解开。" % pname(tgt))
 		fx("chain", {"seat": int(tgt["seat"]), "on": false})
 		chain_spread = not spread
-	await pace(0.55)
+	await pace(0.65)
 	ctx["num"] = num
 	# 烂银铠甲：受到「突击」造成的伤害时弃置自身
 	if cause.begins_with("突击"):
@@ -934,9 +934,11 @@ func respond_with(p: Dictionary, card_name: String, reason: String, responded_ca
 	if not converted and is_ai(p) and difficulty == 0 and card_name == "闪避" and randf() < 0.15:
 		return false
 	if is_ai(p):
-		await think(0.7, 1.2)
+		await think(0.85, 1.35)
 	if ui.has("played"):
-		(ui["played"] as Callable).call(c, pname(p))
+		(ui["played"] as Callable).call(c, pname(p), reason)
+		if is_ai(p):
+			await pace(0.55)
 	discard_from_hand(p, c)
 	if converted:
 		if convert_src == "星帷":
@@ -1116,7 +1118,7 @@ func nullify_window(trick: String, user: Dictionary, victim: Dictionary, trick_c
 		if actor.is_empty():
 			break
 		if is_ai(actor):
-			await think(0.6, 1.0)
+			await think(0.8, 1.2)
 		var c := actor_card
 		if actor_xw:
 			actor["xingwei_turn_used"] = true
@@ -1141,7 +1143,7 @@ func nullify_window(trick: String, user: Dictionary, victim: Dictionary, trick_c
 				var nv_kp := add_mark(actor, "影羽", 1, 4)
 				log_msg("🪶「敛羽」：%s 回合外打出看破，获得 1 枚「影羽」（%d/4）。" % [pname(actor), nv_kp])
 		fx("nullify", {"seat": int(actor["seat"]), "negated": negated})
-		await pace(0.5)
+		await pace(0.65)
 	return negated
 
 
@@ -1420,7 +1422,7 @@ func use_attack(src: Dictionary, tgt: Dictionary, card: Dictionary, counts := tr
 		discard_from_hand(src, card)
 	if ui.has("played"):
 		(ui["played"] as Callable).call(card, pname(src), pname(tgt))
-		await pace(0.3)
+		await pace(0.75 if is_ai(src) else 0.35)
 	if counts:
 		src["attack_count"] = int(src.get("attack_count", 0)) + 1
 		src["used_attack"] = int(src["attack_count"]) >= attack_limit(src)
@@ -1798,14 +1800,26 @@ func handle_dying(dying: Dictionary, src: Dictionary) -> void:
 		if ui.has("is_human") and bool((ui["is_human"] as Callable).call(p)):
 			if ui.has("ask_save"):
 				do_save = bool(await (ui["ask_save"] as Callable).call(p, dying))
+			if do_save and ui.has("resp_pref"):
+				var pref: Dictionary = (ui["resp_pref"] as Callable).call(p)
+				if not pref.is_empty():
+					var pn := String(pref.get("name", ""))
+					if pn == "补给" or (p == dying and pn == "特饮"):
+						for hc in p["hand"]:
+							if is_same(hc, pref):
+								c = hc
+								break
 		else:
 			do_save = ai_should_save(p, dying)
 		if not do_save:
 			oi += 1
 			continue
+		if ui.has("played"):
+			(ui["played"] as Callable).call(c, pname(p), "自救" if dying == p else pname(dying))
 		discard_from_hand(p, c)
 		log_msg("%s 对 %s 使用 %s 救援。" % [pname(p), pname(dying), card_text(c)])
 		heal(dying, 1, p)
+		await pace(0.55)
 	if int(dying["hp"]) <= 0 and dying["alive"]:
 		await die(dying, src)
 	elif dying["alive"]:
@@ -2013,8 +2027,6 @@ func check_over() -> void:
 func run_turn(p: Dictionary) -> void:
 	if not p["alive"] or game_over:
 		return
-	if is_ai(p):
-		await think(0.6, 1.0)
 	for q in players:
 		q["xingwei_turn_used"] = false
 		q["skills_sealed"] = false
@@ -2022,6 +2034,8 @@ func run_turn(p: Dictionary) -> void:
 	turn_player = p
 	phase_text = "准备阶段"
 	changed()
+	if is_ai(p):
+		await think(1.0, 1.35)
 	p["dream_guard"] = false
 	p["turn_used"] = {}
 	p["drink_used"] = false
@@ -2147,7 +2161,7 @@ func discard_phase(p: Dictionary) -> void:
 		if c.is_empty():
 			break
 		if is_ai(p):
-			await think(0.45, 0.75)
+			await think(0.6, 0.9)
 		discard_from_hand(p, c)
 		log_msg("%s 弃置 %s。" % [pname(p), card_text(c)])
 
@@ -2420,12 +2434,19 @@ func true_is_enemy(a: Dictionary, b: Dictionary) -> bool:
 	return ca != cb
 
 
+func has_attack_target_in_range(a: Dictionary) -> bool:
+	for t in players:
+		if t != a and t["alive"] and in_attack_range(a, t) and not bool(t.get("dream_guard", false)):
+			return true
+	return false
+
+
 func ai_pick_weapon_holder(p: Dictionary) -> Dictionary:
 	var fallback: Dictionary = {}
 	for t in players:
 		if t == p or not t["alive"]:
 			continue
-		if (t["equip"]["weapon"] as Dictionary).is_empty():
+		if (t["equip"]["weapon"] as Dictionary).is_empty() or not has_attack_target_in_range(t):
 			continue
 		if ai_is_enemy(p, t):
 			return t
@@ -2493,7 +2514,7 @@ func ai_play_phase(p: Dictionary) -> void:
 	var guard := 0
 	while p["alive"] and not game_over and guard < 20:
 		guard += 1
-		await think(1.3, 2.1)
+		await think(1.65, 2.35)
 		if await ai_try_action(p):
 			continue
 		break
@@ -2508,6 +2529,8 @@ func ai_try_action(p: Dictionary) -> bool:
 			var cur: Dictionary = p["equip"][slot]
 			if cur.is_empty() or (slot == "weapon" and CardDefs.weapon_range_of(String(c["name"])) > CardDefs.weapon_range_of(String(cur["name"]))):
 				play_equip(p, c)
+				if is_ai(p):
+					await pace(0.75)
 				return true
 	# 木牛流马：存粮与转运
 	var trq: Dictionary = p["equip"]["treasure"]
@@ -3485,9 +3508,11 @@ func jiwang_use_as_trick(jt: Dictionary) -> void:
 		avail.append({"name": "单挑", "mode": "other"})
 		avail.append({"name": "羁绊锁链", "mode": "other"})
 	for t in others:
-		if not (t["equip"]["weapon"] as Dictionary).is_empty():
+		if not (t["equip"]["weapon"] as Dictionary).is_empty() and has_attack_target_in_range(t):
 			avail.append({"name": "借力打力", "mode": "other"})
 			break
+	if not others.is_empty():
+		avail.append({"name": "水淹七军", "mode": "other"})
 	for t in others:
 		if eff_dist(jt, t) <= 1 and not pick_card_from(t).is_empty():
 			avail.append({"name": "悄悄借走", "mode": "other"})
@@ -3527,7 +3552,7 @@ func jiwang_use_as_trick(jt: Dictionary) -> void:
 					if not (t["hand"] as Array).is_empty():
 						cands.append(t)
 				"借力打力":
-					if not (t["equip"]["weapon"] as Dictionary).is_empty():
+					if not (t["equip"]["weapon"] as Dictionary).is_empty() and has_attack_target_in_range(t):
 						cands.append(t)
 				"悄悄借走":
 					if eff_dist(jt, t) <= 1 and not pick_card_from(t).is_empty():
@@ -3574,10 +3599,10 @@ func play_card(p: Dictionary, card: Dictionary, tgt: Dictionary, forced_entry: D
 	var kind := CardDefs.kind_of(nm)
 	if kind == "锦囊牌" or kind == "延时锦囊":
 		fx("trick", {"seat": int(p["seat"]), "name": nm})
-	var is_equip := kind == "武器" or kind == "防具" or kind == "饰品"
+	var is_equip := kind == "武器" or kind == "防具" or kind == "饰品" or kind == "宝物"
 	if ui.has("played") and nm != "突击" and not is_equip:
 		(ui["played"] as Callable).call(card, pname(p), pname(tgt) if not tgt.is_empty() and tgt != p else "")
-		await pace(0.3)
+		await pace(0.75 if is_ai(p) else 0.35)
 	if not tgt.is_empty() and tgt != p and nm != "突击":
 		fx("target", {"src_seat": int(p["seat"]), "tgt_seat": int(tgt["seat"])})
 	if is_equip:
@@ -3921,10 +3946,10 @@ func play_card(p: Dictionary, card: Dictionary, tgt: Dictionary, forced_entry: D
 				var dc := {}
 				if is_ai(tgt):
 					dc = nonbasic[0]
-				elif ui.has("choose_discard"):
-					dc = await (ui["choose_discard"] as Callable).call(tgt)
-				if dc.is_empty():
-					dc = ai_pick_discard(tgt)
+				else:
+					dc = await pick_card(tgt, {"nonbasic_only": true, "prompt": "「增兵减灶」：选择弃置 1 张非基本牌"})
+				if dc.is_empty() or CardDefs.kind_of(String(dc["name"])) == "基本牌":
+					dc = nonbasic[0]
 				if not dc.is_empty():
 					discard_from_hand(tgt, dc)
 					log_msg("%s 弃置了 %s。" % [pname(tgt), card_text(dc)])
@@ -4103,6 +4128,8 @@ func pick_card(p: Dictionary, opts: Dictionary) -> Dictionary:
 		if bool(opts.get("red_only", false)) and not is_red(c):
 			continue
 		if bool(opts.get("black_only", false)) and not is_black(c):
+			continue
+		if bool(opts.get("nonbasic_only", false)) and CardDefs.kind_of(String(c["name"])) == "基本牌":
 			continue
 		cands.append(c)
 	if cands.is_empty():
