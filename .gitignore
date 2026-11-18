@@ -2,3 +2,8 @@ game/.godot/
 game/builds/
 *.apk
 *.idsig
+
+# Android signing material
+*.keystore
+*.jks
+*.p12

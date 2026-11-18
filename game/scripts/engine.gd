@@ -72,19 +72,21 @@ func load_skills() -> void:
 	_skill_owner.register_all(self)
 
 
-const LOCKED_SKILLS := ["mowei", "xingshi", "xingying_lord", "jianxin", "podi", "miaosuan", "shengdun", "lianyu"]
-
-
 func is_skill_sealed(p: Dictionary, sid: String) -> bool:
-	return bool(p.get("skills_sealed", false)) and not LOCKED_SKILLS.has(sid)
+	var def: Dictionary = skill_lib.get(sid, {})
+	return bool(p.get("skills_sealed", false)) and not bool(def.get("locked", false))
+
+
+func owns_skill(p: Dictionary, sid: String) -> bool:
+	return (p.get("skills", []) as Array).has(sid)
 
 
 func has_skill(p: Dictionary, sid: String) -> bool:
-	return (p["skills"] as Array).has(sid) and not is_skill_sealed(p, sid)
+	return owns_skill(p, sid) and not is_skill_sealed(p, sid)
 
 
 func add_skill(p: Dictionary, sid: String) -> void:
-	if not has_skill(p, sid):
+	if not owns_skill(p, sid):
 		(p["skills"] as Array).append(sid)
 
 
@@ -800,7 +802,7 @@ func damage(src: Dictionary, tgt: Dictionary, num: int, cause: String, nature: S
 			if prevent:
 				tgt["equip"]["treasure"] = {}
 				log_msg("「地契」：%s 弃置地契，防止了 %d 点伤害！（地契已销毁）" % [pname(tgt), num])
-				fx("dodge", {"seat": int(tgt["seat"])})
+				fx("prevented", {"seat": int(tgt["seat"]), "num": num, "name": "地契"})
 				changed()
 				return
 	var sh_now := int(tgt.get("shield", 0))
@@ -821,7 +823,7 @@ func damage(src: Dictionary, tgt: Dictionary, num: int, cause: String, nature: S
 		src["stat_damage"] = int(src.get("stat_damage", 0)) + lost
 	observe_damage(src, tgt, lost)
 	log_msg("%s 受到 %s 的 %d 点伤害（%s），体力剩余 %d。" % [pname(tgt), pname(src), num, cause, maxi(int(tgt["hp"]), 0)])
-	fx("damage", {"seat": int(tgt["seat"]), "num": num, "src_seat": int(src["seat"]) if not src.is_empty() else -1, "nature": nature})
+	fx("damage", {"seat": int(tgt["seat"]), "num": num, "src_seat": int(src["seat"]) if not src.is_empty() else -1, "nature": nature, "attack_hit": cause.begins_with("突击") and not spread})
 	if num >= 2 and not spread:
 		fx("heavy_hit", {"seat": int(src["seat"]) if not src.is_empty() else int(tgt["seat"]), "tgt_seat": int(tgt["seat"]), "num": num})
 	changed()
@@ -1054,7 +1056,7 @@ func jinchan_negate(victim: Dictionary, user: Dictionary, card_name: String) -> 
 		(ui["played"] as Callable).call(jc, pname(victim))
 	draw_cards(victim, 2)
 	log_msg("%s 打出「金蝉脱壳」：%s 的「%s」对其无效，%s 摸 2 张牌！" % [pname(victim), pname(user), card_name, pname(victim)])
-	fx("nullify", {"seat": int(victim["seat"]), "negated": true})
+	fx("nullify", {"seat": int(victim["seat"]), "negated": true, "name": "金蝉脱壳"})
 	changed()
 	return true
 
@@ -1256,7 +1258,7 @@ func yb_pick_extra_target(src: Dictionary, first_tgt: Dictionary, card: Dictiona
 			opts.append({"label": pname(t), "value": t})
 		opts.append({"label": "不追加目标", "value": {}})
 		var v: Variant = await (ui["pick_option"] as Callable).call(src, opts, "「应变·目标+」：可为此次「%s」增加一个目标" % String(use_card["name"]))
-		if v is Dictionary and not (v as Dictionary).is_empty():
+		if v is Dictionary and cands.has(v):
 			return v
 	return {}
 
@@ -1415,6 +1417,8 @@ func yb_aoe_remove(p: Dictionary, card: Dictionary, targets: Array, is_heal: boo
 
 # ================= 基本牌使用 =================
 func use_attack(src: Dictionary, tgt: Dictionary, card: Dictionary, counts := true, already_discarded := false) -> void:
+	if game_over or not src["alive"] or not bool(tgt.get("alive", false)):
+		return
 	if bool(tgt.get("dream_guard", false)):
 		log_msg("%s 处于「星眠」保护中，不能成为「突击」的目标。" % pname(tgt))
 		return
@@ -1423,6 +1427,8 @@ func use_attack(src: Dictionary, tgt: Dictionary, card: Dictionary, counts := tr
 	if ui.has("played"):
 		(ui["played"] as Callable).call(card, pname(src), pname(tgt))
 		await pace(0.75 if is_ai(src) else 0.35)
+	if game_over or not src["alive"]:
+		return
 	if counts:
 		src["attack_count"] = int(src.get("attack_count", 0)) + 1
 		src["used_attack"] = int(src["attack_count"]) >= attack_limit(src)
@@ -1431,15 +1437,6 @@ func use_attack(src: Dictionary, tgt: Dictionary, card: Dictionary, counts := tr
 	src["drunk"] = false
 	var nature := String(card.get("nature", ""))
 	log_msg("%s 对 %s 使用「%s突击」。" % [pname(src), pname(tgt), (nature + "·") if nature != "" else ""])
-	fx("attack", {"src_seat": int(src["seat"]), "tgt_seat": int(tgt["seat"]), "nature": nature})
-	var ctx := {"name": "useCard", "player": src, "source": src, "target": tgt, "card": card, "cancelled": false, "dmg_bonus": 0}
-	await fire("useCardBegin", ctx)
-	dmg += int(ctx.get("dmg_bonus", 0))
-	# V0.24 修复：「猫步」等只令此「突击」对该目标无效（对照 noname 的 excluded：仅排除该目标），
-	# 旧版直接 return，导致「应变·目标+」「星月画戟」追加的其他目标也一并作废
-	var primary_cancelled := bool(ctx.get("cancelled", false))
-	if game_over or not src["alive"]:
-		return
 	var weap: Dictionary = src["equip"]["weapon"]
 	var wname := String(weap["name"]) if not weap.is_empty() else ""
 	# 雷霆法杖（朱雀羽扇）：可将普通「突击」变为火属性
@@ -1454,34 +1451,13 @@ func use_attack(src: Dictionary, tgt: Dictionary, card: Dictionary, counts := tr
 		if convert:
 			nature = "火"
 			log_msg("「雷霆法杖」：这张「突击」燃起了火焰！")
-	# 金蝉脱壳：目标手牌全为金蝉时，可令此「突击」无效
-	if not primary_cancelled and await jinchan_negate(tgt, src, "突击"):
+	if game_over:
 		return
-	# 钢纹长槊：指定目标后，可令目标弃置你一张手牌，随后你弃置其一张手牌
-	if not primary_cancelled and wname == "钢纹长槊" and not (src["hand"] as Array).is_empty() and not (tgt["hand"] as Array).is_empty():
-		var trig := false
-		if is_ai(src):
-			trig = ai_is_enemy(src, tgt) and (src["hand"] as Array).size() >= 2
-		elif ui.has("pick_option"):
-			var tv: Variant = await (ui["pick_option"] as Callable).call(src, [{"label": "发动钢纹长槊", "value": true}, {"label": "不发动", "value": false}], "「钢纹长槊」：是否令 %s 弃置你一张手牌，随后你弃置其一张手牌？" % pname(tgt))
-			trig = bool(tv)
-		if trig:
-			var mine: Array = src["hand"]
-			var taken1: Dictionary = mine[randi() % mine.size()]
-			discard_from_hand(src, taken1)
-			log_msg("「钢纹长槊」：%s 弃置了 %s 的 %s。" % [pname(tgt), pname(src), card_text(taken1)])
-			if tgt["alive"] and not (tgt["hand"] as Array).is_empty():
-				# V0.24 修复：钢纹长槊只弃对方「手牌」，旧版可能拆到装备/判定区
-				var th: Array = tgt["hand"]
-				var taken2: Dictionary = th[randi() % th.size()]
-				if not taken2.is_empty():
-					discard_from_hand(tgt, taken2)
-					log_msg("「钢纹长槊」：%s 弃置了 %s 的 %s。" % [pname(src), pname(tgt), card_text(taken2)])
-			changed()
+	fx("attack", {"src_seat": int(src["seat"]), "tgt_seat": int(tgt["seat"]), "nature": nature})
 	# 应变：声明使用后（牌已离手）满足条件词则触发效果词（突击实装 伤害+/强命/目标+，条件含简单条件与助战）
 	var yb := await eval_yingbian_full(src, card, tgt)
-	var yb_hit := bool(card.get("force_hit", false)) or bool(ctx.get("force_hit", false))
-	var yb_extra: Dictionary = {}
+	var yb_hit := false
+	var targets: Array = [tgt]
 	if bool(yb["triggered"]):
 		var cond_s := "·".join(PackedStringArray(yb["conds"]))
 		var eff_s := "·".join(PackedStringArray(yb["effs"]))
@@ -1494,21 +1470,15 @@ func use_attack(src: Dictionary, tgt: Dictionary, card: Dictionary, counts := tr
 			yb_hit = true
 			log_msg("「应变·强命」：此次「突击」不可被响应。")
 		if (yb["effs"] as Array).has("目标+"):
-			yb_extra = await yb_pick_extra_target(src, tgt, card)
-	if not primary_cancelled:
-		await resolve_attack_hit(src, tgt, card, dmg, wname, nature, yb_hit)
-	# 应变「目标+」追加的目标紧随其后结算（照 yingbian_changeTarget：目标在结算前加入）
-	if not yb_extra.is_empty() and bool(yb_extra["alive"]) and src["alive"] and not game_over:
-		log_msg("「应变·目标+」：%s 也成为此次「突击」的目标。" % pname(yb_extra))
-		fx("attack", {"src_seat": int(src["seat"]), "tgt_seat": int(yb_extra["seat"]), "nature": nature})
-		var ex_yb_ctx := {}
-		if not await attack_target_excluded(src, yb_extra, card, ex_yb_ctx):
-			await resolve_attack_hit(src, yb_extra, card, dmg, wname, nature, yb_hit or bool(ex_yb_ctx.get("force_hit", false)))
+			var yb_extra := await yb_pick_extra_target(src, tgt, card)
+			if not yb_extra.is_empty():
+				targets.append(yb_extra)
+				log_msg("「应变·目标+」：%s 也成为此次「突击」的目标。" % pname(yb_extra))
 	# 星月画戟：突击是最后一张手牌时，可再追加至多两名目标
 	if wname == "星月画戟" and was_last and src["alive"] and not game_over:
 		var extras: Array = []
 		for t in players:
-			if t != src and t != tgt and t["alive"] and in_attack_range(src, t) and not bool(t.get("dream_guard", false)):
+			if t != src and not targets.has(t) and t["alive"] and in_attack_range(src, t) and not bool(t.get("dream_guard", false)):
 				extras.append(t)
 		var chosen: Array = []
 		if not extras.is_empty():
@@ -1530,26 +1500,67 @@ func use_attack(src: Dictionary, tgt: Dictionary, card: Dictionary, counts := tr
 						opts.append({"label": pname(t), "value": t})
 					opts.append({"label": "不再追加", "value": {}})
 					var v: Variant = await (ui["pick_option"] as Callable).call(src, opts, "「星月画戟」：突击是你最后一张手牌，可再指定一名目标")
-					if not (v is Dictionary) or (v as Dictionary).is_empty():
+					if not (v is Dictionary) or not pool2.has(v):
 						break
 					chosen.append(v)
 					pool2.erase(v)
 		for t in chosen:
-			if not t["alive"] or game_over:
-				continue
+			targets.append(t)
 			log_msg("「星月画戟」追加目标：%s。" % pname(t))
-			fx("attack", {"src_seat": int(src["seat"]), "tgt_seat": int(t["seat"]), "nature": nature})
-			var ex_ctx := {}
-			if not await attack_target_excluded(src, t, card, ex_ctx):
-				await resolve_attack_hit(src, t, card, dmg, wname, nature, yb_hit or bool(ex_ctx.get("force_hit", false)))
+
+	# 定下所有目标后，再处理指定目标时的技能。剑心加伤作用于整张牌，霜封的强命只作用于当前目标。
+	var target_contexts: Array = []
+	for t in targets:
+		if game_over or not src["alive"]:
+			return
+		if not t["alive"] or bool(t.get("dream_guard", false)):
+			continue
+		var ctx := {"name": "useCard", "player": src, "source": src, "target": t, "card": card, "cancelled": false, "dmg_bonus": 0}
+		await fire("useCardBegin", ctx)
+		dmg += int(ctx.get("dmg_bonus", 0))
+		if not bool(ctx.get("cancelled", false)):
+			target_contexts.append(ctx)
+
+	for ctx in target_contexts:
+		if game_over or not src["alive"]:
+			return
+		var t: Dictionary = ctx["target"]
+		if not t["alive"] or bool(t.get("dream_guard", false)):
+			continue
+		if t != tgt:
+			fx("attack", {"src_seat": int(src["seat"]), "tgt_seat": int(t["seat"]), "nature": nature, "extra_target": true})
+		# 金蝉脱壳只抵消对自己的效果。应变强命禁止响应，霜封和神射仅禁止闪避。
+		if not yb_hit and await jinchan_negate(t, src, "突击"):
+			continue
+		if wname == "钢纹长槊" and not game_over:
+			await resolve_steel_spear(src, t)
+		if game_over or not src["alive"] or not t["alive"]:
+			continue
+		var force_hit := yb_hit or bool(card.get("force_hit", false)) or bool(ctx.get("force_hit", false))
+		await resolve_attack_hit(src, t, card, dmg, wname, nature, force_hit)
 
 
-# 追加目标同样经过「成为目标时」的技能（如猫步），被排除时只跳过该目标
-func attack_target_excluded(src: Dictionary, t: Dictionary, card: Dictionary, out_ctx: Dictionary = {}) -> bool:
-	var c2 := {"name": "useCard", "player": src, "source": src, "target": t, "card": card, "cancelled": false}
-	await fire("useCardBegin", c2)
-	out_ctx["force_hit"] = bool(c2.get("force_hit", false))
-	return bool(c2.get("cancelled", false)) or game_over
+func resolve_steel_spear(src: Dictionary, tgt: Dictionary) -> void:
+	var mine: Array = src["hand"]
+	var theirs: Array = tgt["hand"]
+	if mine.is_empty() or theirs.is_empty():
+		return
+	var trigger := false
+	if is_ai(src):
+		trigger = ai_is_enemy(src, tgt) and mine.size() >= 2
+	elif ui.has("pick_option"):
+		var value: Variant = await (ui["pick_option"] as Callable).call(src, [{"label": "发动钢纹长槊", "value": true}, {"label": "不发动", "value": false}], "「钢纹长槊」：是否令 %s 弃置你一张手牌，随后你弃置其一张手牌？" % pname(tgt))
+		trigger = bool(value)
+	if not trigger or game_over or mine.is_empty():
+		return
+	var own_card: Dictionary = mine[randi() % mine.size()]
+	discard_from_hand(src, own_card)
+	log_msg("「钢纹长槊」：%s 弃置了 %s 的 %s。" % [pname(tgt), pname(src), card_text(own_card)])
+	if tgt["alive"] and not theirs.is_empty():
+		var target_card: Dictionary = theirs[randi() % theirs.size()]
+		discard_from_hand(tgt, target_card)
+		log_msg("「钢纹长槊」：%s 弃置了 %s 的 %s。" % [pname(src), pname(tgt), card_text(target_card)])
+	changed()
 
 
 func resolve_attack_hit(src: Dictionary, tgt: Dictionary, card: Dictionary, dmg: int, wname: String, nature: String = "", unrespondable := false) -> void:
@@ -1576,7 +1587,7 @@ func resolve_attack_hit(src: Dictionary, tgt: Dictionary, card: Dictionary, dmg:
 	var d := dmg
 	var dodged := false
 	if not unrespondable:
-		dodged = await respond_with(tgt, "闪避", "抵挡突击", card)
+		dodged = await respond_with(tgt, "闪避", "%s 对你使用了「突击」" % pname(src), card)
 	if dodged:
 		fx("dodge", {"seat": int(tgt["seat"])})
 		await fire("attackDodged", ctx)
@@ -1761,10 +1772,14 @@ func recast(p: Dictionary, card: Dictionary) -> bool:
 
 
 func use_supply(p: Dictionary, card: Dictionary, tgt: Dictionary) -> void:
+	var saving := int(tgt["hp"]) <= 0
 	discard_from_hand(p, card)
-	log_msg("%s 对 %s 使用「补给」。" % [pname(p), pname(tgt)])
+	if saving:
+		log_msg("%s 对 %s 使用 %s 救援。" % [pname(p), pname(tgt), card_text(card)])
+	else:
+		log_msg("%s 对 %s 使用「补给」。" % [pname(p), pname(tgt)])
 	heal(tgt, 1, p)
-	if p != tgt and has_skill(tgt, "xingying_lord") and p["alive"]:
+	if saving and mode == "identity" and String(tgt["identity"]) == "主公" and String(p["identity"]) == "忠臣" and p["alive"] and has_skill(tgt, "xingying_lord"):
 		draw_cards(p, 1)
 		log_msg("👑「星樱号令」：%s 救援主公 %s，摸 1 张牌。" % [pname(p), pname(tgt)])
 
@@ -1816,9 +1831,12 @@ func handle_dying(dying: Dictionary, src: Dictionary) -> void:
 			continue
 		if ui.has("played"):
 			(ui["played"] as Callable).call(c, pname(p), "自救" if dying == p else pname(dying))
-		discard_from_hand(p, c)
-		log_msg("%s 对 %s 使用 %s 救援。" % [pname(p), pname(dying), card_text(c)])
-		heal(dying, 1, p)
+		if String(c["name"]) == "补给":
+			use_supply(p, c, dying)
+		else:
+			discard_from_hand(p, c)
+			log_msg("%s 对 %s 使用 %s 救援。" % [pname(p), pname(dying), card_text(c)])
+			heal(dying, 1, p)
 		await pace(0.55)
 	if int(dying["hp"]) <= 0 and dying["alive"]:
 		await die(dying, src)
@@ -1834,10 +1852,10 @@ func ai_should_save(rescuer: Dictionary, dying: Dictionary) -> bool:
 	if mode == "doudizhu" or mode == "puzzle":
 		return ai_is_ally(rescuer, dying)
 	var di := String(dying["identity"])
-	if di == "主公":
+	if mode == "identity" and di == "主公":
 		if String(rescuer["identity"]) == "内奸":
 			return not (revealed_fan_dead >= fan_total and alive_players().size() <= 3)
-		return true
+		return String(rescuer["identity"]) == "忠臣"
 	if difficulty == 0 and randf() < 0.25:
 		return false
 	return ai_is_ally(rescuer, dying)
@@ -2547,24 +2565,13 @@ func ai_try_action(p: Dictionary) -> bool:
 				muniu_store(p, junk)
 				return true
 	# 主动技能（注册表 active 条目，每回合一次）
-	for sid in (p["skills"] as Array).duplicate():
-		var sdef: Dictionary = skill_lib.get(sid, {})
-		if sdef.is_empty() or not sdef.has("active"):
-			continue
-		if bool((p["turn_used"] as Dictionary).get(sid, false)):
-			continue
-		if bool(sdef.get("limited", false)) and bool(p.get("limited_used_" + String(sid), false)):
-			continue
-		var act: Dictionary = sdef["active"]
-		if act.has("filter") and not bool((act["filter"] as Callable).call(self, p)):
-			continue
+	for opt in active_options(p):
+		var sid: String = opt["sid"]
+		var act: Dictionary = skill_lib[sid]["active"]
 		if act.has("ai_use") and not bool((act["ai_use"] as Callable).call(self, p)):
 			continue
-		p["turn_used"][sid] = true
-		if bool(sdef.get("limited", false)):
-			p["limited_used_" + String(sid)] = true
-		await (act["content"] as Callable).call(self, p)
-		return true
+		if await use_active_skill(p, sid, {}, false):
+			return true
 	# 洞烛先机：对自己使用（卜算＋摸 2，恒有益）
 	var dz := find_in_hand(p, "洞烛先机")
 	if not dz.is_empty():
@@ -2950,12 +2957,13 @@ func run_game() -> void:
 	var safety := 0
 	while not game_over and safety < 400:
 		safety += 1
-		var p: Dictionary = order[idx % order.size()]
-		idx += 1
-		if bool(p["alive"]) and int(p["seat"]) == int(lord["seat"]):
+		# 即使起始座位的角色已阵亡，遍历完所有座位也会开启新一轮。
+		if idx == 0:
 			round_no += 1
 			for q in players:
 				q["round_marks"] = {}
+		var p: Dictionary = order[idx]
+		idx = (idx + 1) % order.size()
 		if turn_hook.is_valid():
 			turn_hook.call(self, p)
 		await run_turn(p)
@@ -4176,35 +4184,112 @@ func round_marked(p: Dictionary, key: String) -> bool:
 
 
 
+func active_selection(p: Dictionary, sid: String) -> Dictionary:
+	var def: Dictionary = skill_lib.get(sid, {})
+	var active: Dictionary = def.get("active", {})
+	var selection: Variant = active.get("selection", {})
+	if selection is Callable:
+		selection = selection.call(self, p)
+	var targets: Callable = selection.get("targets", Callable())
+	return {
+		"card": String(selection.get("card", "none")),
+		"card_role": String(selection.get("card_role", "作为代价")),
+		"targets": targets.call(self, p) if targets.is_valid() else null,
+	}
+
+
+func active_card_matches(card: Dictionary, kind: String) -> bool:
+	if card.is_empty():
+		return false
+	match kind:
+		"any":
+			return true
+		"red":
+			return is_red(card)
+		"black":
+			return is_black(card)
+	return false
+
+
+func pick_active_card(p: Dictionary, sid: String, choice: Dictionary, prompt: String, ai: Callable) -> Dictionary:
+	if choice.has("card"):
+		return choice["card"]
+	var kind: String = active_selection(p, sid)["card"]
+	if kind == "none":
+		return {}
+	return await pick_card(p, {"prompt": prompt, "ai": ai, "red_only": kind == "red", "black_only": kind == "black"})
+
+
+func pick_active_target(p: Dictionary, sid: String, choice: Dictionary, prompt: String, ai: Callable) -> Dictionary:
+	var candidates: Variant = active_selection(p, sid)["targets"]
+	if not candidates is Array:
+		return {}
+	if choice.has("target"):
+		for target in candidates:
+			if int(target["seat"]) == int(choice["target"]):
+				return target
+		return {}
+	return await pick_target(p, candidates, prompt, ai)
+
+
+func can_use_active(p: Dictionary, sid: String) -> bool:
+	if game_over or not bool(p.get("alive", false)) or not has_skill(p, sid):
+		return false
+	if not is_same(turn_player, p) or phase_text != "出牌阶段" or bool(p.get("skip_use", false)):
+		return false
+	var def: Dictionary = skill_lib.get(sid, {})
+	if not def.has("active") or bool((p.get("turn_used", {}) as Dictionary).get(sid, false)):
+		return false
+	if bool(def.get("limited", false)) and bool(p.get("limited_used_" + sid, false)):
+		return false
+	var act: Dictionary = def["active"]
+	if act.has("filter") and not bool((act["filter"] as Callable).call(self, p)):
+		return false
+	var spec := active_selection(p, sid)
+	if spec["targets"] != null and (spec["targets"] as Array).is_empty():
+		return false
+	var kind: String = spec["card"]
+	return kind == "none" or (p["hand"] as Array).any(func(card: Dictionary) -> bool: return active_card_matches(card, kind))
+
+
+func active_choice_is_valid(p: Dictionary, sid: String, card: Dictionary, seat: int) -> bool:
+	if not can_use_active(p, sid):
+		return false
+	var spec := active_selection(p, sid)
+	var kind: String = spec["card"]
+	if kind == "none":
+		if not card.is_empty():
+			return false
+	elif not (p["hand"] as Array).any(func(c: Dictionary) -> bool: return is_same(c, card)) or not active_card_matches(card, kind):
+		return false
+	var targets: Variant = spec["targets"]
+	return seat == -1 if targets == null else (targets as Array).any(func(t: Dictionary) -> bool: return int(t["seat"]) == seat)
+
+
 func active_options(p: Dictionary) -> Array:
 	var out: Array = []
-	if not p["alive"]:
-		return out
-	for sid in (p["skills"] as Array):
-		var def: Dictionary = skill_lib.get(sid, {})
-		if def.is_empty() or not def.has("active"):
-			continue
-		if bool((p["turn_used"] as Dictionary).get(sid, false)):
-			continue
-		if bool(def.get("limited", false)) and bool(p.get("limited_used_" + String(sid), false)):
-			continue
-		var act: Dictionary = def["active"]
-		if act.has("filter") and not bool((act["filter"] as Callable).call(self, p)):
-			continue
-		out.append({"sid": sid, "name": String(def.get("name", sid))})
+	for sid in (p.get("skills", []) as Array):
+		if can_use_active(p, String(sid)):
+			out.append({"sid": sid, "name": String(skill_lib[sid].get("name", sid))})
 	return out
 
 
-func use_active_skill(p: Dictionary, sid: String) -> void:
-	var def: Dictionary = skill_lib.get(sid, {})
-	if def.is_empty() or not def.has("active"):
-		return
+func use_active_skill(p: Dictionary, sid: String, choice: Dictionary = {}, announce: bool = true) -> bool:
+	if choice.is_empty():
+		if not can_use_active(p, sid):
+			return false
+	elif not active_choice_is_valid(p, sid, choice.get("card", {}), int(choice.get("target", -1))):
+		return false
+	var def: Dictionary = skill_lib[sid]
 	p["turn_used"][sid] = true
 	if bool(def.get("limited", false)):
 		p["limited_used_" + String(sid)] = true
-	fx("skill", {"seat": int(p["seat"]), "name": String(def.get("name", sid)), "sid": sid, "big": true})
-	await (def["active"]["content"] as Callable).call(self, p)
-	changed()
+	if announce:
+		fx("skill", {"seat": int(p["seat"]), "name": String(def.get("name", sid)), "sid": sid, "big": true})
+	await (def["active"]["content"] as Callable).call(self, p, choice)
+	if announce:
+		changed()
+	return true
 
 
 # ================= V0.35 拼点系统（对照 noname chooseToCompare） =================

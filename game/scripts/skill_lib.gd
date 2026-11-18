@@ -1,53 +1,111 @@
 extends RefCounted
 
 # 全明星杀 · 技能库（星樱坂学园包）：按无名杀技能定义格式注册进新引擎
-# def = {name, timings={时机:{who, priority, filter, content, forced, ai_decide}}, active={filter, content, ai_use}}
+# def = {name, locked, timings={时机:{who, priority, filter, content, forced, ai_decide}}, active={selection, filter, content, ai_use}}
+# selection 可为字典或按状态计算的 Callable。targets 为合法角色列表的 Callable。
 # 技能规则文本与设计稿 v1.1 一致；V0.28 起「星眠」保护期按设计稿改为「到本回合结束」（引擎 run_turn 结束阶段后解除）。
 
 
 func register_all(eng) -> void:
 	eng.register_skill("huayu", {"name": "花愈", "timings": {"damageAfter": {"who": "player", "filter": Callable(self, "_huayu_filter"), "content": Callable(self, "_huayu_content")}}})
-	eng.register_skill("yingyuan", {"name": "樱愿", "active": {"filter": Callable(self, "_hand_ge1"), "ai_use": Callable(self, "_yingyuan_aiuse"), "content": Callable(self, "_yingyuan_content")}})
-	eng.register_skill("fengji", {"name": "风纪", "active": {"filter": Callable(self, "_fengji_filter"), "ai_use": Callable(self, "_yes"), "content": Callable(self, "_fengji_content")}})
+	eng.register_skill("yingyuan", {"name": "樱愿", "active": {
+		"selection": {"card": "any", "card_role": "作为代价弃置", "targets": Callable(self, "_all_alive")},
+		"ai_use": Callable(self, "_yingyuan_aiuse"),
+		"content": Callable(self, "_yingyuan_content"),
+	}})
+	eng.register_skill("fengji", {"name": "风纪", "active": {
+		"selection": {"targets": Callable(self, "_fengji_cands")},
+		"ai_use": Callable(self, "_yes"),
+		"content": Callable(self, "_fengji_content"),
+	}})
 	eng.register_skill("linghu", {"name": "铃护", "timings": {"damageBefore": {"who": "player", "priority": 10, "filter": Callable(self, "_linghu_filter"), "ai_decide": Callable(self, "_linghu_ai"), "content": Callable(self, "_linghu_content")}}})
 	eng.register_skill("xinqu", {"name": "心曲", "timings": {"phaseZhunbeiStart": {"who": "player", "filter": Callable(self, "_others_exist"), "content": Callable(self, "_xinqu_content")}}})
-	eng.register_skill("gesheng", {"name": "歌声", "active": {"filter": Callable(self, "_others_exist_p"), "ai_use": Callable(self, "_yes"), "content": Callable(self, "_gesheng_content")}})
+	eng.register_skill("gesheng", {"name": "歌声", "active": {
+		"selection": {"targets": Callable(self, "_other_alive")},
+		"ai_use": Callable(self, "_yes"),
+		"content": Callable(self, "_gesheng_content"),
+	}})
 	eng.register_skill("buqu", {"name": "不屈", "timings": {"damageAfter": {"who": "player", "forced": true, "content": Callable(self, "_buqu_content")}}})
-	eng.register_skill("yuanqi", {"name": "元气补给", "active": {"filter": Callable(self, "_yuanqi_filter"), "ai_use": Callable(self, "_yuanqi_ai"), "content": Callable(self, "_yuanqi_content")}})
+	eng.register_skill("yuanqi", {"name": "元气补给", "summary": {"condition": "你已受伤"}, "active": {
+		"selection": {"card": "black", "card_role": "当作「补给」"},
+		"filter": Callable(self, "_yuanqi_filter"),
+		"ai_use": Callable(self, "_yuanqi_ai"),
+		"content": Callable(self, "_yuanqi_content"),
+	}})
 	eng.register_skill("xingmian", {"name": "星眠", "timings": {"phaseZhunbeiStart": {"who": "player", "ai_decide": Callable(self, "_xingmian_ai"), "content": Callable(self, "_xingmian_content")}, "phaseJieshu": {"who": "player", "forced": true, "filter": Callable(self, "_xingmian_end_filter"), "content": Callable(self, "_xingmian_end_content")}}})
-	eng.register_skill("chahui", {"name": "茶会", "active": {"filter": Callable(self, "_chahui_filter"), "ai_use": Callable(self, "_chahui_aiuse"), "content": Callable(self, "_chahui_content")}})
-	eng.register_skill("qinyin", {"name": "琴音", "active": {"filter": Callable(self, "_qinyin_filter"), "ai_use": Callable(self, "_qinyin_aiuse"), "content": Callable(self, "_qinyin_content")}})
+	eng.register_skill("chahui", {"name": "茶会", "active": {
+		"selection": {"card": "any", "card_role": "作为代价弃置", "targets": Callable(self, "_chahui_cands")},
+		"ai_use": Callable(self, "_chahui_aiuse"),
+		"content": Callable(self, "_chahui_content"),
+	}})
+	eng.register_skill("qinyin", {"name": "琴音", "active": {
+		"selection": {"card": "red", "card_role": "当作「突击」", "targets": Callable(self, "_qinyin_cands")},
+		"ai_use": Callable(self, "_qinyin_aiuse"),
+		"content": Callable(self, "_qinyin_content"),
+	}})
 	eng.register_skill("nuhe", {"name": "怒喝", "timings": {"attackDodged": {"who": "source", "filter": Callable(self, "_nuhe_filter"), "ai_decide": Callable(self, "_nuhe_ai"), "content": Callable(self, "_nuhe_content")}}})
-	eng.register_skill("shifeng", {"name": "侍奉", "active": {"filter": Callable(self, "_shifeng_filter"), "ai_use": Callable(self, "_shifeng_aiuse"), "content": Callable(self, "_shifeng_content")}})
+	eng.register_skill("shifeng", {"name": "侍奉", "active": {
+		"selection": {"card": "any", "card_role": "交给对方", "targets": Callable(self, "_other_alive")},
+		"ai_use": Callable(self, "_shifeng_aiuse"),
+		"content": Callable(self, "_shifeng_content"),
+	}})
 	eng.register_skill("maobu", {"name": "猫步", "timings": {"useCardBegin": {"who": "target", "priority": 10, "filter": Callable(self, "_maobu_filter"), "ai_decide": Callable(self, "_maobu_ai"), "content": Callable(self, "_maobu_content")}}})
 	eng.register_skill("xinggui", {"name": "星轨", "timings": {"phaseZhunbeiStart": {"who": "player", "content": Callable(self, "_xinggui_content")}}})
-	eng.register_skill("caijue", {"name": "裁决", "active": {"filter": Callable(self, "_caijue_filter"), "ai_use": Callable(self, "_caijue_aiuse"), "content": Callable(self, "_caijue_content")}})
-	eng.register_skill("jianxin", {"name": "剑心", "timings": {"useCardBegin": {"who": "source", "forced": true, "priority": 5, "filter": Callable(self, "_jianxin_filter"), "content": Callable(self, "_jianxin_content")}}})
-	eng.register_skill("canyue", {"name": "奥义·残月", "limited": true, "active": {"filter": Callable(self, "_canyue_filter"), "ai_use": Callable(self, "_canyue_aiuse"), "content": Callable(self, "_canyue_content")}})
-	eng.register_skill("zhouye", {"name": "昼夜卷", "switchable": true, "active": {"filter": Callable(self, "_zhouye_filter"), "ai_use": Callable(self, "_zhouye_aiuse"), "content": Callable(self, "_zhouye_content")}})
+	eng.register_skill("caijue", {"name": "裁决", "active": {
+		"selection": {"card": "any", "card_role": "作为代价弃置", "targets": Callable(self, "_other_alive")},
+		"ai_use": Callable(self, "_caijue_aiuse"),
+		"content": Callable(self, "_caijue_content"),
+	}})
+	eng.register_skill("jianxin", {"locked": true, "name": "剑心", "timings": {"useCardBegin": {"who": "source", "forced": true, "priority": 5, "filter": Callable(self, "_jianxin_filter"), "content": Callable(self, "_jianxin_content")}}})
+	eng.register_skill("canyue", {"name": "奥义·残月", "limited": true, "summary": {"condition": "你已受伤"}, "active": {"filter": Callable(self, "_canyue_filter"), "ai_use": Callable(self, "_canyue_aiuse"), "content": Callable(self, "_canyue_content")}})
+	eng.register_skill("zhouye", {"name": "昼夜卷", "switchable": true, "active": {
+		"selection": Callable(self, "_zhouye_selection"),
+		"ai_use": Callable(self, "_zhouye_aiuse"),
+		"content": Callable(self, "_zhouye_content"),
+	}})
 	eng.register_skill("jingdu", {"name": "静读", "timings": {"phaseJieshuStart": {"who": "player", "forced": true, "filter": Callable(self, "_jingdu_filter"), "content": Callable(self, "_jingdu_content")}}})
-	eng.register_skill("podi", {"name": "破的", "timings": {"damageAfter": {"who": "source", "forced": true, "filter": Callable(self, "_podi_filter"), "content": Callable(self, "_podi_content")}}})
+	eng.register_skill("podi", {"locked": true, "name": "破的", "timings": {"damageAfter": {"who": "source", "forced": true, "filter": Callable(self, "_podi_filter"), "content": Callable(self, "_podi_content")}}})
 	eng.register_skill("xinyan", {"name": "心眼觉醒", "awaken": true, "timings": {"phaseZhunbeiStart": {"who": "player", "forced": true, "filter": Callable(self, "_xinyan_filter"), "content": Callable(self, "_xinyan_content")}}})
-	eng.register_skill("shenshe", {"name": "神射", "text": "出牌阶段限一次。你可以将 1 张手牌当作无距离限制且不可被「闪避」响应的「突击」使用。", "active": {"filter": Callable(self, "_shenshe_filter"), "ai_use": Callable(self, "_shenshe_aiuse"), "content": Callable(self, "_shenshe_content")}})
-	eng.register_skill("cuihua", {"name": "催化", "active": {"filter": Callable(self, "_cuihua_filter"), "ai_use": Callable(self, "_cuihua_aiuse"), "content": Callable(self, "_cuihua_content")}})
+	eng.register_skill("shenshe", {"name": "神射", "text": "出牌阶段限一次。你可以将 1 张手牌当作无距离限制且不可被「闪避」响应的「突击」使用。", "active": {
+		"selection": {"card": "any", "card_role": "当作无视距离且强命的「突击」", "targets": Callable(self, "_shenshe_cands")},
+		"ai_use": Callable(self, "_shenshe_aiuse"),
+		"content": Callable(self, "_shenshe_content"),
+	}})
+	eng.register_skill("cuihua", {"name": "催化", "active": {
+		"selection": {"targets": Callable(self, "_all_alive")},
+		"ai_use": Callable(self, "_cuihua_aiuse"),
+		"content": Callable(self, "_cuihua_content"),
+	}})
 	eng.register_skill("yuzhen", {"name": "余震", "timings": {"damageAfter": {"who": "global", "forced": true, "filter": Callable(self, "_yuzhen_filter"), "content": Callable(self, "_yuzhen_content")}}})
-	eng.register_skill("wangshou", {"name": "王手", "active": {"filter": Callable(self, "_wangshou_filter"), "ai_use": Callable(self, "_wangshou_aiuse"), "content": Callable(self, "_wangshou_content")}})
-	eng.register_skill("miaosuan", {"name": "妙算", "timings": {}})
-	eng.register_skill("jingsuan", {"name": "精算", "active": {"filter": Callable(self, "_hand_ge1"), "ai_use": Callable(self, "_yes"), "content": Callable(self, "_jingsuan_content")}})
+	eng.register_skill("wangshou", {"name": "王手", "active": {
+		"selection": {"targets": Callable(self, "_wangshou_cands")},
+		"ai_use": Callable(self, "_wangshou_aiuse"),
+		"content": Callable(self, "_wangshou_content"),
+	}})
+	eng.register_skill("miaosuan", {"locked": true, "name": "妙算", "timings": {}})
+	eng.register_skill("jingsuan", {"name": "精算", "active": {
+		"selection": {"card": "any", "card_role": "精算置换（弃1摸2，黑色牌且受伤则回1血）"},
+		"ai_use": Callable(self, "_yes"),
+		"content": Callable(self, "_jingsuan_content"),
+	}})
 	eng.register_skill("linshuang", {"name": "凛霜", "timings": {"damageAfter": {"who": "player", "filter": Callable(self, "_linshuang_filter"), "ai_decide": Callable(self, "_linshuang_ai"), "content": Callable(self, "_linshuang_content")}}})
-	eng.register_skill("mowei", {"name": "魔威", "text": "魔王技，锁定技。准备阶段摸 1 张牌；摸牌阶段多摸 1 张牌；出牌阶段可使用 2 张「突击」。", "timings": {"phaseZhunbeiStart": {"who": "player", "forced": true, "content": Callable(self, "_mowei_content")}}})
-	eng.register_skill("xingshi", {"name": "星蚀", "text": "魔王技，锁定技。结束阶段开始时，若你已受伤，对一名敌方角色造成 1 点雷电伤害。", "timings": {"phaseJieshuStart": {"who": "player", "forced": true, "filter": Callable(self, "_xingshi_filter"), "content": Callable(self, "_xingshi_content")}}})
-	eng.register_skill("shengdun", {"name": "圣盾", "timings": {"phaseZhunbeiStart": {"who": "player", "forced": true, "filter": Callable(self, "_shengdun_filter"), "content": Callable(self, "_shengdun_content")}}})
-	eng.register_skill("yuanhu", {"name": "援护", "active": {"filter": Callable(self, "_hand_ge1"), "ai_use": Callable(self, "_yuanhu_aiuse"), "content": Callable(self, "_yuanhu_content")}})
+	eng.register_skill("mowei", {"locked": true, "name": "魔威", "text": "魔王技，锁定技。准备阶段摸 1 张牌；摸牌阶段多摸 1 张牌；出牌阶段可使用 2 张「突击」。", "timings": {"phaseZhunbeiStart": {"who": "player", "forced": true, "content": Callable(self, "_mowei_content")}}})
+	eng.register_skill("xingshi", {"locked": true, "name": "星蚀", "text": "魔王技，锁定技。结束阶段开始时，若你已受伤，对一名敌方角色造成 1 点雷电伤害。", "timings": {"phaseJieshuStart": {"who": "player", "forced": true, "filter": Callable(self, "_xingshi_filter"), "content": Callable(self, "_xingshi_content")}}})
+	eng.register_skill("shengdun", {"locked": true, "name": "圣盾", "timings": {"phaseZhunbeiStart": {"who": "player", "forced": true, "filter": Callable(self, "_shengdun_filter"), "content": Callable(self, "_shengdun_content")}}})
+	eng.register_skill("yuanhu", {"name": "援护", "active": {
+		"selection": {"card": "any", "card_role": "作为代价弃置（令目标获得1点护甲）", "targets": Callable(self, "_all_alive")},
+		"ai_use": Callable(self, "_yuanhu_aiuse"),
+		"content": Callable(self, "_yuanhu_content"),
+	}})
 	eng.register_skill("shiji", {"name": "时计", "active": {"filter": Callable(self, "_shiji_filter"), "ai_use": Callable(self, "_shiji_aiuse"), "content": Callable(self, "_shiji_content")}})
 	eng.register_skill("xingwei", {"name": "星帷"})
-	eng.register_skill("lianyu", {"name": "敛羽", "timings": {"damageAfter": {"who": "player", "forced": true, "filter": Callable(self, "_lianyu_filter"), "content": Callable(self, "_lianyu_content")}}})
+	eng.register_skill("lianyu", {"locked": true, "name": "敛羽", "timings": {"damageAfter": {"who": "player", "forced": true, "filter": Callable(self, "_lianyu_filter"), "content": Callable(self, "_lianyu_content")}}})
 	eng.register_skill("mingzha", {"name": "命札"})
 	eng.register_skill("yuchen", {"name": "余谶", "timings": {"phaseZhunbeiStart": {"who": "player", "filter": Callable(self, "_yuchen_filter"), "content": Callable(self, "_yuchen_content")}}})
-	eng.register_skill("pokong", {"name": "破空", "active": {"filter": Callable(self, "_pokong_filter"), "ai_use": Callable(self, "_pokong_aiuse"), "content": Callable(self, "_pokong_content")}})
+	eng.register_skill("pokong", {"name": "破空", "summary": {"condition": "你至少有 1 枚「影羽」", "cost": "消耗全部「影羽」"}, "active": {"filter": Callable(self, "_pokong_filter"), "ai_use": Callable(self, "_pokong_aiuse"), "content": Callable(self, "_pokong_content")}})
 	eng.register_skill("shuangfeng", {"name": "霜封", "timings": {"useCardBegin": {"who": "source", "filter": Callable(self, "_shuangfeng_filter"), "ai_decide": Callable(self, "_shuangfeng_ai"), "content": Callable(self, "_shuangfeng_content")}}})
 	eng.register_skill("bingxin", {"name": "冰心", "timings": {"phaseJieshuStart": {"who": "player", "filter": Callable(self, "_bingxin_filter"), "ai_decide": Callable(self, "_bingxin_ai"), "content": Callable(self, "_bingxin_content")}}})
-	eng.register_skill("xingying_lord", {"name": "星樱号令", "text": "主公技，锁定技。你的首个准备阶段开始时，若你没有「护甲」，你获得 1 点「护甲」；其他同阵营角色在濒死时对你使用「补给」后摸 1 张牌。", "timings": {"phaseZhunbeiStart": {"who": "player", "forced": true, "filter": Callable(self, "_xingying_lord_filter"), "content": Callable(self, "_xingying_lord_content")}}})
+	eng.register_skill("xingying_lord", {"locked": true, "name": "星樱号令", "text": "主公技，锁定技。你的首个准备阶段开始时，若你没有「护甲」，你获得 1 点「护甲」；其他同阵营角色在濒死时对你使用「补给」后摸 1 张牌。", "timings": {"phaseZhunbeiStart": {"who": "player", "forced": true, "filter": Callable(self, "_xingying_lord_filter"), "content": Callable(self, "_xingying_lord_content")}}})
 
 
 # ---------- 通用小工具 ----------
@@ -55,8 +113,12 @@ func _yes(eng, p) -> bool:
 	return true
 
 
-func _hand_ge1(eng, p) -> bool:
-	return not (p["hand"] as Array).is_empty()
+func _all_alive(eng, _p) -> Array:
+	return eng.alive_players()
+
+
+func _other_alive(eng, p) -> Array:
+	return eng.alive_players().filter(func(t: Dictionary) -> bool: return not is_same(t, p))
 
 
 func _others_exist(eng, ctx, p) -> bool:
@@ -64,10 +126,6 @@ func _others_exist(eng, ctx, p) -> bool:
 		if t != p and t["alive"]:
 			return true
 	return false
-
-
-func _others_exist_p(eng, p) -> bool:
-	return _others_exist(eng, {}, p)
 
 
 func _worst_card(eng, p, cands) -> Dictionary:
@@ -137,18 +195,14 @@ func _yingyuan_aiuse(eng, p) -> bool:
 	return (p["hand"] as Array).size() >= 3
 
 
-func _yingyuan_content(eng, p) -> void:
-	var cost: Dictionary = await eng.pick_card(p, {"prompt": "「樱愿」：弃置 1 张手牌作为代价", "ai": Callable(self, "_worst_card")})
+func _yingyuan_content(eng, p, choice: Dictionary) -> void:
+	var cost: Dictionary = await eng.pick_active_card(p, "yingyuan", choice, "「樱愿」：弃置 1 张手牌作为代价", Callable(self, "_worst_card"))
 	if cost.is_empty():
 		return
-	eng.discard_from_hand(p, cost)
-	var cands: Array = []
-	for t in eng.players:
-		if t["alive"]:
-			cands.append(t)
-	var tgt: Dictionary = await eng.pick_target(p, cands, "「樱愿」：选择一名角色", Callable(self, "_yingyuan_target"))
+	var tgt: Dictionary = await eng.pick_active_target(p, "yingyuan", choice, "「樱愿」：选择一名角色", Callable(self, "_yingyuan_target"))
 	if tgt.is_empty():
 		return
+	eng.discard_from_hand(p, cost)
 	var opts: Array = [{"label": "摸 2 张牌", "value": "draw"}]
 	if int(tgt["hp"]) < int(tgt["max_hp"]):
 		opts.append({"label": "回复 1 点体力", "value": "heal"})
@@ -176,19 +230,12 @@ func _yingyuan_target(eng, p, cands) -> Dictionary:
 
 
 # ---------- 柚木铃奈 ----------
-func _fengji_filter(eng, p) -> bool:
-	for t in eng.players:
-		if t != p and t["alive"] and not (t["hand"] as Array).is_empty():
-			return true
-	return false
+func _fengji_cands(eng, p) -> Array:
+	return _other_alive(eng, p).filter(func(t: Dictionary) -> bool: return not (t["hand"] as Array).is_empty())
 
 
-func _fengji_content(eng, p) -> void:
-	var cands: Array = []
-	for t in eng.players:
-		if t != p and t["alive"] and not (t["hand"] as Array).is_empty():
-			cands.append(t)
-	var tgt: Dictionary = await eng.pick_target(p, cands, "「风纪」：选择一名角色，观看并弃置其一张手牌", Callable(self, "_enemy_most_cards"))
+func _fengji_content(eng, p, choice: Dictionary) -> void:
+	var tgt: Dictionary = await eng.pick_active_target(p, "fengji", choice, "「风纪」：选择一名角色，观看并弃置其一张手牌", Callable(self, "_enemy_most_cards"))
 	if tgt.is_empty():
 		return
 	var names: Array = []
@@ -253,12 +300,8 @@ func _xinqu_content(eng, ctx, p) -> void:
 		eng.log_msg("「心曲」：对方有「突击」，%s 摸 1 张牌。" % eng.pname(p))
 
 
-func _gesheng_content(eng, p) -> void:
-	var cands: Array = []
-	for t in eng.players:
-		if t != p and t["alive"]:
-			cands.append(t)
-	var tgt: Dictionary = await eng.pick_target(p, cands, "「歌声」：选择一名角色，与你各摸 1 张牌", Callable(self, "_ally_least_cards"))
+func _gesheng_content(eng, p, choice: Dictionary) -> void:
+	var tgt: Dictionary = await eng.pick_active_target(p, "gesheng", choice, "「歌声」：选择一名角色，与你各摸 1 张牌", Callable(self, "_ally_least_cards"))
 	if tgt.is_empty():
 		return
 	eng.draw_cards(p, 1)
@@ -273,16 +316,11 @@ func _buqu_content(eng, ctx, p) -> void:
 
 
 func _yuanqi_filter(eng, p) -> bool:
-	if int(p["hp"]) >= int(p["max_hp"]):
-		return false
-	for c in p["hand"]:
-		if eng.is_black(c):
-			return true
-	return false
+	return int(p["hp"]) < int(p["max_hp"])
 
 
-func _yuanqi_content(eng, p) -> void:
-	var bc: Dictionary = await eng.pick_card(p, {"prompt": "「元气补给」：选择一张黑色手牌当作「补给」", "black_only": true, "ai": Callable(self, "_worst_card")})
+func _yuanqi_content(eng, p, choice: Dictionary) -> void:
+	var bc: Dictionary = await eng.pick_active_card(p, "yuanqi", choice, "「元气补给」：选择一张黑色手牌当作「补给」", Callable(self, "_worst_card"))
 	if bc.is_empty():
 		return
 	eng.discard_from_hand(p, bc)
@@ -343,35 +381,26 @@ func _xingmian_end_content(eng, ctx, p) -> void:
 	eng.log_msg("「星眠」结算：%s 摸 3 张牌并回复 1 点体力。" % eng.pname(p))
 
 
-func _chahui_filter(eng, p) -> bool:
-	if (p["hand"] as Array).is_empty():
-		return false
-	for t in eng.players:
-		if t != p and t["alive"] and int(t["hp"]) < int(t["max_hp"]):
-			return true
-	return false
+func _chahui_cands(eng, p) -> Array:
+	return _other_alive(eng, p).filter(func(t: Dictionary) -> bool: return int(t["hp"]) < int(t["max_hp"]))
 
 
-func _chahui_content(eng, p) -> void:
-	var cost: Dictionary = await eng.pick_card(p, {"prompt": "「茶会」：弃置 1 张手牌作为代价", "ai": Callable(self, "_worst_card")})
+func _chahui_content(eng, p, choice: Dictionary) -> void:
+	var cost: Dictionary = await eng.pick_active_card(p, "chahui", choice, "「茶会」：弃置 1 张手牌作为代价", Callable(self, "_worst_card"))
 	if cost.is_empty():
 		return
-	eng.discard_from_hand(p, cost)
-	var cands: Array = []
-	for t in eng.players:
-		if t != p and t["alive"] and int(t["hp"]) < int(t["max_hp"]):
-			cands.append(t)
-	var tgt: Dictionary = await eng.pick_target(p, cands, "「茶会」：选择一名已受伤的角色", Callable(self, "_chahui_target"))
+	var tgt: Dictionary = await eng.pick_active_target(p, "chahui", choice, "「茶会」：选择一名已受伤的角色", Callable(self, "_chahui_target"))
 	if tgt.is_empty():
 		return
+	eng.discard_from_hand(p, cost)
 	eng.heal(tgt, 1, p)
 	eng.log_msg("「茶会」：%s 请 %s 喝了一杯热茶。" % [eng.pname(p), eng.pname(tgt)])
 
 
 # V0.24 修复：AI 只在有受伤的非敌方角色时发动「茶会」（旧版无条件发动且找不到友方时回血给 cands[0]，常给敌人回血，斗地主 1v1 残局因此久拖不决）
 func _chahui_aiuse(eng, p) -> bool:
-	for t in eng.players:
-		if t != p and t["alive"] and int(t["hp"]) < int(t["max_hp"]) and eng.ai_is_ally(p, t):
+	for t in _chahui_cands(eng, p):
+		if eng.ai_is_ally(p, t):
 			return (p["hand"] as Array).size() >= 2 or int(t["hp"]) <= 1
 	return false
 
@@ -397,16 +426,6 @@ func _qinyin_cands(eng, p) -> Array:
 	return cands
 
 
-func _qinyin_filter(eng, p) -> bool:
-	var has_red := false
-	for c in p["hand"]:
-		if eng.is_red(c):
-			has_red = true
-	if not has_red:
-		return false
-	return not _qinyin_cands(eng, p).is_empty()
-
-
 func _qinyin_aiuse(eng, p) -> bool:
 	var has_foe := false
 	for t in _qinyin_cands(eng, p):
@@ -415,12 +434,11 @@ func _qinyin_aiuse(eng, p) -> bool:
 	return has_foe and (eng.find_in_hand(p, "突击").is_empty() or bool(p["used_attack"]))
 
 
-func _qinyin_content(eng, p) -> void:
-	var rc: Dictionary = await eng.pick_card(p, {"prompt": "「琴音」：选择一张红色手牌当作「突击」", "red_only": true, "ai": Callable(self, "_worst_card")})
+func _qinyin_content(eng, p, choice: Dictionary) -> void:
+	var rc: Dictionary = await eng.pick_active_card(p, "qinyin", choice, "「琴音」：选择一张红色手牌当作「突击」", Callable(self, "_worst_card"))
 	if rc.is_empty():
 		return
-	var cands: Array = _qinyin_cands(eng, p)
-	var tgt: Dictionary = await eng.pick_target(p, cands, "「琴音」：选择突击目标", Callable(self, "_qinyin_target"))
+	var tgt: Dictionary = await eng.pick_active_target(p, "qinyin", choice, "「琴音」：选择突击目标", Callable(self, "_qinyin_target"))
 	if tgt.is_empty():
 		# 目标没了：牌不消耗（发动中止）
 		return
@@ -493,25 +511,15 @@ func _nuhe_content(eng, ctx, p) -> void:
 
 
 # ---------- 藤代小梅 ----------
-func _shifeng_filter(eng, p) -> bool:
-	if (p["hand"] as Array).is_empty():
-		return false
-	return _others_exist_p(eng, p)
-
-
 func _shifeng_aiuse(eng, p) -> bool:
 	return (p["hand"] as Array).size() >= 4
 
 
-func _shifeng_content(eng, p) -> void:
-	var give: Dictionary = await eng.pick_card(p, {"prompt": "「侍奉」：选择一张手牌交给另一名角色", "ai": Callable(self, "_worst_card")})
+func _shifeng_content(eng, p, choice: Dictionary) -> void:
+	var give: Dictionary = await eng.pick_active_card(p, "shifeng", choice, "「侍奉」：选择一张手牌交给另一名角色", Callable(self, "_worst_card"))
 	if give.is_empty():
 		return
-	var cands: Array = []
-	for t in eng.players:
-		if t != p and t["alive"]:
-			cands.append(t)
-	var tgt: Dictionary = await eng.pick_target(p, cands, "「侍奉」：选择要侍奉的角色", Callable(self, "_ally_least_cards"))
+	var tgt: Dictionary = await eng.pick_active_target(p, "shifeng", choice, "「侍奉」：选择要侍奉的角色", Callable(self, "_ally_least_cards"))
 	if tgt.is_empty():
 		return
 	(p["hand"] as Array).erase(give)
@@ -568,16 +576,10 @@ func _xinggui_content(eng, ctx, p) -> void:
 	eng.log_msg("「星轨」：%s 观星整理牌堆顶，并摸 1 张牌。" % eng.pname(p))
 
 
-func _caijue_filter(eng, p) -> bool:
-	if (p["hand"] as Array).is_empty():
-		return false
-	return _others_exist_p(eng, p)
-
-
 func _caijue_aiuse(eng, p) -> bool:
 	var has_foe := false
-	for t in eng.players:
-		if t != p and t["alive"] and eng.ai_is_enemy(p, t):
+	for t in _other_alive(eng, p):
+		if eng.ai_is_enemy(p, t):
 			has_foe = true
 			if int(t["hp"]) <= 1 or (t["hand"] as Array).is_empty():
 				return true
@@ -592,18 +594,14 @@ func _caijue_target(eng, p, cands) -> Dictionary:
 	return _weakest(eng, p, foes if not foes.is_empty() else cands)
 
 
-func _caijue_content(eng, p) -> void:
-	var cost: Dictionary = await eng.pick_card(p, {"prompt": "「裁决」：弃置 1 张手牌作为代价", "ai": Callable(self, "_worst_card")})
+func _caijue_content(eng, p, choice: Dictionary) -> void:
+	var cost: Dictionary = await eng.pick_active_card(p, "caijue", choice, "「裁决」：弃置 1 张手牌作为代价", Callable(self, "_worst_card"))
 	if cost.is_empty():
 		return
-	eng.discard_from_hand(p, cost)
-	var cands: Array = []
-	for t in eng.players:
-		if t != p and t["alive"]:
-			cands.append(t)
-	var tgt: Dictionary = await eng.pick_target(p, cands, "「裁决」：选择一名角色接受裁决", Callable(self, "_caijue_target"))
+	var tgt: Dictionary = await eng.pick_active_target(p, "caijue", choice, "「裁决」：选择一名角色接受裁决", Callable(self, "_caijue_target"))
 	if tgt.is_empty():
 		return
+	eng.discard_from_hand(p, cost)
 	eng.observe_hostile(p, tgt)
 	if (tgt["hand"] as Array).is_empty():
 		eng.log_msg("「裁决」：%s 没有手牌，受到 %s 造成的 1 点雷电伤害！" % [eng.pname(tgt), eng.pname(p)])
@@ -614,8 +612,8 @@ func _caijue_content(eng, p) -> void:
 		{"label": "受到 1 点雷电伤害", "value": "dmg"},
 	]
 	var ai_v := "give" if (int(tgt["hp"]) <= 2 or (tgt["hand"] as Array).size() >= 3) else "dmg"
-	var choice := String(await eng.pick_option(tgt, opts, "%s 发动「裁决」：请选择一项" % eng.pname(p), ai_v))
-	if choice == "give" and not (tgt["hand"] as Array).is_empty():
+	var response := String(await eng.pick_option(tgt, opts, "%s 发动「裁决」：请选择一项" % eng.pname(p), ai_v))
+	if response == "give" and not (tgt["hand"] as Array).is_empty():
 		var gc: Dictionary = await eng.pick_card(tgt, {"prompt": "「裁决」：选择 1 张手牌交给 %s" % eng.pname(p), "ai": Callable(self, "_worst_card")})
 		if gc.is_empty() and not (tgt["hand"] as Array).is_empty():
 			gc = (tgt["hand"] as Array)[0]
@@ -652,8 +650,6 @@ func _jianxin_content(eng, ctx, p) -> void:
 
 
 func _canyue_filter(eng, p) -> bool:
-	if bool(p.get("limited_used_canyue", false)):
-		return false
 	return int(p["hp"]) < int(p["max_hp"])
 
 
@@ -667,8 +663,7 @@ func _canyue_aiuse(eng, p) -> bool:
 	return sha_cnt >= 2 and not eng.ai_pick_target(p, true).is_empty()
 
 
-func _canyue_content(eng, p) -> void:
-	p["limited_used_canyue"] = true
+func _canyue_content(eng, p, _choice: Dictionary) -> void:
 	p["canyue_turn"] = true
 	p["used_attack"] = false
 	eng.draw_cards(p, 2)
@@ -677,11 +672,10 @@ func _canyue_content(eng, p) -> void:
 
 
 # ---------- 神乐坂真昼（转换技 · 昼夜卷 + 静读） ----------
-func _zhouye_filter(eng, p) -> bool:
-	var st := int(p.get("switch_zhouye", 0))
-	if st == 0:
-		return not (p["hand"] as Array).is_empty() and _others_exist_p(eng, p)
-	return not eng.alive_players().is_empty()
+func _zhouye_selection(_eng, p) -> Dictionary:
+	if int(p.get("switch_zhouye", 0)) == 0:
+		return {"card": "any", "card_role": "昼夜卷·阳：弃置并造成1点火焰伤害", "targets": Callable(self, "_other_alive")}
+	return {"targets": Callable(self, "_all_alive")}
 
 
 func _zhouye_aiuse(eng, p) -> bool:
@@ -695,17 +689,13 @@ func _zhouye_aiuse(eng, p) -> bool:
 	return false
 
 
-func _zhouye_content(eng, p) -> void:
+func _zhouye_content(eng, p, choice: Dictionary) -> void:
 	var st := int(p.get("switch_zhouye", 0))
 	if st == 0:
-		var cost: Dictionary = await eng.pick_card(p, {"prompt": "「昼夜卷·阳」：弃置 1 张手牌作为代价", "ai": Callable(self, "_worst_card")})
+		var cost: Dictionary = await eng.pick_active_card(p, "zhouye", choice, "「昼夜卷·阳」：弃置 1 张手牌作为代价", Callable(self, "_worst_card"))
 		if cost.is_empty():
 			return
-		var cands: Array = []
-		for t in eng.players:
-			if t != p and t["alive"]:
-				cands.append(t)
-		var tgt: Dictionary = await eng.pick_target(p, cands, "「昼夜卷·阳」：选择 1 名其他角色造成 1 点火焰伤害", Callable(self, "_caijue_target"))
+		var tgt: Dictionary = await eng.pick_active_target(p, "zhouye", choice, "「昼夜卷·阳」：选择 1 名其他角色造成 1 点火焰伤害", Callable(self, "_caijue_target"))
 		if tgt.is_empty():
 			return
 		eng.discard_from_hand(p, cost)
@@ -715,8 +705,7 @@ func _zhouye_content(eng, p) -> void:
 		eng.log_msg("☯「昼夜卷·阳」：%s 弃置 %s，对 %s 造成 1 点火焰伤害（昼夜卷转为【阴】）。" % [eng.pname(p), eng.card_text(cost), eng.pname(tgt)])
 		await eng.damage(p, tgt, 1, "昼夜卷", "火")
 	else:
-		var cands2: Array = eng.alive_players()
-		var tgt2: Dictionary = await eng.pick_target(p, cands2, "「昼夜卷·阴」：选择 1 名角色摸 2 张牌并弃 1 张牌", Callable(self, "_yingyuan_target"))
+		var tgt2: Dictionary = await eng.pick_active_target(p, "zhouye", choice, "「昼夜卷·阴」：选择 1 名角色摸 2 张牌并弃 1 张牌", Callable(self, "_yingyuan_target"))
 		if tgt2.is_empty():
 			return
 		p["switch_zhouye"] = 0
@@ -791,12 +780,6 @@ func _shenshe_cands(eng, p) -> Array:
 	return out
 
 
-func _shenshe_filter(eng, p) -> bool:
-	if (p["hand"] as Array).is_empty():
-		return false
-	return not _shenshe_cands(eng, p).is_empty()
-
-
 func _shenshe_aiuse(eng, p) -> bool:
 	for t in _shenshe_cands(eng, p):
 		if eng.ai_is_enemy(p, t):
@@ -804,12 +787,11 @@ func _shenshe_aiuse(eng, p) -> bool:
 	return false
 
 
-func _shenshe_content(eng, p) -> void:
-	var c: Dictionary = await eng.pick_card(p, {"prompt": "「神射」：选择 1 张手牌当作无距离限制且不可闪避的「突击」", "ai": Callable(self, "_worst_card")})
+func _shenshe_content(eng, p, choice: Dictionary) -> void:
+	var c: Dictionary = await eng.pick_active_card(p, "shenshe", choice, "「神射」：选择 1 张手牌当作无距离限制且不可闪避的「突击」", Callable(self, "_worst_card"))
 	if c.is_empty():
 		return
-	var cands: Array = _shenshe_cands(eng, p)
-	var tgt: Dictionary = await eng.pick_target(p, cands, "「神射」：选择目标（无视距离、不可闪避）", Callable(self, "_qinyin_target"))
+	var tgt: Dictionary = await eng.pick_active_target(p, "shenshe", choice, "「神射」：选择目标（无视距离、不可闪避）", Callable(self, "_qinyin_target"))
 	if tgt.is_empty():
 		return
 	eng.discard_from_hand(p, c)
@@ -819,10 +801,6 @@ func _shenshe_content(eng, p) -> void:
 
 
 # ---------- 结城奈奈（催化 + 余震） ----------
-func _cuihua_filter(eng, p) -> bool:
-	return not eng.alive_players().is_empty()
-
-
 func _cuihua_aiuse(eng, p) -> bool:
 	return true
 
@@ -837,9 +815,8 @@ func _cuihua_target(eng, p, cands) -> Dictionary:
 	return p if cands.has(p) else cands[0]
 
 
-func _cuihua_content(eng, p) -> void:
-	var cands: Array = eng.alive_players()
-	var tgt: Dictionary = await eng.pick_target(p, cands, "「催化」：选择 1 名角色横置或重置锁链，然后你摸 1 张牌", Callable(self, "_cuihua_target"))
+func _cuihua_content(eng, p, choice: Dictionary) -> void:
+	var tgt: Dictionary = await eng.pick_active_target(p, "cuihua", choice, "「催化」：选择 1 名角色横置或重置锁链，然后你摸 1 张牌", Callable(self, "_cuihua_target"))
 	if tgt.is_empty():
 		return
 	eng.toggle_chain(tgt)
@@ -865,17 +842,7 @@ func _yuzhen_content(eng, ctx, p) -> void:
 
 # ---------- 早乙女凛（王手 + 妙算） ----------
 func _wangshou_cands(eng, p) -> Array:
-	var out: Array = []
-	for t in eng.players:
-		if t != p and t["alive"] and not (t["hand"] as Array).is_empty():
-			out.append(t)
-	return out
-
-
-func _wangshou_filter(eng, p) -> bool:
-	if (p["hand"] as Array).is_empty():
-		return false
-	return not _wangshou_cands(eng, p).is_empty()
+	return _other_alive(eng, p).filter(func(t: Dictionary) -> bool: return eng.can_pindian(p, t))
 
 
 func _wangshou_aiuse(eng, p) -> bool:
@@ -885,11 +852,8 @@ func _wangshou_aiuse(eng, p) -> bool:
 	return false
 
 
-func _wangshou_content(eng, p) -> void:
-	var cands: Array = _wangshou_cands(eng, p)
-	if cands.is_empty():
-		return
-	var tgt: Dictionary = await eng.pick_target(p, cands, "「王手」：选择 1 名有手牌的角色进行【拼点】", Callable(self, "_caijue_target"))
+func _wangshou_content(eng, p, choice: Dictionary) -> void:
+	var tgt: Dictionary = await eng.pick_active_target(p, "wangshou", choice, "「王手」：选择 1 名有手牌的角色进行【拼点】", Callable(self, "_caijue_target"))
 	if tgt.is_empty():
 		return
 	eng.observe_hostile(p, tgt)
@@ -912,8 +876,8 @@ func _wangshou_content(eng, p) -> void:
 
 
 # ---------- 天城雪音（精算 + 凛霜） ----------
-func _jingsuan_content(eng, p) -> void:
-	var c: Dictionary = await eng.pick_card(p, {"prompt": "「精算」：弃置 1 张手牌并摸 2 张牌（黑色牌且已受伤则额外回复 1 点体力）", "ai": Callable(self, "_worst_card")})
+func _jingsuan_content(eng, p, choice: Dictionary) -> void:
+	var c: Dictionary = await eng.pick_active_card(p, "jingsuan", choice, "「精算」：弃置 1 张手牌并摸 2 张牌（黑色牌且已受伤则额外回复 1 点体力）", Callable(self, "_worst_card"))
 	if c.is_empty():
 		return
 	var was_blk: bool = eng.is_black(c)
@@ -1004,12 +968,11 @@ func _yuanhu_aiuse(eng, p) -> bool:
 	return (p["hand"] as Array).size() >= 2
 
 
-func _yuanhu_content(eng, p) -> void:
-	var c: Dictionary = await eng.pick_card(p, {"prompt": "「援护」：弃置 1 张手牌，令一名角色获得 1 点「护甲」（若其已受伤你摸 1 张牌）", "ai": Callable(self, "_worst_card")})
+func _yuanhu_content(eng, p, choice: Dictionary) -> void:
+	var c: Dictionary = await eng.pick_active_card(p, "yuanhu", choice, "「援护」：弃置 1 张手牌，令一名角色获得 1 点「护甲」（若其已受伤你摸 1 张牌）", Callable(self, "_worst_card"))
 	if c.is_empty():
 		return
-	var cands: Array = eng.alive_players()
-	var tgt: Dictionary = await eng.pick_target(p, cands, "「援护」：选择获得 1 点「护甲」的角色", Callable(self, "_yingyuan_target"))
+	var tgt: Dictionary = await eng.pick_active_target(p, "yuanhu", choice, "「援护」：选择获得 1 点「护甲」的角色", Callable(self, "_yingyuan_target"))
 	if tgt.is_empty():
 		return
 	eng.discard_from_hand(p, c)
@@ -1055,7 +1018,7 @@ func _shiji_score(eng, p, c: Dictionary) -> float:
 	return sc
 
 
-func _shiji_content(eng, p) -> void:
+func _shiji_content(eng, p, _choice: Dictionary) -> void:
 	var revealed: Array = []
 	for _i in 2:
 		eng.reshuffle_if_needed()
@@ -1122,7 +1085,7 @@ func _pokong_aiuse(eng, p) -> bool:
 	return cnt >= 2 or (cnt >= 1 and (int(p["hp"]) <= 2 or (p["hand"] as Array).size() <= 1))
 
 
-func _pokong_content(eng, p) -> void:
+func _pokong_content(eng, p, _choice: Dictionary) -> void:
 	var cnt: int = eng.mark_count(p, "影羽")
 	if cnt <= 0:
 		return

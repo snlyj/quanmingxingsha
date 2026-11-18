@@ -41,19 +41,28 @@ STRESS_N=300 bash 工具脚本/alltests.sh
 测试包含：
 1. 全 16 个 `.gd` 脚本 `--check-only` 静态语法/类型检查
 2. `--ybtest`（规则断言）、`--engtest`（身份 AI 对战）、`--modetest=doudizhu|duel`、`--uitest`（自动 UI 游玩）
-3. `--regtest`（377 项回归断言）与 `--stress`（多局数随机压测）
-4. 末尾统一统计 `error_lines=0`（须确保全部 `fails=0` 且 `error_lines=0`）
+3. `--regtest`（定向回归）与 `--stress`（身份场、斗地主、单挑、欢乐 2v2、魔王挑战）
+4. 可加 `UIPLAY=10` 模拟点选、拖拽和技能操作。每次运行生成独立日志目录。导入失败、超时、断言失败或缺少完整报告时，脚本以非零状态退出。
 
-### 3. Android APK 打包与签名注意事项 ⚠️
-- **重要签名约定**：仓库 [`签名/qmxs_sign.keystore`](签名/qmxs_sign.keystore) 是自 V0.32 起全版本使用的统一签名密钥（别名 `androiddebugkey`，密码 `android`，证书 SHA-256：`23a5d43ac4cbeb5b0a2f0f46f1d11123fff7faf883efda372765d36a5d8766ea`）。
-- 目前 `game/export_presets.cfg` 中的 Keystore 路径为 Linux 构建机路径 `/opt/android-sdk/debug.keystore`；接手方在 **新电脑 / Windows / macOS** 导出 Android APK 前，请在 Godot **「项目 → 导出 → Android → Keystore」** 中把 Debug/Release Keystore 改为本机的 `签名/qmxs_sign.keystore` 绝对路径（**切勿新生成其它签名**，否则用户手机无法覆盖升级旧版本）。
-- 导出命令示例（需 JDK 17 与 Android SDK 34）：
+### 3. Android APK 打包与签名
+
+从构建机密钥库或 CI Secrets 注入 Godot 4.3 的三个环境变量：
+
+- `GODOT_ANDROID_KEYSTORE_RELEASE_PATH` 指向仓库外的密钥文件。
+- `GODOT_ANDROID_KEYSTORE_RELEASE_USER` 是密钥别名。
+- `GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD` 由密钥库注入。
+
+使用 Godot Android 导出模板、JDK 17 和 Android SDK 34 导出：
+
 ```bash
+mkdir -p builds
 godot --headless --path game --export-release "Android" ../builds/qmxs_v0.44.1.apk
+apksigner verify --print-certs builds/qmxs_v0.44.1.apk
 ```
-- 升级版本号时需同步修改：
-  1. `game/project.godot` 中的 `config/version`
-  2. `game/export_presets.cfg` 中的 `version/code` 与 `version/name`
+
+历史发布密钥曾公开，现有版本的更新兼容性取决于安装渠道与签名证书。发布替换前，在现有安装上测试覆盖升级。若使用 Google Play App Signing，在 Play Console 确认暴露的是上传密钥还是应用签名密钥，再按对应流程重置或升级。直接分发 APK 时，先验证目标 Android 版本是否接受签名轮换，否则需安排存档迁移和重新安装。
+
+升级版本号时同步修改 `game/project.godot` 的 `config/version` 与 `game/export_presets.cfg` 的 `version/code`、`version/name`。
 
 ---
 
@@ -67,7 +76,7 @@ godot --headless --path game --export-release "Android" ../builds/qmxs_v0.44.1.a
 │   ├── scripts/
 │   │   ├── engine.gd       # 规则引擎（六阶段、触发结算、AI 推测、全部模式机制）
 │   │   ├── battle.gd       # 对局桌UI（手牌拖拽、按钮操作栏、CV播放、特效、结算、设置）
-│   │   ├── main.gd         # 外壳大厅（首页、看板、委托、图鉴、详情、残局、战绩、测试入口）
+│   │   ├── main.gd         # 外壳大厅（首页、插画轮播、委托、图鉴、详情、残局、战绩、测试入口）
 │   │   ├── skill_lib.gd    # 角色技能定义库
 │   │   ├── meta.gd         # 本地存档、战绩/成就、好感誓约、禁用池、每日委托
 │   │   ├── intro.gd        # 长按说明浮窗（卡牌/角色/技能高亮百科）
@@ -79,7 +88,6 @@ godot --headless --path game --export-release "Android" ../builds/qmxs_v0.44.1.a
 │   └── assets/             # bg(2) / bgm(6) / cards(55+) / cg(19) / fonts / sfx(24) / ui / voice(95)
 ├── 工具脚本/               # 自动化全测脚本（alltests.sh）、无头运行（t.sh）、截图脚本（shots.sh）
 ├── docs/                   # 历代规则对照与美术/UI 设计规范文档
-├── 签名/                   # 统一覆盖安装签名 keystore 与说明
 ├── 全明星杀_V1设计稿.md    # 核心角色技能与玩法设计稿
 └── 交接说明.md             # 详细工程交接与避坑指南
 ```

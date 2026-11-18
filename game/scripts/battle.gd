@@ -5,6 +5,7 @@ const Puzzles = preload("res://data/puzzles.gd")
 const EngineScript = preload("res://scripts/engine.gd")
 const HelpText = preload("res://data/help.gd")
 const Art = preload("res://scripts/art.gd")
+const Palette = preload("res://scripts/ui_palette.gd")
 const HP_FULL_TEX = preload("res://assets/ui/hp_petal.png")
 const HP_EMPTY_TEX = preload("res://assets/ui/hp_petal_empty.png")
 
@@ -19,14 +20,25 @@ signal end_play_pressed
 const C_PINK := Color(1.0, 0.45, 0.65)
 const C_PINK_DEEP := Color(0.92, 0.30, 0.52)
 const C_PURPLE := Color(0.62, 0.55, 0.95)
-const C_INK := Color(0.35, 0.25, 0.35)
-const C_INK_SOFT := Color(0.55, 0.45, 0.55)
+const C_INK := Palette.INK
+const C_INK_SOFT := Palette.MUTED
 const C_WHITE := Color(1, 1, 1)
 const C_RED := Color(0.85, 0.25, 0.35)
 const C_BLACK := Color(0.30, 0.28, 0.38)
 const C_GOLD := Color(0.91, 0.64, 0.24)
 const C_PLATE := Color(1.0, 0.36, 0.54)
 const C_INDIGO := Color(0.35, 0.32, 0.55)
+const C_TABLE_ACTION := Palette.ROSE_PRIMARY
+const C_TARGET_AVAILABLE := Color("#73ab9d")
+const TABLE_ACTION_H := 102.0
+
+var _night_ui := false
+var _table_surface := Color(Palette.MILK, 0.96)
+var _table_inset := Palette.LILAC_SOFT
+var _table_edge := Palette.LILAC_EDGE
+var _table_text := Palette.INK
+var _table_note := Palette.MUTED
+var _table_button := Palette.MILK
 
 var font_reg: Font
 var font_bold: Font
@@ -62,7 +74,7 @@ var open_puzzles_cb: Callable = Callable()
 var tutorial := false  # V0.30 教学关（脚本化单挑）
 var ask_bar_fill: ColorRect = null
 var ask_bar_bg_ref: Panel = null
-var ask_bar_tween: Tween = null
+var ask_deadline_ms := 0
 var match_banner: Label = null
 var match_banner_tween: Tween = null
 var turn_seat: int = 0
@@ -95,24 +107,43 @@ var me_chips: HBoxContainer
 var seat_panels: Array = []
 var log_label: Label
 var prompt_label: Label
+var prompt_context_label: Label
+var prompt_header: HBoxContainer
 var prompt_btns: HBoxContainer
+var prompt_action_width := 892.0
 var hand_row: Control
 var player_info: Label
 var player_portrait: TextureRect
 var skill_btns: VBoxContainer
 var end_play_btn: Button
 var log_lines: Array = []
+var _seat_gem_styles: Dictionary = {}
+var _seat_frame_styles: Dictionary = {}
+var _own_frame_styles: Dictionary = {}
+var _phase_active_style: StyleBoxFlat
+var _phase_idle_style: StyleBoxFlat
 
 const SUITS := ["红桃", "方块", "梅花", "黑桃"]
 const RED_SUITS := ["红桃", "方块"]
+const PHASE_NAMES := ["准备", "判定", "摸牌", "出牌", "弃牌", "结束"]
 
 
 func _ready() -> void:
 	font_reg = load("res://assets/fonts/NotoSansSC-Regular.otf")
 	font_bold = load("res://assets/fonts/NotoSansSC-Bold.otf")
+	var scene := get_tree().current_scene
+	_night_ui = scene != null and "theme_night" in scene and bool(scene.get("theme_night"))
+	if _night_ui:
+		_table_surface = Color(Palette.NIGHT_PANEL, 0.96)
+		_table_inset = Palette.NIGHT_PANEL.lightened(0.08)
+		_table_edge = Palette.NIGHT_BORDER
+		_table_text = Palette.NIGHT_INK
+		_table_note = Palette.NIGHT_MUTED
+		_table_button = _table_inset
 	rng.randomize()
 	auto_confirm = auto_confirm_saved()  # V0.27：「自动确认」默认关闭，设置持久化在 user://settings.cfg [play]
 	double_tap_play = double_tap_saved()
+	reduced_motion = reduced_motion_saved()
 
 
 # V0.24 修复：对局中途「退出」回主页时，引擎协程还挂在「等待作答/结束出牌」上，整个引擎实例（牌堆、日志、技能表）
@@ -154,9 +185,9 @@ func style(color: Color, radius: int = 22, border: Color = Color(0, 0, 0, 0), bw
 		s.border_color = border
 		s.set_border_width_all(bw)
 	if shadow:
-		s.shadow_color = Color(0.85, 0.4, 0.55, 0.35)
-		s.shadow_size = 10
-		s.shadow_offset = Vector2(0, 5)
+		s.shadow_color = Palette.SHADOW
+		s.shadow_size = 5
+		s.shadow_offset = Vector2(0, 3)
 	s.content_margin_left = 18
 	s.content_margin_right = 18
 	s.content_margin_top = 12
@@ -171,12 +202,15 @@ func _wire_btn_bounce(b: Button) -> void:
 	b.ready.connect(func() -> void: b.pivot_offset = b.size * 0.5)
 	b.resized.connect(func() -> void: b.pivot_offset = b.size * 0.5)
 	b.button_down.connect(func() -> void:
-		if b.disabled or float(b.get_meta("drag_px", 0.0)) > 10.0:
+		if not _motion_enabled() or b.disabled or float(b.get_meta("drag_px", 0.0)) > 10.0:
 			return
 		b.pivot_offset = b.size * 0.5
 		var tw := create_tween().bind_node(b)
 		tw.tween_property(b, "scale", Vector2(0.96, 0.96), 0.06))
 	b.button_up.connect(func() -> void:
+		if not _motion_enabled():
+			b.scale = Vector2.ONE
+			return
 		var tw2 := create_tween().bind_node(b)
 		tw2.tween_property(b, "scale", Vector2.ONE, 0.14).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT))
 
@@ -186,7 +220,9 @@ func _set_btn_theme(b: Button, bg: Color, border: Color, fg: Color, radius: int 
 	var n_sb := style(bg, radius, border, bw, shadow)
 	var h_sb := style(bg.lightened(0.07), radius, hb, bw, shadow)
 	var p_sb := style(bg.darkened(0.08), radius, hb, bw, false)
-	var d_sb := style(Color(0.86, 0.84, 0.89, 0.88), radius, Color(0.70, 0.67, 0.74, 0.60), mini(bw, 2), false)
+	var disabled_bg := Palette.NIGHT_PANEL if _night_ui else Palette.DISABLED_BG
+	var disabled_fg := Palette.NIGHT_MUTED if _night_ui else Palette.DISABLED_INK
+	var d_sb := style(disabled_bg, radius, Color(_table_edge, 0.60), mini(bw, 1))
 	if pad.x >= 0:
 		for sb_i in [n_sb, h_sb, p_sb, d_sb]:
 			_tight(sb_i, pad.x, pad.y)
@@ -197,16 +233,16 @@ func _set_btn_theme(b: Button, bg: Color, border: Color, fg: Color, radius: int 
 	b.add_theme_color_override("font_color", fg)
 	b.add_theme_color_override("font_hover_color", fg)
 	b.add_theme_color_override("font_pressed_color", fg)
-	b.add_theme_color_override("font_disabled_color", Color(0.56, 0.52, 0.58))
+	b.add_theme_color_override("font_disabled_color", disabled_fg)
 
 
-func plain_btn(text: String, bg: Color = C_WHITE, fg: Color = C_PINK_DEEP, fsize: int = 28) -> Button:
+func plain_btn(text: String, bg: Color = Palette.MILK, fg: Color = Palette.ROSE_PRIMARY, fsize: int = 28) -> Button:
 	var b := Button.new()
 	b.text = text
 	b.focus_mode = Control.FOCUS_NONE
 	b.add_theme_font_override("font", font_reg)
 	b.add_theme_font_size_override("font_size", fsize)
-	_set_btn_theme(b, bg, C_GOLD, fg, 18, 2, false, Vector2i(-1, -1), C_PINK_DEEP)
+	_set_btn_theme(b, bg, _table_edge, fg, 18, 1, false, Vector2i(-1, -1), Palette.ROSE_EDGE)
 	_wire_btn_bounce(b)
 	b.pressed.connect(func() -> void: play_sfx("click"))
 	return b
@@ -217,10 +253,10 @@ func wait(sec: float) -> void:
 		await get_tree().process_frame
 		return
 	# 可被「点空白桌面」打断的等待：点击时刻晚于本次等待开始即提前结束（无名杀点击跳过动画停顿）
-	var t0 := Time.get_ticks_msec()
+	var skip_at_start := skip_motion_events
 	var tm := get_tree().create_timer(sec)
 	while tm.time_left > 0.0:
-		if skip_tap_ms >= t0:
+		if skip_motion_events != skip_at_start:
 			return
 		await get_tree().process_frame
 		if not is_inside_tree():
@@ -239,7 +275,7 @@ func cycle_speed() -> void:
 	speed_idx = (speed_idx + 1) % SPEEDS.size()
 	Engine.time_scale = float(SPEEDS[speed_idx])
 	if speed_btn != null:
-		speed_btn.text = "%sx" % str(SPEEDS[speed_idx])
+		speed_btn.text = "倍速 %sx" % str(SPEEDS[speed_idx])
 	show_hint("对局速度：%sx（动画与 AI 出牌间隔同步加快，倒计时仍按真实秒数）" % str(SPEEDS[speed_idx]))
 
 
@@ -258,13 +294,14 @@ func _on_table_bg_input(event: InputEvent) -> void:
 		settings_panel.visible = false
 		return
 	# V0.27：选择中点空白桌面 = 取消（含技能选择、合璧长枪/木牛转运选目标）；询问中则清掉已选未确认的项
-	if not asking and interactive and in_play_phase and (targeting or not selected_card.is_empty() or skill_mode != ""):
+	if not asking and interactive and in_play_phase and (targeting or not selected_card.is_empty() or skill_mode != "" or muniu_storing):
 		_on_cancel_pressed()
 		return
 	if asking and ask_sel_has:
 		_ask_clear_sel()
 		return
-	skip_tap_ms = Time.get_ticks_msec()
+	skip_motion_events += 1
+	_skip_transient_motion()
 
 
 func log_msg(msg: String) -> void:
@@ -272,7 +309,7 @@ func log_msg(msg: String) -> void:
 	while log_lines.size() > 5:
 		log_lines.pop_front()
 	if log_label:
-		log_label.text = "\n".join(log_lines)
+		log_label.text = msg.replace("\n", " ")
 
 
 # ---------------- 界面骨架 ----------------
@@ -344,7 +381,7 @@ func show_setup() -> void:
 		rrow.add_theme_constant_override("separation", 20)
 		var roles: Array = ["先手", "后手"]
 		for r in roles:
-			var rb := plain_btn("", Color(1, 1, 1, 0.9), C_INK, 28)
+			var rb := plain_btn("", _table_inset, _table_text, 28)
 			rb.custom_minimum_size = Vector2(240, 64)
 			rb.set_meta("role", r)
 			rb.pressed.connect(func() -> void: set_my_role(r))
@@ -359,7 +396,9 @@ func show_setup() -> void:
 	for i in seat_names.size():
 		var p := PanelContainer.new()
 		p.custom_minimum_size = Vector2(300, 224)
-		p.add_theme_stylebox_override("panel", style(Color(1, 1, 1, 0.90), 26, C_GOLD if i == 0 else Color(0.75, 0.72, 0.85), 3, true))
+		var tile_fill := Palette.ROSE_SOFT if i == 0 else Palette.SKY_SOFT
+		var tile_edge := Palette.ROSE_EDGE if i == 0 else Palette.SKY_EDGE
+		p.add_theme_stylebox_override("panel", style(Color(tile_fill, 0.95), 26, tile_edge, 1, true))
 		var pv := VBoxContainer.new()
 		pv.alignment = BoxContainer.ALIGNMENT_CENTER
 		pv.add_theme_constant_override("separation", 10)
@@ -380,7 +419,7 @@ func show_setup() -> void:
 		seats.add_child(p)
 	var row := HBoxContainer.new()
 	row.alignment = BoxContainer.ALIGNMENT_CENTER
-	var start := plain_btn("开始对战（先选将）", C_PLATE, C_WHITE, 40)
+	var start := plain_btn("开始对战（先选将）", C_TABLE_ACTION, C_WHITE, 40)
 	start.custom_minimum_size = Vector2(560, 110)
 	start.pressed.connect(func() -> void: start_match(false))
 	row.add_child(start)
@@ -390,7 +429,6 @@ func show_setup() -> void:
 # 新增 UI 成员（V0.3 桌面布局）
 var phase_label: Label
 var phase_pills: Array = []
-var announce_label: Label
 var prompt_panel: PanelContainer
 var draft_layer: HBoxContainer
 var log_panel: PanelContainer
@@ -399,6 +437,10 @@ var selected_card: Dictionary = {}
 var sel_anim_card: Dictionary = {}
 var breath_t := 0.0
 var vw := 1920.0
+var safe_insets := Vector4.ZERO
+var table_hud_height := 104.0
+var tools_layer: ColorRect
+var tools_btn: Button
 var bubble_nodes := {}
 var bubble_order: Array = []  # 同屏气泡最多 2 个，超出时先收最早的
 var skill_sig := ""
@@ -406,7 +448,7 @@ var skill_passives: HBoxContainer = null
 var speed_idx := 0
 var speed_btn: Button = null
 const SPEEDS := [1.0, 1.5, 2.0]
-var skip_tap_ms := -1  # 点空白桌面跳过当前等待（AI 出牌间隔/动画停顿）
+var skip_motion_events := 0  # 点空白桌面跳过当前等待（AI 出牌间隔/动画停顿）
 var targeting: bool = false
 var spear_targeting: bool = false
 var spear_cards: Array = []  # V0.32：合璧长枪由玩家自选的两张手牌
@@ -420,13 +462,9 @@ var diff_layer: Control = null
 var diff_btns: Array = []
 var dying_holder: PanelContainer = null
 var dying_seat: int = -1
-var burst_node: Control = null
-var burst_tween: Tween = null
 var settlement_layer: Control = null
 var target_candidates: Array = []
 var draft_banner: Label
-var seat_table_label: Label
-var seat_table_panel: PanelContainer
 var glow_frames: Dictionary = {}
 var showcase_panel: Panel
 var showcase_band: Panel
@@ -445,9 +483,16 @@ const HAND_H := 296.0
 const LIFT := 36.0
 const DRAG_START_PX := 28.0
 const SNAP_PX := 64.0
+const HAND_CARD_GAP := 10.0
+const HAND_BROWSE_BUTTON_W := 86.0
 var hand_x0 := 352.0
 var hand_x1 := 1230.0
 var hand_cards: Array = []  # 手牌节点（wrap），meta "card" 指向牌字典本身
+var hand_viewport: Panel
+var hand_prev_btn: Button
+var hand_next_btn: Button
+var hand_scroll_offset := 0.0
+var hand_scroll_limit := 0.0
 var action_bar: HBoxContainer
 var confirm_btn: Button
 var cancel_btn: Button
@@ -457,6 +502,7 @@ var asking := false
 var ask_seq := 0
 var ask_timeout := 15.0
 var ask_default: Variant = null
+var ask_default_caption := ""
 var sel_target := -1
 var discard_mode := false
 var discard_need := 0
@@ -467,9 +513,12 @@ var respond_name := ""
 var respond_names: Array = []
 var muniu_storing: bool = false
 var drag_wrap: Control = null
-var drag_press := {}  # {wrap, pos, offset}
+var drag_press := {}  # 从按下起只进入一种手势：点按、横览或拖出牌
+var drag_previous := {}
 var drag_hover_seat := -1
 var drag_line: Line2D
+var drag_hint: Label
+var hand_cancel_release := false
 var drag_end_ms := 0
 
 
@@ -485,7 +534,7 @@ func show_played_card(card: Dictionary, owner: String, from_seat: int = -1) -> v
 		elif not fly_from_hand.is_empty():
 			from = Vector2(fly_from_hand["pos"])
 		else:
-			from = hand_row.position + Vector2(hand_row.size.x * 0.5, 120) if hand_row != null else seat_center(0)
+			from = _hand_point(120)
 	elif from_seat > 0:
 		from = seat_center(from_seat)
 	_pz_add(card, owner, from)
@@ -494,34 +543,40 @@ func show_played_card(card: Dictionary, owner: String, from_seat: int = -1) -> v
 func set_phase(text: String) -> void:
 	if phase_label:
 		phase_label.text = text
-	var keys := ["准备", "判定", "摸牌", "出牌", "弃牌", "结束"]
-	for i in mini(keys.size(), phase_pills.size()):
+	for i in mini(PHASE_NAMES.size(), phase_pills.size()):
 		var pn := phase_pills[i] as Panel
 		if pn == null or not is_instance_valid(pn):
 			continue
-		var active := text.find(keys[i]) >= 0
-		pn.add_theme_stylebox_override("panel", style(Color(0.92, 0.28, 0.48, 0.96) if active else Color(0.18, 0.10, 0.26, 0.72), 11, C_GOLD if active else Color(0.91, 0.64, 0.24, 0.38), 2 if active else 1, active))
+		var active := text.contains(PHASE_NAMES[i])
+		if pn.get_meta("phase_active", false) == active:
+			continue
+		pn.set_meta("phase_active", active)
+		pn.add_theme_stylebox_override("panel", _phase_active_style if active else _phase_idle_style)
 		var lb := pn.get_node_or_null("PhLbl") as Label
 		if lb != null:
-			lb.add_theme_color_override("font_color", Color(1.0, 0.97, 0.88) if active else Color(0.82, 0.76, 0.86, 0.78))
+			lb.add_theme_color_override("font_color", C_WHITE if active else _table_note)
 
 
-func show_hint(text: String) -> void:
+func show_hint(text: String, context: String = "") -> void:
 	if prompt_panel == null or prompt_label == null:
 		return
 	prompt_panel.visible = true
 	prompt_label.text = text
+	prompt_label.tooltip_text = text
+	prompt_context_label.text = context
+	prompt_context_label.visible = context != ""
+	prompt_header.visible = prompt_context_label.visible or ask_secs_label.visible
 
 
 func hide_prompt() -> void:
 	if prompt_panel == null or prompt_label == null:
 		return
-	if ask_bar_tween and ask_bar_tween.is_valid():
-		ask_bar_tween.kill()
+	ask_deadline_ms = 0
 	if ask_bar_bg_ref != null:
 		ask_bar_bg_ref.visible = false
 	if ask_secs_label != null:
 		ask_secs_label.visible = false
+	prompt_header.visible = false
 	prompt_label.text = ""
 	for ch in prompt_btns.get_children():
 		prompt_btns.remove_child(ch)
@@ -529,10 +584,195 @@ func hide_prompt() -> void:
 	prompt_panel.visible = false
 
 
+func _table_safe_insets() -> Vector4:
+	if not (OS.has_feature("android") or OS.has_feature("ios")):
+		return Vector4.ZERO
+	var safe := DisplayServer.get_display_safe_area()
+	if safe.size == Vector2i.ZERO:
+		return Vector4.ZERO
+	var screen_to_local := (get_viewport().get_screen_transform() * get_global_transform_with_canvas()).affine_inverse()
+	var start := screen_to_local * Vector2(safe.position)
+	var end := screen_to_local * Vector2(safe.end)
+	# 预留两侧较大的值，左右横屏互换时也避开开孔或系统导航区。
+	var side := ceilf(maxf(maxf(start.x, vw - end.x), 0.0))
+	return Vector4(side, ceilf(maxf(start.y, 0.0)), side, ceilf(maxf(1080.0 - end.y, 0.0)))
+
+
+func _build_table_hud() -> void:
+	var left := safe_insets.x + 26.0
+	var right := vw - safe_insets.z - 26.0
+	var top := safe_insets.y
+	var top_hud_bg := Panel.new()
+	top_hud_bg.name = "TableTopBar"
+	top_hud_bg.size = Vector2(vw, top + table_hud_height)
+	top_hud_bg.mouse_filter = MOUSE_FILTER_IGNORE
+	var hud_style := style(_table_surface, 0)
+	hud_style.border_color = _table_edge
+	hud_style.border_width_bottom = 1
+	top_hud_bg.add_theme_stylebox_override("panel", hud_style)
+	add_child(top_hud_bg)
+	tools_btn = plain_btn("托管中 ▾" if auto_mode else "工具 ▾", _table_inset, _table_text, 28)
+	tools_btn.position = Vector2(left, top + 8.0)
+	tools_btn.custom_minimum_size = Vector2(176, table_hud_height - 16.0)
+	tools_btn.size = tools_btn.custom_minimum_size
+	tools_btn.pressed.connect(func() -> void: _set_tools_open(true))
+	add_child(tools_btn)
+
+	var count_width := 148.0
+	var count_gap := 12.0
+	var counter_left := right - (count_width * 3.0 + count_gap * 2.0)
+	var pill_lbls: Array[Label] = []
+	for initial in ["牌堆 —", "弃牌 0", "选将中"]:
+		var counter := lbl(initial, 24, _table_text, true, HORIZONTAL_ALIGNMENT_CENTER)
+		counter.position = Vector2(counter_left + pill_lbls.size() * (count_width + count_gap), top + (table_hud_height - 58.0) * 0.5)
+		counter.size = Vector2(count_width, 58)
+		counter.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		counter.autowrap_mode = TextServer.AUTOWRAP_OFF
+		counter.mouse_filter = MOUSE_FILTER_IGNORE
+		var count_surface := Palette.SKY_SOFT if not _night_ui and pill_lbls.is_empty() else _table_inset
+		var count_edge := Palette.SKY_EDGE if not _night_ui and pill_lbls.is_empty() else _table_edge
+		counter.add_theme_stylebox_override("normal", _tight(style(count_surface, 17, count_edge, 1), 8, 4))
+		add_child(counter)
+		pill_lbls.append(counter)
+	deck_label = pill_lbls[0]
+	disc_label = pill_lbls[1]
+	round_label = pill_lbls[2]
+
+	var phase_x := left + 198.0
+	var phase_width := counter_left - phase_x - 24.0
+	var phase_y := top + (table_hud_height - 80.0) * 0.5
+	phase_label = lbl("选将准备", 31, _table_text, true, HORIZONTAL_ALIGNMENT_CENTER)
+	phase_label.position = Vector2(phase_x, phase_y)
+	phase_label.size = Vector2(phase_width, 42)
+	phase_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	phase_label.clip_text = true
+	phase_label.autowrap_mode = TextServer.AUTOWRAP_OFF
+	phase_label.mouse_filter = MOUSE_FILTER_IGNORE
+	add_child(phase_label)
+	if _phase_active_style == null:
+		_phase_active_style = style(C_TABLE_ACTION, 10, Palette.ROSE_EDGE, 1)
+		_phase_idle_style = style(_table_inset, 10, Color(_table_edge, 0.72), 1)
+	var gap := 8.0
+	var width := 76.0
+	var phases_width := (width + gap) * PHASE_NAMES.size() - gap
+	var start_x := phase_x + (phase_width - phases_width) * 0.5
+	for i in PHASE_NAMES.size():
+		var pill := Panel.new()
+		pill.position = Vector2(start_x + i * (width + gap), phase_y + 46.0)
+		pill.size = Vector2(width, 30)
+		pill.mouse_filter = MOUSE_FILTER_IGNORE
+		pill.add_theme_stylebox_override("panel", _phase_idle_style)
+		var label := lbl(PHASE_NAMES[i], 19, _table_note, true, HORIZONTAL_ALIGNMENT_CENTER)
+		label.name = "PhLbl"
+		label.size = pill.size
+		label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		label.autowrap_mode = TextServer.AUTOWRAP_OFF
+		label.mouse_filter = MOUSE_FILTER_IGNORE
+		pill.add_child(label)
+		add_child(pill)
+		phase_pills.append(pill)
+	turn_label = lbl("", 18, _table_text, true, HORIZONTAL_ALIGNMENT_CENTER)
+	turn_label.visible = false
+	add_child(turn_label)
+
+
+func _set_tools_open(open: bool) -> void:
+	if tools_layer == null or not is_instance_valid(tools_layer):
+		return
+	tools_layer.visible = open
+	if open:
+		move_child(tools_layer, get_child_count() - 1)
+
+
+func _open_seat_list() -> void:
+	var lines: Array[String] = []
+	for p in players:
+		var seat := int(p["seat"])
+		var mark := "▶ " if seat == turn_seat and p["alive"] else ""
+		var who := "（你）" if seat == 0 else ""
+		var state := "体力 %d/%d · 手牌 %d" % [int(p["hp"]), int(p["max_hp"]), p["hand"].size()] if p["alive"] else "阵亡"
+		lines.append("%s%d号位　%s%s　%s　%s" % [mark, seat + 1, p["char"]["name"], who, identity_visible(p), state])
+	open_info_overlay("座次表", "\n\n".join(lines) if not lines.is_empty() else "尚未开局")
+
+
+func _build_table_tools() -> void:
+	tools_layer = ColorRect.new()
+	tools_layer.name = "BattleTools"
+	tools_layer.color = Color(0.12, 0.06, 0.15, 0.44)
+	tools_layer.mouse_filter = MOUSE_FILTER_STOP
+	tools_layer.gui_input.connect(func(event: InputEvent) -> void:
+		if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
+			_set_tools_open(false))
+	tools_layer.visible = false
+	add_child(tools_layer)
+	tools_layer.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	var surface := PanelContainer.new()
+	surface.position = Vector2(safe_insets.x + 26.0, safe_insets.y + table_hud_height + 12.0)
+	surface.custom_minimum_size.x = 590.0
+	surface.add_theme_stylebox_override("panel", _tight(style(_table_surface, 22, _table_edge, 1, true), 20, 18))
+	tools_layer.add_child(surface)
+	var contents := VBoxContainer.new()
+	contents.add_theme_constant_override("separation", 12)
+	surface.add_child(contents)
+	var header := lbl("对局工具", 30, _table_text, true)
+	header.autowrap_mode = TextServer.AUTOWRAP_OFF
+	contents.add_child(header)
+	var grid := GridContainer.new()
+	grid.columns = 2
+	grid.add_theme_constant_override("h_separation", 12)
+	grid.add_theme_constant_override("v_separation", 12)
+	contents.add_child(grid)
+	for title in ["战况记录", "座次表", "记牌器", "排序：类型", "托管", "倍速", "设置", "认输", "返回大厅", "关闭"]:
+		var button := plain_btn(title, _table_inset, _table_text, 27)
+		button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		button.custom_minimum_size = Vector2(238, table_hud_height - 20.0)
+		button.clip_text = true
+		grid.add_child(button)
+		match title:
+			"战况记录":
+				button.pressed.connect(func() -> void: open_info_overlay("战况记录", "\n".join(eng.log_lines) if eng != null else "\n".join(log_lines)))
+			"座次表":
+				button.pressed.connect(_open_seat_list)
+			"记牌器":
+				button.pressed.connect(func() -> void: open_info_overlay("记牌器 · 战场情报", counter_text(), true))
+			"排序：类型":
+				sort_btn = button
+				button.pressed.connect(func() -> void:
+					_set_tools_open(false)
+					sort_my_hand())
+			"托管":
+				auto_btn = button
+				button.text = "托管中" if auto_mode else "开始托管"
+				button.pressed.connect(func() -> void:
+					_set_tools_open(false)
+					toggle_auto())
+			"倍速":
+				speed_btn = button
+				button.text = "倍速 %sx" % str(SPEEDS[speed_idx])
+				button.pressed.connect(cycle_speed)
+			"设置":
+				settings_btn = button
+				button.pressed.connect(func() -> void:
+					_set_tools_open(false)
+					toggle_settings_panel())
+			"认输":
+				concede_btn = button
+				button.pressed.connect(on_concede_pressed)
+			"返回大厅":
+				button.pressed.connect(func() -> void:
+					if go_home.is_valid():
+						go_home.call())
+			"关闭":
+				button.pressed.connect(func() -> void: _set_tools_open(false))
+
+
 func build_table() -> void:
 	vw = get_viewport_rect().size.x
+	safe_insets = _table_safe_insets()
+	table_hud_height = 144.0 if OS.has_feature("android") or OS.has_feature("ios") else 104.0
 	for ch in get_children():
 		ch.queue_free()
+	table_nodes.clear()
 	seat_panels.clear()
 	diff_btns.clear()
 	glow_frames.clear()
@@ -545,163 +785,73 @@ func build_table() -> void:
 	targeting = false
 	var bg_catch := Control.new()
 	bg_catch.name = "BgCatch"
-	bg_catch.set_anchors_preset(Control.PRESET_FULL_RECT)
-	bg_catch.size = Vector2(vw, 1080)
 	bg_catch.mouse_filter = MOUSE_FILTER_STOP
 	bg_catch.gui_input.connect(_on_table_bg_input)
 	add_child(bg_catch)
-	# 顶部左上退出按钮（移除原位置与功能条重叠的底纹大字）
-	var back := plain_btn("← 退出", C_WHITE, C_PINK_DEEP, 22)
-	back.position = Vector2(20, 102)
-	back.size = Vector2(128, 44)
-	back.pressed.connect(func() -> void: go_home.call())
-	add_child(back)
-	# V0.41 手杀式顶部深紫鎏金天幕横栏
-	var top_hud_bg := Panel.new()
-	top_hud_bg.position = Vector2(0, 0)
-	top_hud_bg.size = Vector2(vw, 90)
-	top_hud_bg.mouse_filter = MOUSE_FILTER_IGNORE
-	var th_sb := style(Color(0.14, 0.07, 0.20, 0.82), 0, C_GOLD, 0)
-	th_sb.border_width_bottom = 2
-	top_hud_bg.add_theme_stylebox_override("panel", th_sb)
-	add_child(top_hud_bg)
-	var ph_span_w := maxf(vw - 530.0 - FEAT_END, 300.0)
-	phase_label = lbl("", 28, Color(1.0, 0.95, 0.84), true, HORIZONTAL_ALIGNMENT_CENTER)
-	phase_label.add_theme_color_override("font_outline_color", Color(0.24, 0.08, 0.18, 0.92))
-	phase_label.add_theme_constant_override("outline_size", 6)
-	phase_label.position = Vector2(FEAT_END, 10)
-	phase_label.size = Vector2(ph_span_w, 36)
-	phase_label.clip_text = true
-	phase_label.autowrap_mode = TextServer.AUTOWRAP_OFF
-	add_child(phase_label)
-	# V0.41 手杀式六阶段进度指示铭牌（准备 · 判定 · 摸牌 · 出牌 · 弃牌 · 结束）
-	var ph_names := ["准备", "判定", "摸牌", "出牌", "弃牌", "结束"]
-	var pw := 68.0
-	var pgap := 8.0
-	var total_pw := ph_names.size() * pw + (ph_names.size() - 1) * pgap
-	var px0 := FEAT_END + (ph_span_w - total_pw) * 0.5
-	for pi in ph_names.size():
-		var pp := Panel.new()
-		pp.position = Vector2(px0 + pi * (pw + pgap), 50)
-		pp.size = Vector2(pw, 28)
-		pp.mouse_filter = MOUSE_FILTER_IGNORE
-		pp.add_theme_stylebox_override("panel", style(Color(0.18, 0.10, 0.26, 0.72), 11, Color(0.91, 0.64, 0.24, 0.38), 1))
-		var plb := lbl(ph_names[pi], 16, Color(0.82, 0.76, 0.86, 0.78), true, HORIZONTAL_ALIGNMENT_CENTER)
-		plb.name = "PhLbl"
-		plb.position = Vector2(0, 3)
-		plb.size = Vector2(pw, 22)
-		plb.autowrap_mode = TextServer.AUTOWRAP_OFF
-		plb.mouse_filter = MOUSE_FILTER_IGNORE
-		pp.add_child(plb)
-		add_child(pp)
-		phase_pills.append(pp)
-	turn_label = lbl("", 18, Color(1, 0.94, 0.82), true, HORIZONTAL_ALIGNMENT_CENTER)
-	turn_label.position = Vector2(FEAT_END, 92)
-	turn_label.size = Vector2(ph_span_w, 24)
-	turn_label.visible = false
-	add_child(turn_label)
-	var pill_defs := [[vw - 520, 156], [vw - 352, 140], [vw - 200, 152]]
-	var pill_lbls: Array = []
-	var pill_init := ["牌堆 --", "弃牌 0", "选将中"]  # 开局前（选将/叫分）不留空白胶囊
-	for pd in pill_defs:
-		var pill := Panel.new()
-		pill.position = Vector2(pd[0], 20)
-		pill.size = Vector2(pd[1], 52)
-		pill.mouse_filter = MOUSE_FILTER_IGNORE
-		pill.add_theme_stylebox_override("panel", style(Color(0.22, 0.11, 0.29, 0.92), 26, C_GOLD, 2, true))
-		add_child(pill)
-		var pl := lbl(String(pill_init[pill_lbls.size()]), 22, Color(1.0, 0.95, 0.84), true, HORIZONTAL_ALIGNMENT_CENTER)
-		pl.position = Vector2(pd[0], 32)
-		pl.size = Vector2(pd[1], 32)
-		pl.autowrap_mode = TextServer.AUTOWRAP_OFF
-		add_child(pl)
-		pill_lbls.append(pl)
-	deck_label = pill_lbls[0]
-	disc_label = pill_lbls[1]
-	round_label = pill_lbls[2]
-	# 中央宣告
-	announce_label = lbl("", 48, C_PINK_DEEP, true, HORIZONTAL_ALIGNMENT_CENTER)
-	announce_label.position = Vector2(0, 640)
-	announce_label.size = Vector2(vw, 64)
-	announce_label.autowrap_mode = TextServer.AUTOWRAP_OFF
-	announce_label.modulate = Color(1, 1, 1, 0)
-	add_child(announce_label)
-	# 功能条（手杀深紫鎏金胶囊样式）
-	var feat_defs := ["记牌", "记录", "排序", "托管", "认输", "倍速", "设置"]
-	for fi in feat_defs.size():
-		var fb := plain_btn(feat_defs[fi], Color(0.24, 0.12, 0.31, 0.92), Color(1.0, 0.94, 0.84), 23)
-		_set_btn_theme(fb, Color(0.24, 0.12, 0.31, 0.92), C_GOLD, Color(1.0, 0.94, 0.84), 18, 2, false, Vector2i(10, 6), C_GOLD)
-		fb.clip_text = true
-		fb.custom_minimum_size = Vector2(108, 52)
-		fb.position = Vector2(16 + fi * 118, 24)
-		fb.size = Vector2(108, 52)
-		add_child(fb)
-		match feat_defs[fi]:
-			"记牌":
-				fb.pressed.connect(func() -> void: open_info_overlay("记牌器 · 战场情报", counter_text(), true))
-			"记录":
-				fb.pressed.connect(func() -> void: open_info_overlay("战况记录", "\n".join(eng.log_lines) if eng != null else ""))
-			"排序":
-				sort_btn = fb
-				fb.pressed.connect(func() -> void: sort_my_hand())
-			"托管":
-				auto_btn = fb
-				fb.pressed.connect(func() -> void: toggle_auto())
-			"认输":
-				concede_btn = fb
-				fb.pressed.connect(func() -> void: on_concede_pressed())
-			"设置":
-				settings_btn = fb
-				fb.pressed.connect(func() -> void: toggle_settings_panel())
-			"倍速":
-				speed_btn = fb
-				fb.text = "%sx" % str(SPEEDS[speed_idx])
-				fb.pressed.connect(func() -> void: cycle_speed())
+	bg_catch.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	var table_tint := ColorRect.new()
+	table_tint.color = Color(Palette.NIGHT_PANEL, 0.21) if _night_ui else Color(Palette.MILK, 0.13)
+	table_tint.mouse_filter = MOUSE_FILTER_IGNORE
+	add_child(table_tint)
+	table_tint.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	var vertical_pad := maxf((get_viewport_rect().size.y - 1080.0) * 0.5, 0.0)
+	table_tint.offset_top = -vertical_pad
+	table_tint.offset_bottom = vertical_pad
+	_build_table_hud()
 	# 信息浮层（记牌器/战况记录共用）
 	info_overlay = Panel.new()
 	info_overlay.position = Vector2(0, 0)
 	info_overlay.size = Vector2(vw, 1080)
 	info_overlay.mouse_filter = MOUSE_FILTER_STOP
-	info_overlay.add_theme_stylebox_override("panel", style(Color(0.16, 0.1, 0.24, 0.72), 0))
+	info_overlay.add_theme_stylebox_override("panel", style(Color(Palette.NIGHT_PANEL, 0.70), 0))
 	info_overlay.visible = false
 	add_child(info_overlay)
+	var dialog_width := minf(1160.0, vw - safe_insets.x - safe_insets.z - 56.0)
+	var dialog_x := (vw - dialog_width) * 0.5
+	var dialog_y := safe_insets.y + 112.0
+	var close_top := 1080.0 - safe_insets.w - 118.0
 	var card_panel := Panel.new()
-	card_panel.position = Vector2((vw - 1160) / 2.0, 130)
-	card_panel.size = Vector2(1160, 800)
+	card_panel.position = Vector2(dialog_x, dialog_y)
+	card_panel.size = Vector2(dialog_width, close_top - dialog_y - 16.0)
 	card_panel.mouse_filter = MOUSE_FILTER_IGNORE
-	card_panel.add_theme_stylebox_override("panel", style(Color(1, 0.99, 1, 0.98), 24, C_GOLD, 3, true))
+	card_panel.add_theme_stylebox_override("panel", style(Palette.MILK, 24, Palette.LILAC_EDGE, 1, true))
 	info_overlay.add_child(card_panel)
 	info_title = lbl("", 34, C_INK, true, HORIZONTAL_ALIGNMENT_CENTER)
-	info_title.position = Vector2((vw - 1160) / 2.0, 152)
-	info_title.size = Vector2(1160, 48)
+	info_title.position = Vector2(dialog_x, dialog_y + 24)
+	info_title.size = Vector2(dialog_width, 48)
 	info_title.autowrap_mode = TextServer.AUTOWRAP_OFF
 	info_overlay.add_child(info_title)
 	info_text = RichTextLabel.new()
 	info_text.bbcode_enabled = false
 	info_text.fit_content = false
 	info_text.scroll_active = true
-	info_text.position = Vector2((vw - 1160) / 2.0 + 44, 216)
-	info_text.size = Vector2(1160 - 88, 800 - 170)
+	info_text.position = Vector2(dialog_x + 40, dialog_y + 96)
+	info_text.size = Vector2(dialog_width - 80, close_top - dialog_y - 136)
 	info_text.add_theme_font_override("normal_font", font_reg)
 	info_text.add_theme_font_size_override("normal_font_size", 25)
 	info_text.add_theme_color_override("default_color", C_INK)
 	info_overlay.add_child(info_text)
-	var close_btn := plain_btn("关闭", Color(1, 1, 1, 0.95), C_PINK_DEEP, 26)
-	close_btn.position = Vector2(vw / 2.0 - 90, 130 + 800 + 18)
-	close_btn.size = Vector2(180, 60)
+	var close_btn := plain_btn("关闭", Palette.LILAC_SOFT, Palette.INK, 26)
+	close_btn.position = Vector2(vw / 2.0 - 108, close_top)
+	close_btn.size = Vector2(216, 92)
 	close_btn.pressed.connect(func() -> void: info_overlay.visible = false)
 	info_overlay.add_child(close_btn)
-	_extend_cover(info_overlay, Color(0.16, 0.1, 0.24, 0.72))
+	_extend_cover(info_overlay, Color(Palette.NIGHT_PANEL, 0.70))
 	# 四个 AI 座位（环绕桌面）
 	var seat_pos: Dictionary
+	var upper_y := safe_insets.y + table_hud_height + 24.0
+	var side_y := minf(maxf(upper_y + 104.0, 280.0), 286.0 - safe_insets.w)
+	var inner_x := safe_insets.x + 374.0
+	var left_x := safe_insets.x + 42.0
+	var right_x := vw - safe_insets.z - 292.0
 	if match_players == 3:
-		seat_pos = {1: Vector2(452, 120), 2: Vector2(vw - 702, 120)}
+		seat_pos = {1: Vector2(inner_x, upper_y), 2: Vector2(vw - inner_x - 250.0, upper_y)}
 	elif match_players == 2:
-		seat_pos = {1: Vector2((vw - 250) / 2.0, 120)}
+		seat_pos = {1: Vector2((vw - 250.0) / 2.0, upper_y)}
 	elif match_players == 4:
-		seat_pos = {1: Vector2(76, 250), 2: Vector2((vw - 250) / 2.0, 114), 3: Vector2(vw - 326, 250)}
+		seat_pos = {1: Vector2(left_x, side_y), 2: Vector2((vw - 250.0) / 2.0, upper_y), 3: Vector2(right_x, side_y)}
 	else:
-		seat_pos = {1: Vector2(64, 296), 2: Vector2(452, 120), 3: Vector2(vw - 702, 120), 4: Vector2(vw - 314, 296)}
+		seat_pos = {1: Vector2(left_x, side_y), 2: Vector2(inner_x, upper_y), 3: Vector2(vw - inner_x - 250.0, upper_y), 4: Vector2(right_x, side_y)}
 	for i in match_players - 1:
 		var seat_idx := i + 1
 		var panel := make_seat_panel(seat_idx)
@@ -714,94 +864,107 @@ func build_table() -> void:
 		glow.position = seat_pos[seat_idx] - Vector2(7, 7)
 		glow.size = Vector2(264, 386)
 		glow.mouse_filter = MOUSE_FILTER_IGNORE
-		glow.add_theme_stylebox_override("panel", style(Color(1, 0.82, 0.25, 0.06), 26, Color(1.0, 0.78, 0.22), 6, true))
+		glow.add_theme_stylebox_override("panel", style(Color(Palette.ROSE_SOFT, 0.05), 26, Palette.ROSE_EDGE, 3, true))
 		glow.visible = false
 		add_child(glow)
 		glow_frames[seat_idx] = glow
-		var gt := create_tween().set_loops()
-		gt.tween_property(glow, "modulate:a", 0.40, 0.48)
-		gt.tween_property(glow, "modulate:a", 1.0, 0.48)
 	# 实时出牌播报条（谁对谁使用了什么牌）
 	play_callout_panel = PanelContainer.new()
-	play_callout_panel.position = Vector2(vw * 0.5 - 390, 526)
+	play_callout_panel.position = Vector2(vw * 0.5 - 390, 526 - safe_insets.w)
 	play_callout_panel.custom_minimum_size = Vector2(780, 46)
 	play_callout_panel.size = Vector2(780, 46)
 	play_callout_panel.mouse_filter = MOUSE_FILTER_IGNORE
-	play_callout_panel.add_theme_stylebox_override("panel", _tight(style(Color(0.16, 0.08, 0.24, 0.88), 16, C_GOLD, 2, true), 18, 6))
+	play_callout_panel.add_theme_stylebox_override("panel", _tight(style(_table_surface, 16, _table_edge, 1), 18, 6))
 	play_callout_panel.visible = false
-	play_callout_label = lbl("", 22, Color(1.0, 0.96, 0.86), true, HORIZONTAL_ALIGNMENT_CENTER)
+	play_callout_label = lbl("", 22, _table_text, true, HORIZONTAL_ALIGNMENT_CENTER)
 	play_callout_label.autowrap_mode = TextServer.AUTOWRAP_OFF
 	play_callout_label.clip_text = true
+	play_callout_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	play_callout_label.mouse_filter = MOUSE_FILTER_IGNORE
 	play_callout_panel.add_child(play_callout_label)
 	add_child(play_callout_panel)
 	# 提示条（提问/选目标时出现）
 	# V0.25 手杀式提示条：文字可智能换行 + 倒计时进度条（位于处理区下方）；作答按钮统一放在手牌上方的操作栏位置
-	hand_x0 = 352.0
-	hand_x1 = vw - 690.0
+	hand_x0 = 352.0 + safe_insets.x
+	hand_x1 = vw - 690.0 - safe_insets.z
 	var bar_cx := (hand_x0 + hand_x1) * 0.5
+	prompt_action_width = clampf(hand_x1 - hand_x0, 420.0, 892.0)
 	prompt_panel = PanelContainer.new()
-	prompt_panel.position = Vector2(bar_cx - 470, 588)
-	prompt_panel.custom_minimum_size = Vector2(940, 74)
-	prompt_panel.size = Vector2(940, 74)
+	prompt_panel.position = Vector2(bar_cx - prompt_action_width * 0.5, 530 - safe_insets.w)
+	prompt_panel.custom_minimum_size = Vector2(prompt_action_width, 74)
+	prompt_panel.size = prompt_panel.custom_minimum_size
 	prompt_panel.mouse_filter = MOUSE_FILTER_IGNORE
-	prompt_panel.add_theme_stylebox_override("panel", _tight(style(Color(0.16, 0.10, 0.22, 0.84), 18, Color(1.0, 0.80, 0.42, 0.88), 2, true), 20, 10))
+	prompt_panel.add_theme_stylebox_override("panel", _tight(style(_table_surface, 16, _table_edge, 1, true), 16, 7))
 	var pv := VBoxContainer.new()
 	pv.mouse_filter = MOUSE_FILTER_IGNORE
-	pv.add_theme_constant_override("separation", 6)
+	pv.alignment = BoxContainer.ALIGNMENT_CENTER
+	pv.add_theme_constant_override("separation", 3)
 	prompt_panel.add_child(pv)
-	prompt_label = lbl("", 23, Color(1.0, 0.95, 0.86), true, HORIZONTAL_ALIGNMENT_CENTER)
+	prompt_header = HBoxContainer.new()
+	prompt_header.alignment = BoxContainer.ALIGNMENT_END
+	prompt_header.mouse_filter = MOUSE_FILTER_IGNORE
+	prompt_header.visible = false
+	pv.add_child(prompt_header)
+	prompt_context_label = lbl("", 18, _table_note)
+	prompt_context_label.autowrap_mode = TextServer.AUTOWRAP_OFF
+	prompt_context_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	prompt_context_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	prompt_context_label.mouse_filter = MOUSE_FILTER_IGNORE
+	prompt_header.add_child(prompt_context_label)
+	ask_secs_label = lbl("", 18, Palette.ROSE_SOFT if _night_ui else C_TABLE_ACTION, true, HORIZONTAL_ALIGNMENT_RIGHT)
+	ask_secs_label.autowrap_mode = TextServer.AUTOWRAP_OFF
+	ask_secs_label.mouse_filter = MOUSE_FILTER_IGNORE
+	ask_secs_label.visible = false
+	prompt_header.add_child(ask_secs_label)
+	prompt_label = lbl("", 23, _table_text, true, HORIZONTAL_ALIGNMENT_LEFT)
 	prompt_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	prompt_label.custom_minimum_size = Vector2(880, 0)
+	prompt_label.custom_minimum_size.y = 64.0
+	prompt_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	prompt_label.max_lines_visible = 2
+	prompt_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	prompt_label.mouse_filter = MOUSE_FILTER_IGNORE
 	pv.add_child(prompt_label)
 	var ask_bar_bg := Panel.new()
 	ask_bar_bg_ref = ask_bar_bg
 	ask_bar_bg.visible = false
-	ask_bar_bg.custom_minimum_size = Vector2(0, 8)
-	ask_bar_bg.add_theme_stylebox_override("panel", style(Color(1, 1, 1, 0.18), 4))
+	ask_bar_bg.custom_minimum_size = Vector2(0, 5)
+	ask_bar_bg.add_theme_stylebox_override("panel", style(_table_inset, 4))
 	ask_bar_bg.mouse_filter = MOUSE_FILTER_IGNORE
 	pv.add_child(ask_bar_bg)
 	ask_bar_fill = ColorRect.new()
-	ask_bar_fill.color = Color(0.25, 0.90, 0.80, 0.95)
+	ask_bar_fill.color = Color("#739fca")
 	ask_bar_fill.set_anchors_preset(Control.PRESET_FULL_RECT)
 	ask_bar_fill.mouse_filter = MOUSE_FILTER_IGNORE
 	ask_bar_bg.add_child(ask_bar_fill)
-	ask_secs_label = lbl("", 20, Color(1, 1, 1, 0.9), true, HORIZONTAL_ALIGNMENT_RIGHT)
-	ask_secs_label.position = prompt_panel.position + Vector2(900 - 80, 12)
-	ask_secs_label.size = Vector2(64, 28)
-	ask_secs_label.mouse_filter = MOUSE_FILTER_IGNORE
-	ask_secs_label.visible = false
 	prompt_panel.visible = false
 	add_child(prompt_panel)
-	add_child(ask_secs_label)
 	prompt_btns = HBoxContainer.new()
-	prompt_btns.alignment = BoxContainer.ALIGNMENT_CENTER
+	prompt_btns.alignment = BoxContainer.ALIGNMENT_BEGIN
 	prompt_btns.add_theme_constant_override("separation", 12)
-	prompt_btns.position = Vector2(344, 682)
-	prompt_btns.size = Vector2(892, 66)
+	prompt_btns.position = Vector2(bar_cx - prompt_action_width * 0.5, 649 - safe_insets.w)
+	prompt_btns.size = Vector2(prompt_action_width, TABLE_ACTION_H)
 	add_child(prompt_btns)
 	# 操作栏（手杀：确定 / 取消 / 结束 位于手牌正上方）
 	action_bar = HBoxContainer.new()
-	action_bar.alignment = BoxContainer.ALIGNMENT_CENTER
+	action_bar.alignment = BoxContainer.ALIGNMENT_BEGIN
 	action_bar.add_theme_constant_override("separation", 14)
-	action_bar.position = Vector2(344, 682)
-	action_bar.size = Vector2(892, 66)
+	action_bar.position = prompt_btns.position
+	action_bar.size = prompt_btns.size
 	action_bar.visible = false
 	add_child(action_bar)
-	confirm_btn = _make_action_btn("确定", C_GOLD, Color(0.25, 0.16, 0.05))
+	confirm_btn = _make_action_btn("出牌", C_TABLE_ACTION, C_WHITE)
 	confirm_btn.pressed.connect(_on_confirm_pressed)
 	action_bar.add_child(confirm_btn)
-	cancel_btn = _make_action_btn("取消", Color(1, 1, 1, 0.96), C_PINK_DEEP)
+	cancel_btn = _make_action_btn("取消", _table_button, _table_text)
 	cancel_btn.pressed.connect(_on_cancel_pressed)
 	action_bar.add_child(cancel_btn)
 	# V0.28：重铸（无名杀 recastable）——选中可重铸的牌后出现，点击即重铸（弃置并摸一张）
-	recast_btn = _make_action_btn("重铸", Color(0.62, 0.80, 1.0), Color(0.10, 0.18, 0.35))
+	recast_btn = _make_action_btn("重铸", _table_inset if _night_ui else Palette.SKY_SOFT, _table_text)
 	recast_btn.pressed.connect(_on_recast_pressed)
 	recast_btn.visible = false
 	action_bar.add_child(recast_btn)
 	# V0.33：手气卡（对标手杀开局换牌，首轮未出牌前最多换 2 次）
-	luck_btn = _make_action_btn("手气卡×2", Color(0.95, 0.56, 0.72), C_WHITE)
+	luck_btn = _make_action_btn("手气卡×2", _table_button, _table_text)
 	luck_btn.pressed.connect(_on_luck_pressed)
 	luck_btn.visible = false
 	action_bar.add_child(luck_btn)
@@ -838,12 +1001,12 @@ func build_table() -> void:
 		diff_btns.append(db)
 	refresh_diff_buttons()
 	# V0.33：选将支持「换一批」与「自由点将」（对标手杀换将卡/无名杀自由点将）
-	var rbtn := plain_btn("🔄 换一批", Color(1, 1, 1, 0.94), C_PINK_DEEP, 23)
+	var rbtn := plain_btn("🔄 换一批", _table_inset, _table_text, 23)
 	rbtn.position = Vector2(500, 0)
 	rbtn.size = Vector2(170, 52)
 	rbtn.pressed.connect(_on_reshuffle_draft)
 	diff_layer.add_child(rbtn)
-	var fpbtn := plain_btn("★ 自由点将", C_GOLD, Color(0.24, 0.14, 0.05), 23)
+	var fpbtn := plain_btn("★ 自由点将", _table_inset if _night_ui else Palette.SKY_SOFT, _table_text, 23)
 	fpbtn.position = Vector2(686, 0)
 	fpbtn.size = Vector2(190, 52)
 	fpbtn.pressed.connect(_open_free_pick)
@@ -851,25 +1014,22 @@ func build_table() -> void:
 	# 左下：自己的角色牌
 	var me_panel := Panel.new()
 	me_panel_ref = me_panel
-	me_panel.position = Vector2(40, 676)
+	me_panel.position = Vector2(40 + safe_insets.x, 676 - safe_insets.w)
 	me_panel.size = Vector2(292, 372)
 	me_panel.mouse_filter = MOUSE_FILTER_IGNORE
 	me_panel.set_meta("seat", 0)
 	me_panel.set_meta("intro", Callable(self, "_intro_seat").bind(0))
-	me_panel.add_theme_stylebox_override("panel", style(Color(1, 1, 1, 0.94), 22, C_GOLD, 3, true))
+	me_panel.add_theme_stylebox_override("panel", style(_table_surface, 22, _table_edge, 1, true))
 	add_child(me_panel)
 	table_nodes.append(me_panel)
 	var me_glow := Panel.new()
-	me_glow.position = Vector2(33, 669)
+	me_glow.position = me_panel.position - Vector2(7, 7)
 	me_glow.size = Vector2(306, 386)
 	me_glow.mouse_filter = MOUSE_FILTER_IGNORE
-	me_glow.add_theme_stylebox_override("panel", style(Color(1, 0.82, 0.25, 0.06), 26, Color(1.0, 0.78, 0.22), 6, true))
+	me_glow.add_theme_stylebox_override("panel", style(Color(Palette.ROSE_SOFT, 0.05), 26, Palette.ROSE_EDGE, 3, true))
 	me_glow.visible = false
 	add_child(me_glow)
 	glow_frames[0] = me_glow
-	var mgt := create_tween().set_loops()
-	mgt.tween_property(me_glow, "modulate:a", 0.45, 0.48)
-	mgt.tween_property(me_glow, "modulate:a", 1.0, 0.48)
 	# 特效层（最上层，不拦点击）
 	fx_root = Control.new()
 	fx_root.set_anchors_preset(Control.PRESET_FULL_RECT)
@@ -877,19 +1037,17 @@ func build_table() -> void:
 	fx_root.child_entered_tree.connect(_fx_click_through)
 	add_child(fx_root)
 	turn_banner_panel = PanelContainer.new()
-	turn_banner_panel.position = Vector2(vw * 0.5 - 410, 492)
-	turn_banner_panel.custom_minimum_size = Vector2(820, 78)
-	turn_banner_panel.size = Vector2(820, 78)
-	turn_banner_panel.pivot_offset = Vector2(410, 39)
+	turn_banner_panel.position = Vector2(26.0 + safe_insets.x, safe_insets.y + table_hud_height + 14.0)
+	turn_banner_panel.custom_minimum_size = Vector2(302, 46)
+	turn_banner_panel.size = turn_banner_panel.custom_minimum_size
+	turn_banner_panel.pivot_offset = turn_banner_panel.size * 0.5
 	turn_banner_panel.modulate = Color(1, 1, 1, 0)
 	turn_banner_panel.mouse_filter = MOUSE_FILTER_IGNORE
-	turn_banner_panel.add_theme_stylebox_override("panel", _tight(style(Color(0.20, 0.06, 0.22, 0.94), 24, C_GOLD, 3, true), 28, 12))
+	turn_banner_panel.add_theme_stylebox_override("panel", _tight(style(_table_surface, 15, _table_edge, 1, true), 12, 6))
 	fx_root.add_child(turn_banner_panel)
-	turn_banner = lbl("", 38, Color(1.0, 0.90, 0.52), true, HORIZONTAL_ALIGNMENT_CENTER)
+	turn_banner = lbl("", 23, _table_text, true, HORIZONTAL_ALIGNMENT_CENTER)
 	turn_banner.autowrap_mode = TextServer.AUTOWRAP_OFF
 	turn_banner.mouse_filter = MOUSE_FILTER_IGNORE
-	turn_banner.add_theme_constant_override("outline_size", 8)
-	turn_banner.add_theme_color_override("font_outline_color", Color(0.28, 0.06, 0.14, 0.95))
 	turn_banner_panel.add_child(turn_banner)
 	match_banner = lbl("", 88, Color(1.0, 0.75, 0.25), true, HORIZONTAL_ALIGNMENT_CENTER)
 	match_banner.position = Vector2(0, 430)
@@ -910,85 +1068,50 @@ func build_table() -> void:
 	player_portrait.position = Vector2(7, -2)
 	player_portrait.size = Vector2(278, 336)
 	player_portrait.pivot_offset = Vector2(139, 168)
-	var bt := create_tween().bind_node(player_portrait).set_loops()
-	bt.tween_property(player_portrait, "scale", Vector2(1.016, 1.016), 1.6).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
-	bt.tween_property(player_portrait, "scale", Vector2.ONE, 1.6).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
 	var me_plate := Panel.new()
-	me_plate.position = Vector2(-6, 282)
-	me_plate.size = Vector2(252, 52)
-	me_plate.rotation = -0.02
+	me_plate.position = Vector2(7, 279)
+	me_plate.size = Vector2(278, 86)
 	me_plate.mouse_filter = MOUSE_FILTER_IGNORE
-	me_plate.add_theme_stylebox_override("panel", style(C_PLATE, 10, Color(1, 1, 1, 0.9), 2, true))
+	me_plate.add_theme_stylebox_override("panel", style(_table_surface, 9))
 	me_panel.add_child(me_plate)
-	var mgloss := Panel.new()
-	mgloss.set_anchors_preset(Control.PRESET_TOP_WIDE)
-	mgloss.size = Vector2(0, 20)
-	mgloss.mouse_filter = MOUSE_FILTER_IGNORE
-	mgloss.add_theme_stylebox_override("panel", style(Color(1, 1, 1, 0.16), 9))
-	me_plate.add_child(mgloss)
-	player_info = lbl("", 21, C_WHITE, true)
-	player_info.position = Vector2(16, 9)
-	player_info.size = Vector2(224, 36)
+	player_info = lbl("", 27, _table_text, true)
+	player_info.position = Vector2(12, 8)
+	player_info.size = Vector2(252, 40)
 	player_info.autowrap_mode = TextServer.AUTOWRAP_OFF
-	player_info.clip_text = true
+	player_info.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	me_plate.add_child(player_info)
-	me_hp_label = lbl("", 21, C_PINK_DEEP, true)
-	me_hp_label.position = Vector2(12, 339)
-	me_hp_label.size = Vector2(272, 30)
+	me_hp_label = lbl("", 22, _table_note, true)
+	me_hp_label.position = Vector2(12, 324)
+	me_hp_label.size = Vector2(268, 31)
 	me_hp_label.autowrap_mode = TextServer.AUTOWRAP_OFF
-	me_hp_label.clip_text = true
+	me_hp_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	me_panel.add_child(me_hp_label)
 	_add_seat_overlays(me_panel, Vector2(292, 372), true)
-	var me_pl := Art.name_plate({"name": "", "rarity": "SR"}, 24, true)
-	me_pl.position = Vector2(8, 54)
-	me_panel.add_child(me_pl)
-	Art.add_corners(me_panel, Vector2(292, 336), 34.0, 0.0)
+	Art.add_corners(me_panel, Vector2(292, 372), 23.0, 0.0)
 	_build_guess_popup()
 	me_chips = HBoxContainer.new()
-	me_chips.position = Vector2(356, 988)
+	me_chips.position = Vector2(356 + safe_insets.x, 988 - safe_insets.w)
 	me_chips.add_theme_constant_override("separation", 10)
 	add_child(me_chips)
 	table_nodes.append(me_chips)
 	skill_passives = HBoxContainer.new()
-	skill_passives.position = Vector2(vw - 674, 684)
+	skill_passives.position = Vector2(vw - 674 - safe_insets.z, 684 - safe_insets.w)
 	skill_passives.add_theme_constant_override("separation", 8)
 	add_child(skill_passives)
 	table_nodes.append(skill_passives)
 	skill_sig = ""
 	skill_btns = VBoxContainer.new()
-	skill_btns.position = Vector2(vw - 674, 738)
+	skill_btns.position = Vector2(vw - 674 - safe_insets.z, 738 - safe_insets.w)
 	skill_btns.size = Vector2(244, 210)
 	skill_btns.add_theme_constant_override("separation", 14)
 	add_child(skill_btns)
 	table_nodes.append(skill_btns)
-	# V0.41 手杀式底部鎏金手牌护栏底座（Hand Dock）
-	var hand_dock := Panel.new()
-	hand_dock.position = Vector2(hand_x0 - 10.0, HAND_Y + 26.0)
-	hand_dock.size = Vector2(hand_x1 - hand_x0 + 20.0, HAND_H - 18.0)
-	hand_dock.mouse_filter = MOUSE_FILTER_IGNORE
-	hand_dock.add_theme_stylebox_override("panel", style(Color(0.14, 0.07, 0.20, 0.50), 22, Color(0.93, 0.70, 0.32, 0.65), 2, true))
-	Art.add_corners(hand_dock, hand_dock.size, 26.0, 0.0)
-	add_child(hand_dock)
-	table_nodes.append(hand_dock)
-	# 底部中央：手牌区
-	# V0.25 手牌层（对照无名杀 updatehl：重叠排布、放不下自动压缩；节点按牌复用，位置变化才补间）
-	hand_row = Control.new()
-	hand_row.position = Vector2(hand_x0, HAND_Y)
-	hand_row.size = Vector2(hand_x1 - hand_x0, HAND_H)
-	hand_row.mouse_filter = MOUSE_FILTER_IGNORE
-	add_child(hand_row)
-	table_nodes.append(hand_row)
-	hand_cards.clear()
-	drag_line = Line2D.new()
-	drag_line.width = 5.0
-	drag_line.default_color = Color(1.0, 0.85, 0.45, 0.9)
-	drag_line.visible = false
-	add_child(drag_line)
+	_build_hand_controls()
 	# 自己的头像也可点选（以自己为目标的牌：补给、增兵减灶、洞烛先机等）
 	me_click_btn = Button.new()
 	me_click_btn.flat = true
 	me_click_btn.focus_mode = Control.FOCUS_NONE
-	me_click_btn.position = Vector2(40, 676)
+	me_click_btn.position = me_panel_ref.position
 	me_click_btn.size = Vector2(292, 372)
 	for st in ["normal", "hover", "pressed", "disabled", "focus"]:
 		me_click_btn.add_theme_stylebox_override(st, StyleBoxEmpty.new())
@@ -1000,24 +1123,11 @@ func build_table() -> void:
 	draft_banner = lbl("", 46, C_PINK_DEEP, true, HORIZONTAL_ALIGNMENT_CENTER)
 	draft_banner.add_theme_constant_override("outline_size", 8)
 	draft_banner.add_theme_color_override("font_outline_color", Color(1, 1, 1, 0.9))
-	draft_banner.position = Vector2(0, 108)
-	draft_banner.size = Vector2(1920, 130)
+	draft_banner.position = Vector2(safe_insets.x, safe_insets.y + table_hud_height + 12.0)
+	draft_banner.size = Vector2(vw - safe_insets.x - safe_insets.z, 90)
 	draft_banner.autowrap_mode = TextServer.AUTOWRAP_OFF
 	draft_banner.visible = false
 	add_child(draft_banner)
-	# 右上角座次表
-	seat_table_panel = PanelContainer.new()
-	seat_table_panel.position = Vector2(vw - 356, 84)
-	seat_table_panel.size = Vector2(328, 150)
-	seat_table_panel.clip_contents = true
-	seat_table_panel.add_theme_stylebox_override("panel", style(Color(1, 1, 1, 0.86), 16, C_GOLD, 2, true))
-	seat_table_panel.visible = false
-	seat_table_label = lbl("", 17, C_INK, false)
-	seat_table_label.autowrap_mode = TextServer.AUTOWRAP_OFF
-	seat_table_label.clip_text = true
-	seat_table_label.add_theme_constant_override("line_spacing", 2)
-	seat_table_panel.add_child(seat_table_label)
-	add_child(seat_table_panel)
 	# 出牌展示（桌面中央）
 	showcase_panel = Panel.new()
 	showcase_panel.position = Vector2(vw * 0.5 - 112, 300)
@@ -1091,55 +1201,56 @@ func build_table() -> void:
 	nullify_panel.position = Vector2(vw * 0.5 - 640, 486)
 	nullify_panel.size = Vector2(330, 100)
 	nullify_panel.mouse_filter = MOUSE_FILTER_IGNORE
-	nullify_panel.add_theme_stylebox_override("panel", style(Color(0.16, 0.10, 0.22, 0.82), 14, Color(0.85, 0.62, 0.1), 2, true))
-	nullify_label = lbl("", 17, Color(1.0, 0.92, 0.7), true)
+	nullify_panel.add_theme_stylebox_override("panel", style(_table_surface, 14, _table_edge, 1, true))
+	nullify_label = lbl("", 17, _table_text, true)
 	nullify_label.mouse_filter = MOUSE_FILTER_IGNORE
 	nullify_panel.add_child(nullify_label)
 	nullify_panel.visible = false
 	nullify_panel.set_meta("intro", Callable(self, "_intro_card").bind({"name": "看破"}))
 	add_child(nullify_panel)
-	# 右下：结束按钮 + 战报
-	end_play_btn = _make_action_btn("结束", C_PLATE, C_WHITE)
+	# 结束出牌保留在行动条，桌面只显示最近一条战况。
+	end_play_btn = _make_action_btn("结束出牌", _table_button, _table_text)
 	end_play_btn.disabled = true
 	end_play_btn.pressed.connect(_on_end_play_btn)
 	action_bar.add_child(end_play_btn)
 	log_panel = PanelContainer.new()
-	log_panel.position = Vector2(vw - 414, 742)
-	log_panel.size = Vector2(374, 258)
-	log_panel.add_theme_stylebox_override("panel", _tight(style(Color(1, 0.99, 1, 0.88), 18, C_GOLD, 2, true), 18, 12))
-	var log_vb := VBoxContainer.new()
-	log_vb.add_theme_constant_override("separation", 5)
-	log_panel.add_child(log_vb)
-	var log_head := lbl("  战报 LOG", 20, C_PINK_DEEP, true)
-	log_vb.add_child(log_head)
-	log_label = lbl("", 18, C_INK, false)
-	log_label.add_theme_constant_override("line_spacing", 3)
-	log_label.vertical_alignment = VERTICAL_ALIGNMENT_TOP
-	log_label.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	log_vb.add_child(log_label)
-	var accent := Panel.new()
-	accent.position = Vector2(vw - 406, 754)
-	accent.size = Vector2(5, 28)
-	accent.mouse_filter = MOUSE_FILTER_IGNORE
-	accent.add_theme_stylebox_override("panel", style(C_PLATE, 2))
-	add_child(accent)
-	table_nodes.append(accent)
+	log_panel.position = Vector2(vw - 414.0 - safe_insets.z, 742.0 - safe_insets.w)
+	log_panel.size = Vector2(374, 54)
+	log_panel.mouse_filter = MOUSE_FILTER_IGNORE
+	log_panel.add_theme_stylebox_override("panel", _tight(style(_table_surface, 14, _table_edge, 1), 14, 6))
+	var log_row := HBoxContainer.new()
+	log_row.add_theme_constant_override("separation", 12)
+	log_row.mouse_filter = MOUSE_FILTER_IGNORE
+	log_panel.add_child(log_row)
+	var log_head := lbl("战报", 22, Palette.ROSE_SOFT if _night_ui else C_TABLE_ACTION, true)
+	log_head.autowrap_mode = TextServer.AUTOWRAP_OFF
+	log_head.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	log_head.mouse_filter = MOUSE_FILTER_IGNORE
+	log_row.add_child(log_head)
+	log_label = lbl("等候开局", 22, _table_text)
+	log_label.autowrap_mode = TextServer.AUTOWRAP_OFF
+	log_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	log_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	log_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	log_label.mouse_filter = MOUSE_FILTER_IGNORE
+	log_row.add_child(log_label)
 	add_child(log_panel)
 	table_nodes.append(log_panel)
+	_build_table_tools()
 
 
 func make_seat_panel(seat_idx: int) -> Button:
 	var b := Button.new()
 	b.focus_mode = Control.FOCUS_NONE
-	b.add_theme_stylebox_override("normal", style(C_GOLD, 22, Color(1, 1, 1, 0.9), 2, true))
-	b.add_theme_stylebox_override("hover", style(C_GOLD.lightened(0.1), 22, Color(1, 1, 1, 0.95), 2, true))
-	b.add_theme_stylebox_override("pressed", style(C_GOLD.darkened(0.05), 22, Color(1, 1, 1, 0.95), 2, false))
-	b.add_theme_stylebox_override("disabled", style(C_GOLD, 22, Color(1, 1, 1, 0.9), 2, true))
+	b.add_theme_stylebox_override("normal", style(_table_surface, 18, _table_edge, 2, true))
+	b.add_theme_stylebox_override("hover", style(_table_inset, 18, Palette.ROSE_EDGE, 2, true))
+	b.add_theme_stylebox_override("pressed", style(_table_surface, 18, Palette.ROSE_EDGE, 2))
+	b.add_theme_stylebox_override("disabled", style(_table_surface, 18, _table_edge, 2, true))
 	var mat := Panel.new()
 	mat.position = Vector2(5, 5)
 	mat.size = Vector2(240, 362)
 	mat.mouse_filter = MOUSE_FILTER_IGNORE
-	mat.add_theme_stylebox_override("panel", style(Color(1, 1, 1), 18))
+	mat.add_theme_stylebox_override("panel", style(_table_inset, 14))
 	b.add_child(mat)
 	var tr := TextureRect.new()
 	tr.name = "Portrait"
@@ -1158,36 +1269,15 @@ func make_seat_panel(seat_idx: int) -> Button:
 	var gem := Panel.new()
 	gem.name = "Gem"
 	gem.position = Vector2(12, 12)
-	gem.name = "Gem"
 	gem.size = Vector2(50, 50)
 	gem.mouse_filter = MOUSE_FILTER_IGNORE
-	gem.add_theme_stylebox_override("panel", style(C_PLATE, 25, C_GOLD, 3, true))
+	gem.add_theme_stylebox_override("panel", style(_table_inset, 25, _table_edge, 1, true))
 	b.add_child(gem)
-	var ghl := Panel.new()
-	ghl.position = Vector2(9, 7)
-	ghl.size = Vector2(13, 13)
-	ghl.mouse_filter = MOUSE_FILTER_IGNORE
-	ghl.add_theme_stylebox_override("panel", style(Color(1, 1, 1, 0.75), 6))
-	gem.add_child(ghl)
-	var gt := lbl("?", 27, C_WHITE, true, HORIZONTAL_ALIGNMENT_CENTER)
+	var gt := lbl("?", 27, _table_text, true, HORIZONTAL_ALIGNMENT_CENTER)
 	gt.name = "GemText"
 	gt.position = Vector2(0, 7)
 	gt.size = Vector2(50, 36)
 	gem.add_child(gt)
-	var guess := Panel.new()
-	guess.name = "Guess"
-	guess.position = Vector2(186, 12)
-	guess.size = Vector2(54, 40)
-	guess.mouse_filter = MOUSE_FILTER_IGNORE
-	guess.add_theme_stylebox_override("panel", style(Color(0.25, 0.2, 0.45, 0.85), 12, Color(1, 1, 1, 0.8), 1, true))
-	guess.visible = false
-	b.add_child(guess)
-	var gt2 := lbl("", 20, C_WHITE, true, HORIZONTAL_ALIGNMENT_CENTER)
-	gt2.name = "GuessText"
-	gt2.position = Vector2(0, 5)
-	gt2.size = Vector2(54, 30)
-	gt2.autowrap_mode = TextServer.AUTOWRAP_OFF
-	guess.add_child(gt2)
 	var pips := VBoxContainer.new()
 	pips.name = "Pips"
 	pips.position = Vector2(214, 14)
@@ -1195,48 +1285,50 @@ func make_seat_panel(seat_idx: int) -> Button:
 	pips.mouse_filter = MOUSE_FILTER_IGNORE
 	b.add_child(pips)
 	var info_bg := Panel.new()
-	info_bg.position = Vector2(7, 322)
-	info_bg.size = Vector2(236, 43)
+	info_bg.position = Vector2(7, 287)
+	info_bg.size = Vector2(236, 78)
 	info_bg.mouse_filter = MOUSE_FILTER_IGNORE
-	info_bg.add_theme_stylebox_override("panel", style(Color(0.14, 0.07, 0.20, 0.76), 10, Color(0.93, 0.70, 0.32, 0.55), 1))
+	info_bg.add_theme_stylebox_override("panel", style(_table_surface, 8))
 	b.add_child(info_bg)
-	var info := lbl("", 17, C_WHITE, false)
+	var seat_name := lbl("", 27, _table_text, true)
+	seat_name.name = "SeatName"
+	seat_name.position = Vector2(16, 291)
+	seat_name.size = Vector2(216, 39)
+	seat_name.autowrap_mode = TextServer.AUTOWRAP_OFF
+	seat_name.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	seat_name.mouse_filter = MOUSE_FILTER_IGNORE
+	b.add_child(seat_name)
+	var info := lbl("", 20, _table_text, true, HORIZONTAL_ALIGNMENT_CENTER)
 	info.name = "Info"
-	info.position = Vector2(13, 331)
-	info.size = Vector2(224, 24)
+	info.position = Vector2(13, 104)
+	info.size = Vector2(194, 38)
+	info.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	info.autowrap_mode = TextServer.AUTOWRAP_OFF
-	info.clip_text = true
+	info.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	info.mouse_filter = MOUSE_FILTER_IGNORE
+	info.add_theme_stylebox_override("normal", _tight(style(_table_surface, 9), 6, 2))
+	info.hide()
 	b.add_child(info)
-	var chip := Panel.new()
-	chip.name = "Chip"
-	chip.position = Vector2(158, 325)
-	chip.size = Vector2(84, 38)
-	chip.mouse_filter = MOUSE_FILTER_IGNORE
-	chip.add_theme_stylebox_override("panel", style(Color(0.1, 0.06, 0.1, 0.72), 19, Color(1, 1, 1, 0.5), 1))
-	b.add_child(chip)
-	var ct := lbl("✋ 0", 21, C_WHITE, true, HORIZONTAL_ALIGNMENT_CENTER)
+	var ct := lbl("", 22, _table_note, true)
 	ct.name = "ChipText"
-	ct.position = Vector2(0, 6)
-	ct.size = Vector2(84, 26)
-	chip.add_child(ct)
-	# V0.31 CG 卡框：左侧竖排名牌（系列徽标 + 竖排名字 + 稀有度，按角色在 refresh 里重建）+ 四角金饰
-	var plate := Art.name_plate({"name": "", "rarity": "SR"}, 24, true)
-	plate.position = Vector2(8, 66)
-	b.add_child(plate)
-	Art.add_corners(b, Vector2(250, 372), 34.0, -3.0)
+	ct.position = Vector2(16, 326)
+	ct.size = Vector2(216, 35)
+	ct.autowrap_mode = TextServer.AUTOWRAP_OFF
+	ct.mouse_filter = MOUSE_FILTER_IGNORE
+	b.add_child(ct)
+	Art.add_corners(b, Vector2(250, 372), 22.0, 0.0)
 	_add_seat_overlays(b, Vector2(250, 372), false)
 	# 猜身份按钮（身份局、身份未明时）：座位本身只在选目标时可点，猜测用独立小按钮
 	var gb := Button.new()
 	gb.name = "GuessBtn"
 	gb.focus_mode = Control.FOCUS_NONE
-	gb.position = Vector2(180, 206)
-	gb.size = Vector2(62, 48)
-	gb.custom_minimum_size = Vector2(62, 48)
-	gb.text = "猜"
+	gb.position = Vector2(164, 156)
+	gb.size = Vector2(78, 64)
+	gb.custom_minimum_size = gb.size
+	gb.text = "猜身份"
 	gb.add_theme_font_override("font", font_bold)
 	gb.add_theme_font_size_override("font_size", 21)
-	_set_btn_theme(gb, Color(0.24, 0.18, 0.44, 0.88), Color(1.0, 0.90, 0.65, 0.90), Color(1, 1, 1, 0.98), 14, 2, true, Vector2i(4, 2), C_GOLD)
+	_set_btn_theme(gb, _table_inset, _table_edge, _table_text, 14, 1, true, Vector2i(4, 2), Palette.ROSE_EDGE)
 	_wire_btn_bounce(gb)
 	gb.pressed.connect(func() -> void: _open_guess(seat_idx))
 	gb.visible = false
@@ -1244,13 +1336,13 @@ func make_seat_panel(seat_idx: int) -> Button:
 	var eb := Button.new()
 	eb.name = "EmoteBtn"
 	eb.focus_mode = Control.FOCUS_NONE
-	eb.position = Vector2(184, 262)
-	eb.size = Vector2(58, 48)
-	eb.custom_minimum_size = Vector2(58, 48)
+	eb.position = Vector2(164, 222)
+	eb.size = Vector2(78, 62)
+	eb.custom_minimum_size = eb.size
 	eb.text = "🌹"
 	eb.add_theme_font_override("font", font_bold)
 	eb.add_theme_font_size_override("font_size", 22)
-	_set_btn_theme(eb, Color(0.32, 0.14, 0.30, 0.88), C_GOLD, C_WHITE, 14, 2, true, Vector2i(4, 2), Color(1.0, 0.88, 0.52))
+	_set_btn_theme(eb, _table_button, _table_edge, _table_text, 14, 1, true, Vector2i(4, 2), Palette.ROSE_EDGE)
 	_wire_btn_bounce(eb)
 	eb.pressed.connect(func() -> void: _throw_seat_emote(seat_idx))
 	b.add_child(eb)
@@ -1306,8 +1398,8 @@ func _add_seat_overlays(pn: Control, sz: Vector2, is_me: bool) -> void:
 	var eqv := VBoxContainer.new()
 	eqv.name = "Equips"
 	# V0.31：左上让给竖排名牌，装备栏改为左下、自下而上排
-	eqv.position = Vector2(10, 186) if not is_me else Vector2(10, 150)
-	eqv.size = Vector2(168, 130)
+	eqv.position = Vector2(10, 143) if not is_me else Vector2(10, 134)
+	eqv.size = Vector2(152, 142)
 	eqv.alignment = BoxContainer.ALIGNMENT_END
 	eqv.add_theme_constant_override("separation", 3)
 	eqv.mouse_filter = MOUSE_FILTER_IGNORE
@@ -1316,18 +1408,18 @@ func _add_seat_overlays(pn: Control, sz: Vector2, is_me: bool) -> void:
 		var row := PanelContainer.new()
 		row.name = slot
 		row.mouse_filter = MOUSE_FILTER_IGNORE
-		row.add_theme_stylebox_override("panel", _tight(style(Color(0.13, 0.10, 0.20, 0.82), 8, Color(1.0, 0.82, 0.45, 0.55), 1), 3, 2))
+		row.add_theme_stylebox_override("panel", _tight(style(_table_surface, 8, _table_edge, 1), 3, 2))
 		var hb := HBoxContainer.new()
 		hb.mouse_filter = MOUSE_FILTER_IGNORE
 		hb.add_theme_constant_override("separation", 4)
 		row.add_child(hb)
-		var tag := lbl(String(SLOT_TAGS[slot]), 15, Color(0.25, 0.16, 0.05), true, HORIZONTAL_ALIGNMENT_CENTER)
+		var tag := lbl(String(SLOT_TAGS[slot]), 15, _table_text, true, HORIZONTAL_ALIGNMENT_CENTER)
 		tag.name = "Tag"
 		tag.autowrap_mode = TextServer.AUTOWRAP_OFF
 		tag.custom_minimum_size = Vector2(28, 22)
-		tag.add_theme_stylebox_override("normal", _tight(style(C_GOLD, 6), 2, 0))
+		tag.add_theme_stylebox_override("normal", _tight(style(_table_inset, 6), 2, 0))
 		hb.add_child(tag)
-		var nm := lbl("", 16, C_WHITE, true)
+		var nm := lbl("", 16, _table_text, true)
 		nm.name = "Name"
 		nm.autowrap_mode = TextServer.AUTOWRAP_OFF
 		hb.add_child(nm)
@@ -1337,14 +1429,14 @@ func _add_seat_overlays(pn: Control, sz: Vector2, is_me: bool) -> void:
 	# 判定区：最多 4 个小圆标
 	var jh := HBoxContainer.new()
 	jh.name = "Judges"
-	jh.position = Vector2(68, 18) if not is_me else Vector2(12, 12)
+	jh.position = Vector2(13, 66) if not is_me else Vector2(12, 12)
 	jh.add_theme_constant_override("separation", 4)
 	jh.mouse_filter = MOUSE_FILTER_IGNORE
 	pn.add_child(jh)
 	for i in 4:
-		var jl := lbl("", 18, C_WHITE, true, HORIZONTAL_ALIGNMENT_CENTER)
+		var jl := lbl("", 18, _table_text, true, HORIZONTAL_ALIGNMENT_CENTER)
 		jl.custom_minimum_size = Vector2(32, 32)
-		jl.add_theme_stylebox_override("normal", _tight(style(Color(0.45, 0.25, 0.70, 0.92), 16, Color(1, 1, 1, 0.9), 2, true), 0, 0))
+		jl.add_theme_stylebox_override("normal", _tight(style(_table_inset, 16, _table_edge, 1, true), 0, 0))
 		jl.visible = false
 		jl.set_meta("intro", Callable(self, "_intro_judge").bind(pn, i))
 		jh.add_child(jl)
@@ -1388,19 +1480,94 @@ func _add_seat_overlays(pn: Control, sz: Vector2, is_me: bool) -> void:
 	ph.name = "PhaseTag"
 	ph.add_theme_font_override("font", font_bold)
 	ph.add_theme_font_size_override("font_size", 20)
-	ph.add_theme_color_override("font_color", Color(1.0, 0.97, 0.86))
+	ph.add_theme_color_override("font_color", C_WHITE)
 	ph.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	ph.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	ph.add_theme_stylebox_override("normal", _tight(style(Color(0.84, 0.18, 0.36, 0.96), 16, C_GOLD, 2, true), 8, 2))
+	ph.add_theme_stylebox_override("normal", _tight(style(C_TABLE_ACTION, 16, Palette.ROSE_EDGE, 1, true), 8, 2))
 	ph.size = Vector2(140, 34)
-	ph.position = Vector2(sz.x * 0.5 - 70, -18) if not is_me else Vector2(sz.x - 148, 10)
+	ph.position = Vector2(sz.x * 0.5 - 70, -20) if not is_me else Vector2(sz.x - 148, 10)
 	ph.mouse_filter = MOUSE_FILTER_IGNORE
 	ph.visible = false
 	pn.add_child(ph)
+	var target_tag := lbl("", 20, _table_text, true, HORIZONTAL_ALIGNMENT_CENTER)
+	target_tag.name = "TargetTag"
+	target_tag.position = Vector2(67, 14) if not is_me else Vector2(sz.x - 184.0, 56)
+	target_tag.size = Vector2(141, 42) if not is_me else Vector2(159, 40)
+	target_tag.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	target_tag.autowrap_mode = TextServer.AUTOWRAP_OFF
+	target_tag.mouse_filter = MOUSE_FILTER_IGNORE
+	target_tag.add_theme_stylebox_override("normal", _tight(style(_table_surface, 10, _table_edge, 1), 6, 3))
+	target_tag.visible = false
+	pn.add_child(target_tag)
+	if is_me:
+		var status := lbl("", 21, _table_text, true)
+		status.name = "Info"
+		status.position = Vector2(13, 103)
+		status.size = Vector2(266, 38)
+		status.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		status.autowrap_mode = TextServer.AUTOWRAP_OFF
+		status.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+		status.mouse_filter = MOUSE_FILTER_IGNORE
+		status.add_theme_stylebox_override("normal", _tight(style(_table_surface, 9), 7, 2))
+		status.visible = false
+		pn.add_child(status)
 	pn.move_child(ch, eqv.get_index())  # 锁链带画在装备栏下面，不遮装备
 	for n in [eqv, jh, ch, dy, dl, ph]:
 		for sub in (n as Node).find_children("*", "Control", true, false):
 			(sub as Control).mouse_filter = MOUSE_FILTER_IGNORE
+
+
+func _sync_target_tag(panel: Control, seat: int, alive: bool) -> void:
+	var tag := panel.get_node("TargetTag") as Label
+	tag.visible = alive and targeting and target_candidates.has(seat)
+	if not tag.visible:
+		return
+	if seat == drag_hover_seat:
+		tag.text = "松手出牌"
+		return
+	if seat == sel_target:
+		tag.text = "① 已选"
+	elif seat == extra_target:
+		tag.text = "② 已选"
+	else:
+		tag.text = "✓ 可选"
+	if seat > 0 and _target_uses_distance(String(selected_card.get("name", ""))):
+		tag.text += " · 距%d" % eff_dist(players[0], players[seat])
+
+
+func _target_uses_distance(card_name: String) -> bool:
+	return spear_targeting or card_name in ["突击", "悄悄借走", "断粮封锁", "逐近弃远"]
+
+
+func _seat_status_text(seat: int, p: Dictionary) -> String:
+	if not p["alive"]:
+		return ""
+	var flags: Array[String] = []
+	var identity := String(p["identity"])
+	if game_mode == "doudizhu" and eng != null and eng.ddz_open_seats.has(seat):
+		flags.append("明牌")
+	if seat != 0 and identity == String(players[0]["identity"]):
+		if game_mode in ["twovtwo", "boss"] or (game_mode == "doudizhu" and identity == "农民"):
+			flags.append("队友")
+	if bool(p.get("skills_sealed", false)):
+		flags.append("封技")
+	var shield := int(p.get("shield", 0))
+	if shield > 0:
+		flags.append("护甲%d" % shield)
+	var feather := int((p.get("marks", {}) as Dictionary).get("影羽", 0))
+	if feather > 0:
+		flags.append("影羽%d" % feather)
+	if seat > 0 and targeting:
+		var card_name := String(selected_card.get("name", ""))
+		if _target_uses_distance(card_name):
+			var distance := eff_dist(players[0], p)
+			if card_name == "逐近弃远":
+				flags.push_front("近距 · 获得一张" if distance <= 1 else "远距 · 弃置一张")
+			elif (card_name == "突击" or spear_targeting) and bool(p.get("dream_guard", false)):
+				flags.push_front("星眠免疫")
+			elif not target_candidates.has(seat):
+				flags.push_front("距离 %d" % distance)
+	return " · ".join(flags)
 
 
 func _equip_short(p: Dictionary, slot: String) -> String:
@@ -1440,25 +1607,11 @@ func _update_seat_overlays(pn: Control, p: Dictionary, portrait: CanvasItem) -> 
 			jl.visible = false
 	(pn.get_node("Chain") as Control).visible = alive and bool(p.get("chained", false))
 	var dy := pn.get_node("Dying") as Control
-	var dying := alive and int(p["hp"]) <= 0
-	if dying and not dy.visible:
-		dy.visible = true
-		dy.modulate.a = 1.0
-		var t := dy.create_tween().set_loops()
-		t.tween_property(dy, "modulate:a", 0.25, 0.45)
-		t.tween_property(dy, "modulate:a", 1.0, 0.45)
-		dy.set_meta("tw", t)
-	elif not dying and dy.visible:
-		dy.visible = false
-		if dy.has_meta("tw"):
-			var t2: Tween = dy.get_meta("tw")
-			if t2 != null and t2.is_valid():
-				t2.kill()
-			dy.remove_meta("tw")
+	dy.visible = alive and int(p["hp"]) <= 0
 	var dead_lbl := pn.get_node("Dead") as Label
 	if not alive and not dead_lbl.visible:
 		dead_lbl.visible = true
-		if not fast and not auto_all:
+		if _motion_enabled():
 			dead_lbl.scale = Vector2(2.2, 2.2)
 			dead_lbl.modulate.a = 0.0
 			var st := dead_lbl.create_tween().set_parallel(true)
@@ -1500,6 +1653,8 @@ func _sync_pips(pips: VBoxContainer, p: Dictionary) -> void:
 			dot.add_child(hl)
 			pips.add_child(dot)
 		pips.set_meta("hp_shown", hp)
+	elif pips.has_meta("hp_shown") and int(pips.get_meta("hp_shown")) == hp:
+		return
 	var shown := int(pips.get_meta("hp_shown")) if pips.has_meta("hp_shown") else hp
 	for i in mx:
 		var dot := pips.get_child(i) as Panel
@@ -1519,16 +1674,15 @@ func _sync_pips(pips: VBoxContainer, p: Dictionary) -> void:
 func _fx_reveal_gem(seat: int) -> void:
 	# 阵亡亮身份：身份宝石翻面（横向缩到 0 再展开），刷新后显示真实身份
 	var pn := seat_panel_of(seat)
-	if pn == null or fast or auto_all:
+	if pn == null or not _motion_enabled():
 		return
 	var gem := pn.get_node_or_null("Gem") as Control
 	if gem == null:
 		return
 	gem.pivot_offset = gem.size * 0.5
 	var t: Tween = gem.create_tween()
-	t.tween_property(gem, "scale:x", 0.0, 0.14)
-	t.tween_property(gem, "scale", Vector2(1.35, 1.35), 0.16).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-	t.tween_property(gem, "scale", Vector2.ONE, 0.12)
+	t.tween_property(gem, "scale:x", 0.22, 0.07)
+	t.tween_property(gem, "scale", Vector2.ONE, 0.13).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
 
 
 func _open_guess(seat_idx: int) -> void:
@@ -1544,7 +1698,7 @@ func _open_guess(seat_idx: int) -> void:
 		return
 	guess_popup_seat = seat_idx
 	var w := 5 * 58 + 4 * 6 + 16
-	var x := clampf(pn.position.x + pn.size.x * 0.5 - w * 0.5, 8.0, vw - w - 8.0)
+	var x := clampf(pn.position.x + pn.size.x * 0.5 - w * 0.5, safe_insets.x + 8.0, vw - safe_insets.z - w - 8.0)
 	guess_popup.position = Vector2(x, pn.position.y + 60)
 	guess_popup.visible = true
 	guess_popup.move_to_front()
@@ -1563,7 +1717,7 @@ func _pick_guess(mark: String) -> void:
 
 func _build_guess_popup() -> void:
 	guess_popup = PanelContainer.new()
-	guess_popup.add_theme_stylebox_override("panel", style(Color(0.16, 0.10, 0.24, 0.94), 16, Color(1.0, 0.82, 0.45, 0.9), 2, true))
+	guess_popup.add_theme_stylebox_override("panel", style(_table_surface, 16, _table_edge, 1, true))
 	guess_popup.visible = false
 	var hb := HBoxContainer.new()
 	hb.add_theme_constant_override("separation", 8)
@@ -1689,7 +1843,7 @@ func identity_visible(p: Dictionary) -> String:
 
 
 # V0.31：座位/自己的头像改为 CG 裁切（以脸为中心的上半身），并按角色重建左侧竖排名牌（只在换角色时重建）
-func _seat_cg(pn: Control, tr: TextureRect, ch: Dictionary, aspect: float, plate_pos: Vector2) -> void:
+func _seat_cg(pn: Control, tr: TextureRect, ch: Dictionary, aspect: float) -> void:
 	if pn == null or tr == null:
 		return
 	var cid := String(ch.get("id", ""))
@@ -1697,17 +1851,6 @@ func _seat_cg(pn: Control, tr: TextureRect, ch: Dictionary, aspect: float, plate
 		return
 	pn.set_meta("cg_id", cid)
 	tr.texture = Art.cg_crop(ch, aspect, 0.62, 0.32)
-	var old := pn.get_node_or_null("Plate")
-	var idx := -1
-	if old != null:
-		idx = old.get_index()
-		pn.remove_child(old)
-		old.queue_free()
-	var pl := Art.name_plate(ch, 24, true)
-	pl.position = plate_pos
-	pn.add_child(pl)
-	if idx >= 0:
-		pn.move_child(pl, idx)
 
 
 # V0.24 闪退修复（交接说明「安卓 15 选突击目标时应用自行关闭」的根因）：
@@ -1717,6 +1860,8 @@ func _seat_cg(pn: Control, tr: TextureRect, ch: Dictionary, aspect: float, plate
 # 安卓 release 版（Scudo 分配器/内存标记）会直接触发原生崩溃，表现为应用无报错自行关闭。
 # 现统一改为 remove_child + queue_free（帧末才释放），并把引擎频繁的 changed() 合并为每帧最多一次刷新。
 func refresh() -> void:
+	# 同步刷新已读到最新状态，帧尾不必再重复刷新一次。
+	_refresh_pending = false
 	if players.is_empty() or seat_panels.is_empty():
 		return
 	if eng != null:
@@ -1726,136 +1871,87 @@ func refresh() -> void:
 	if turn_seat >= 0 and turn_seat < players.size():
 		var tp: Dictionary = players[turn_seat]
 		var ph_s := String(eng.phase_text) if eng != null and String(eng.phase_text) != "" else "准备阶段"
-		phase_label.text = "▶ 【%d号位 · %s】 %s" % [turn_seat + 1, pname(tp), ph_s]
+		var actor := "你的回合" if turn_seat == 0 else "%d号位  %s" % [turn_seat + 1, tp["char"]["name"]]
+		set_phase("▶ %s   /   %s" % [actor, ph_s])
 	for panel in seat_panels:
 		var seat_idx := int(panel.get_meta("seat"))
 		var p: Dictionary = players[seat_idx]
 		var tr: TextureRect = panel.get_node("Portrait")
-		_seat_cg(panel, tr, p["char"], 236.0 / 358.0, Vector2(8, 66))
+		_seat_cg(panel, tr, p["char"], 236.0 / 358.0)
 		var idt := identity_visible(p)
 		var gem_pn := panel.get_node("Gem") as Panel
-		var gem_col := Color(0.28, 0.20, 0.36) if idt.begins_with("？") else (
-			Color(0.88, 0.22, 0.30) if (idt == "主公" or idt == "地主") else (
-			Color(0.86, 0.52, 0.18) if (idt in ["忠臣", "红方", "联军", "农民", "先手"]) else (
-			Color(0.26, 0.38, 0.76) if idt == "内奸" else Color(0.62, 0.18, 0.46))))
-		gem_pn.add_theme_stylebox_override("panel", style(gem_col, 25, C_GOLD, 3, true))
+		var gem_col := _table_inset
+		if not idt.begins_with("？"):
+			var role_tint := Palette.ROSE_SOFT if idt in ["主公", "地主", "魔王"] else Palette.SKY_SOFT
+			gem_col = _table_inset.lerp(role_tint, 0.12) if _night_ui else role_tint
+		if gem_pn.get_meta("style_color", Color.TRANSPARENT) != gem_col:
+			if not _seat_gem_styles.has(gem_col):
+				_seat_gem_styles[gem_col] = style(gem_col, 25, _table_edge, 1, true)
+			gem_pn.add_theme_stylebox_override("panel", _seat_gem_styles[gem_col])
+			gem_pn.set_meta("style_color", gem_col)
 		var gem_text: Label = panel.get_node("Gem/GemText")
 		gem_text.text = "?" if idt.begins_with("？") else idt.substr(0, 1)
-		var chip_text: Label = panel.get_node("Chip/ChipText")
-		var p_sh := int(p.get("shield", 0))
-		var p_mk := int((p.get("marks", {}) as Dictionary).get("影羽", 0))
-		var p_open: bool = game_mode == "doudizhu" and eng != null and eng.ddz_open_seats.has(seat_idx) and bool(p["alive"])
-		var p_seal := bool(p.get("skills_sealed", false)) and bool(p["alive"])
-		var chip_parts: Array = []
-		if p_open:
-			chip_parts.append("👁")
-		if p_seal:
-			chip_parts.append("❄封")
-		if p_sh > 0:
-			chip_parts.append("🛡%d" % p_sh)
-		if p_mk > 0:
-			chip_parts.append("🪶%d" % p_mk)
-		chip_parts.append("✋%d" % p["hand"].size())
-		chip_text.text = " ".join(PackedStringArray(chip_parts))
-		(panel.get_node("Guess") as Control).visible = false
+		var seat_name := panel.get_node("SeatName") as Label
+		seat_name.text = String(p["char"]["name"])
+		var chip_text := panel.get_node("ChipText") as Label
+		chip_text.text = "体力 %d/%d · 手牌 %d" % [int(p["hp"]), int(p["max_hp"]), p["hand"].size()] if p["alive"] else "已阵亡 · %s" % idt
 		var gm := String(guess_marks.get(seat_idx, ""))
 		var gbtn := panel.get_node("GuessBtn") as Button
-		gbtn.visible = game_mode == "identity" and bool(p["alive"]) and idt.begins_with("？")
-		var ebtn := panel.get_node_or_null("EmoteBtn") as Button
-		if ebtn != null:
-			ebtn.visible = bool(p["alive"]) and not targeting
+		gbtn.visible = not targeting and game_mode == "identity" and bool(p["alive"]) and idt.begins_with("？")
 		gbtn.text = gm if gm != "" else "猜"
-		var info: Label = panel.get_node("Info")
-		# V0.25/V0.33 距离与可达性动态角标（随当前选中的牌实时提示：突击/顺手/断粮/逐近弃远）
-		if p["alive"]:
-			var dd := eff_dist(players[0], p)
-			var wr := weapon_range(players[0])
-			var inr: bool = bool(players[0]["alive"]) and dd <= wr
-			var tag_txt := "可攻击" if inr else "够不着(范围%d)" % wr
-			var tag_ok := inr
-			if not selected_card.is_empty():
-				var scn := String(selected_card.get("name", ""))
-				if scn == "悄悄借走" or scn == "断粮封锁":
-					tag_ok = dd <= 1
-					tag_txt = "距离1可达" if tag_ok else "需距离1"
-				elif scn == "逐近弃远":
-					tag_ok = true
-					tag_txt = "近距·获得1张" if dd <= 1 else "远距·弃置1张"
-				elif scn == "突击":
-					tag_ok = inr and not bool(p.get("dream_guard", false))
-					tag_txt = "星眠免疫" if bool(p.get("dream_guard", false)) else ("攻击可达" if inr else "距离不足")
-			var ddz_ally := game_mode == "doudizhu" and not players.is_empty() and String(players[0]["identity"]) == "农民" and String(p["identity"]) == "农民"
-			var is_ally_seat := ((game_mode == "twovtwo" or game_mode == "boss") and String(p["identity"]) == String(players[0]["identity"])) or ddz_ally
-			var mate_prefix := "★队友 · " if is_ally_seat else ("👑BOSS · " if (game_mode == "boss" and String(p["identity"]) == "魔王") else ("👑地主 · " if (game_mode == "doudizhu" and String(p["identity"]) == "地主") else ("⚔守关 · " if (game_mode == "puzzle" and String(p["identity"]) == "守关") else "")))
-			var open_pf := "👁明 · " if (game_mode == "doudizhu" and eng != null and eng.ddz_open_seats.has(seat_idx)) else ""
-			info.text = "%s%s距 %d · %s" % [open_pf, mate_prefix, dd, tag_txt]
-			info.modulate = Color(1, 0.96, 0.78, 1) if (not selected_card.is_empty() and tag_ok) else (Color(1, 1, 1, 1) if tag_ok else Color(0.72, 0.72, 0.78, 0.85))
-		else:
-			info.text = "已阵亡 · %s" % idt
-			info.modulate = Color(1, 1, 1, 1)
+		var ebtn := panel.get_node("EmoteBtn") as Button
+		ebtn.visible = bool(p["alive"]) and not targeting
+		var info := panel.get_node("Info") as Label
+		info.text = _seat_status_text(seat_idx, p)
+		info.visible = info.text != ""
+		_sync_target_tag(panel, seat_idx, bool(p["alive"]))
 		_sync_pips(panel.get_node("Pips") as VBoxContainer, p)
 		_update_seat_overlays(panel, p, tr)
 		# 边框与明暗：行动中高亮、可选中高亮、不可选中变暗、阵亡变灰
-		var frame := C_GOLD
+		var frame := _table_edge
 		if seat_idx == turn_seat and p["alive"]:
-			frame = C_PINK_DEEP
+			frame = Palette.ROSE_EDGE
 		if targeting and target_candidates.has(seat_idx):
-			frame = Color(0.30, 0.75, 0.40)
+			frame = C_TARGET_AVAILABLE
 			if seat_idx == sel_target or seat_idx == extra_target:
-				frame = Color(1.0, 0.70, 0.20)
-		panel.add_theme_stylebox_override("normal", style(frame, 22, Color(1, 1, 1, 0.9), 2, true))
-		panel.add_theme_stylebox_override("disabled", style(frame, 22, Color(1, 1, 1, 0.9), 2, true))
+				frame = C_TABLE_ACTION
+		if panel.get_meta("frame_color", Color.TRANSPARENT) != frame:
+			if not _seat_frame_styles.has(frame):
+				_seat_frame_styles[frame] = style(_table_surface, 18, frame, 2 if frame == _table_edge else 4, true)
+			panel.add_theme_stylebox_override("normal", _seat_frame_styles[frame])
+			panel.add_theme_stylebox_override("disabled", _seat_frame_styles[frame])
+			panel.set_meta("frame_color", frame)
 		if not p["alive"]:
 			panel.modulate = Color(0.62, 0.62, 0.68, 0.85)
 		elif targeting and not target_candidates.has(seat_idx):
 			panel.modulate = Color(1, 1, 1, 0.45)
 		else:
 			panel.modulate = Color(1, 1, 1, 1)
-		panel.disabled = not targeting
+		panel.disabled = not (targeting and target_candidates.has(seat_idx) and bool(p["alive"]))
 	if guess_popup != null and guess_popup.visible and targeting:
 		guess_popup.visible = false
-	# 座次表
-	if seat_table_panel:
-		seat_table_panel.visible = true
-		var lines: Array = ["座次表"]
-		for p in players:
-			var s := int(p["seat"])
-			var mark := "▶" if s == turn_seat else "　"
-			var who := "（你）" if s == 0 else ""
-			var st := ""
-			if p["alive"]:
-				st = "♥%d" % int(p["hp"])
-			else:
-				st = "阵亡"
-			lines.append("%s%d号 %s%s %s %s" % [mark, s + 1, p["char"]["name"], who, identity_visible(p), st])
-		seat_table_label.text = "\n".join(lines)
-		for seat_key in glow_frames:
-			(glow_frames[seat_key] as Control).visible = int(seat_key) == turn_seat and players[int(seat_key)]["alive"]
+	for seat_key in glow_frames:
+		var seat := int(seat_key)
+		(glow_frames[seat_key] as Control).visible = seat == turn_seat and players[seat]["alive"]
 	# 自己
 	var me: Dictionary = players[0]
 	if me_panel_ref != null:
-		var me_frame := C_GOLD
+		var me_frame := Palette.ROSE_EDGE if turn_seat == 0 and bool(me["alive"]) else _table_edge
 		if targeting and target_candidates.has(0):
-			me_frame = Color(1.0, 0.70, 0.20) if sel_target == 0 or extra_target == 0 else Color(0.30, 0.75, 0.40)
-		me_panel_ref.add_theme_stylebox_override("panel", style(Color(1, 1, 1, 0.94), 22, me_frame, 5 if me_frame != C_GOLD else 3, true))
+			me_frame = C_TABLE_ACTION if sel_target == 0 or extra_target == 0 else C_TARGET_AVAILABLE
+		if me_panel_ref.get_meta("frame_color", Color.TRANSPARENT) != me_frame:
+			if not _own_frame_styles.has(me_frame):
+				_own_frame_styles[me_frame] = style(_table_surface, 22, me_frame, 2 if me_frame == _table_edge else 4, true)
+			me_panel_ref.add_theme_stylebox_override("panel", _own_frame_styles[me_frame])
+			me_panel_ref.set_meta("frame_color", me_frame)
 	if me_click_btn != null:
-		me_click_btn.disabled = not (targeting and target_candidates.has(0))
+		me_click_btn.disabled = not (targeting and target_candidates.has(0) and bool(me["alive"]))
 		me_click_btn.mouse_filter = MOUSE_FILTER_STOP if not me_click_btn.disabled else MOUSE_FILTER_IGNORE
-	_seat_cg(me_panel_ref, player_portrait, me["char"], 278.0 / 336.0, Vector2(8, 54))
-	var hearts2 := ""
-	for i in int(me["max_hp"]):
-		hearts2 += "♥" if i < int(me["hp"]) else "♡"
-	player_info.text = "%s · %s" % [String(me["char"].get("title", me["char"]["name"])), me["identity"]]
+	_seat_cg(me_panel_ref, player_portrait, me["char"], 278.0 / 336.0)
+	player_info.text = "%s · %s" % [me["char"]["name"], me["identity"]]
 	var h_cnt: int = (me["hand"] as Array).size()
 	var h_lim: int = eng.hand_limit(me) if eng != null else maxi(int(me["hp"]), 0)
-	var over_txt: String = ("（需弃%d）" % (h_cnt - h_lim)) if (h_cnt > h_lim and turn_seat == 0) else ""
-	var me_sh: int = int(me.get("shield", 0))
-	var me_mk: int = int((me.get("marks", {}) as Dictionary).get("影羽", 0))
-	var open_txt: String = "👁明牌 " if (game_mode == "doudizhu" and eng != null and eng.ddz_open_seats.has(0)) else ""
-	var seal_txt: String = "❄封技 " if bool(me.get("skills_sealed", false)) else ""
-	var sh_txt: String = ("🛡%d " % me_sh) if me_sh > 0 else ""
-	var mk_txt: String = ("🪶%d " % me_mk) if me_mk > 0 else ""
-	me_hp_label.text = "%s%s%s%s%s %d/%d · 手牌 %d/%d%s" % [open_txt, seal_txt, sh_txt, mk_txt, hearts2, int(me["hp"]), int(me["max_hp"]), h_cnt, h_lim, over_txt]
+	me_hp_label.text = "体力 %d/%d · 手牌 %d/%d" % [int(me["hp"]), int(me["max_hp"]), h_cnt, h_lim]
 	# 自己的体力变化：数值条闪红/闪绿（座位体力槽同理）
 	var me_hp := int(me["hp"])
 	if me_hp_label.has_meta("hp_shown") and int(me_hp_label.get_meta("hp_shown")) != me_hp and not fast and not auto_all:
@@ -1865,10 +1961,87 @@ func refresh() -> void:
 		mt.tween_property(me_hp_label, "modulate", Color.WHITE, 0.6)
 	me_hp_label.set_meta("hp_shown", me_hp)
 	if me_panel_ref != null:
+		var self_status := me_panel_ref.get_node("Info") as Label
+		var state := _seat_status_text(0, me)
+		if h_cnt > h_lim and turn_seat == 0 and me["alive"]:
+			state += (" · " if state != "" else "") + "超出上限 %d 张" % (h_cnt - h_lim)
+		self_status.text = state
+		self_status.visible = state != ""
+		_sync_target_tag(me_panel_ref, 0, bool(me["alive"]))
 		_update_seat_overlays(me_panel_ref, me, player_portrait)
 	_sync_hand()
 	_update_action_bar()
 	refresh_skill_buttons()
+
+
+func _build_hand_controls() -> void:
+	var top := HAND_Y - safe_insets.w
+	var width := hand_x1 - hand_x0
+	var hand_dock := Panel.new()
+	hand_dock.position = Vector2(hand_x0 - 6.0, top + 24.0)
+	hand_dock.size = Vector2(width + 12.0, HAND_H - 25.0)
+	hand_dock.mouse_filter = MOUSE_FILTER_IGNORE
+	hand_dock.add_theme_stylebox_override("panel", style(Color(_table_inset, 0.83), 20, Color(_table_edge, 0.82), 1))
+	add_child(hand_dock)
+	table_nodes.append(hand_dock)
+
+	hand_viewport = Panel.new()
+	hand_viewport.position = Vector2(hand_x0, top - LIFT - 10.0)
+	hand_viewport.size = Vector2(width, HAND_H + LIFT + 10.0)
+	hand_viewport.clip_contents = true
+	hand_viewport.mouse_filter = MOUSE_FILTER_STOP
+	hand_viewport.add_theme_stylebox_override("panel", StyleBoxEmpty.new())
+	hand_viewport.gui_input.connect(_on_hand_viewport_gui_input)
+	add_child(hand_viewport)
+	table_nodes.append(hand_viewport)
+
+	hand_row = Control.new()
+	hand_row.position.y = LIFT + 10.0
+	hand_row.size = Vector2(width, HAND_H)
+	hand_row.mouse_filter = MOUSE_FILTER_IGNORE
+	hand_viewport.add_child(hand_row)
+	hand_cards.clear()
+	hand_scroll_offset = 0.0
+	hand_scroll_limit = 0.0
+	drag_wrap = null
+	drag_press.clear()
+	drag_previous.clear()
+	drag_hover_seat = -1
+	hand_cancel_release = false
+
+	hand_prev_btn = _build_hand_page_button("‹", "浏览上一组手牌", Vector2(hand_x0, top + 68.0), -1)
+	hand_next_btn = _build_hand_page_button("›", "浏览下一组手牌", Vector2(hand_x1 - HAND_BROWSE_BUTTON_W, top + 68.0), 1)
+	# 手牌的裁剪区域含上浮空间，重叠处的点击优先交给出牌/响应按钮。
+	for control in [hand_dock, hand_viewport, hand_prev_btn, hand_next_btn]:
+		move_child(control, prompt_panel.get_index())
+	drag_line = Line2D.new()
+	drag_line.width = 4.0
+	drag_line.z_index = 19
+	drag_line.visible = false
+	add_child(drag_line)
+	drag_hint = lbl("", 26, _table_text, true, HORIZONTAL_ALIGNMENT_CENTER)
+	drag_hint.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	drag_hint.autowrap_mode = TextServer.AUTOWRAP_OFF
+	drag_hint.clip_text = true
+	drag_hint.position = Vector2(hand_x0, top - 103.0)
+	drag_hint.size = Vector2(width, 54.0)
+	drag_hint.mouse_filter = MOUSE_FILTER_IGNORE
+	drag_hint.z_index = 21
+	drag_hint.add_theme_stylebox_override("normal", _tight(style(_table_surface, 16, _table_edge, 1), 12, 4))
+	drag_hint.visible = false
+	add_child(drag_hint)
+
+
+func _build_hand_page_button(text: String, help: String, pos: Vector2, direction: int) -> Button:
+	var button := plain_btn(text, _table_inset, _table_text, 44)
+	button.position = pos
+	button.size = Vector2(HAND_BROWSE_BUTTON_W - 8.0, 138.0)
+	button.tooltip_text = help
+	button.visible = false
+	button.pressed.connect(func() -> void: _scroll_hand_page(direction))
+	add_child(button)
+	table_nodes.append(button)
+	return button
 
 
 func make_hand_card(c: Dictionary) -> Control:
@@ -2011,28 +2184,8 @@ func _make_action_btn(text: String, bg: Color, fg: Color) -> Button:
 	b.custom_minimum_size = Vector2(188, 64)
 	b.add_theme_font_override("font", font_bold)
 	b.add_theme_font_size_override("font_size", 28)
-	b.add_theme_color_override("font_color", fg)
-	b.add_theme_color_override("font_hover_color", fg)
-	b.add_theme_color_override("font_pressed_color", fg)
-	b.add_theme_color_override("font_disabled_color", Color(0.55, 0.52, 0.58))
-	b.add_theme_stylebox_override("normal", _tight(style(bg, 32, C_GOLD, 3, true), 14, 10))
-	b.add_theme_stylebox_override("hover", _tight(style(bg.lightened(0.08), 32, Color(1.0, 0.88, 0.52), 3, true), 14, 10))
-	b.add_theme_stylebox_override("pressed", _tight(style(bg.darkened(0.08), 32, C_GOLD, 3, false), 14, 10))
-	b.add_theme_stylebox_override("disabled", _tight(style(Color(0.42, 0.38, 0.46, 0.78), 32, Color(0.75, 0.70, 0.78, 0.45), 2), 14, 10))
-	var gl := Panel.new()
-	gl.mouse_filter = MOUSE_FILTER_IGNORE
-	gl.set_anchors_preset(Control.PRESET_TOP_WIDE)
-	gl.offset_left = 10
-	gl.offset_right = -10
-	gl.offset_top = 4
-	gl.offset_bottom = 26
-	gl.add_theme_stylebox_override("panel", style(Color(1, 1, 1, 0.22), 12))
-	b.add_child(gl)
-	b.set_meta("_last_dis", false)
-	b.draw.connect(func() -> void:
-		if bool(b.get_meta("_last_dis", false)) != b.disabled:
-			b.set_meta("_last_dis", b.disabled)
-			gl.visible = not b.disabled)
+	var edge := Palette.ROSE_EDGE if bg == C_TABLE_ACTION else _table_edge
+	_set_btn_theme(b, bg, edge, fg, 19, 1, false, Vector2i(14, 10), Palette.ROSE_EDGE)
 	_wire_btn_bounce(b)
 	b.pressed.connect(func() -> void: play_sfx("click"))
 	return b
@@ -2055,14 +2208,42 @@ func _find_wrap(c: Dictionary) -> Control:
 
 
 func _deck_point() -> Vector2:
-	# 牌堆胶囊中心（battle 本地坐标）
-	return Vector2(vw - 520 + 78, 50)
+	return deck_label.position + deck_label.size * 0.5
 
 
 func _sync_hand() -> void:
 	if hand_row == null or players.is_empty():
 		return
 	var hand: Array = players[0]["hand"]
+	if not _hand_order_matches(hand):
+		_reconcile_hand(hand)
+	# 数量和顺序不变时，响应/弃牌/技能的选择状态仍可能变化。
+	if not discard_sel.is_empty():
+		discard_sel = discard_sel.filter(func(c: Dictionary) -> bool: return _hand_has(c))
+	if not spear_cards.is_empty():
+		spear_cards = spear_cards.filter(func(c: Dictionary) -> bool: return _hand_has(c))
+	if not selected_card.is_empty() and not _hand_has(selected_card):
+		selected_card = {}
+		sel_target = -1
+		if not spear_targeting and not muniu_targeting:
+			targeting = false
+			target_candidates = []
+	for w in hand_cards:
+		_apply_card_state(w)
+	_layout_hand(true)
+
+
+func _hand_order_matches(hand: Array) -> bool:
+	if hand.size() != hand_cards.size():
+		return false
+	for i in hand.size():
+		var w: Variant = hand_cards[i]
+		if not is_instance_valid(w) or not is_same(w.get_meta("card"), hand[i]):
+			return false
+	return true
+
+
+func _reconcile_hand(hand: Array) -> void:
 	var keep: Array = []
 	for w in hand_cards:
 		if not is_instance_valid(w):
@@ -2078,6 +2259,11 @@ func _sync_hand() -> void:
 		else:
 			if w == drag_wrap:
 				_drag_reset()
+			if drag_press.get("wrap") == w:
+				drag_press.clear()
+				hand_cancel_release = true
+				if IntroPop.inst != null:
+					IntroPop.inst.cancel_longpress()
 			hand_row.remove_child(w)
 			w.queue_free()  # V0.24 闪退修复：不得立即 free
 	hand_cards = keep
@@ -2087,7 +2273,7 @@ func _sync_hand() -> void:
 		if w == null:
 			w = make_hand_card(h)
 			hand_row.add_child(w)
-			w.position = _deck_point() - hand_row.position - Vector2(CARD_W * 0.5, 0)
+			w.global_position = global_position + _deck_point() - Vector2(CARD_W * 0.5, 0)
 			w.scale = Vector2(0.5, 0.5)
 			w.modulate.a = 0.0
 			w.set_meta("fresh", true)
@@ -2096,18 +2282,6 @@ func _sync_hand() -> void:
 	for i in ordered.size():
 		if (ordered[i] as Node).get_index() != i:
 			hand_row.move_child(ordered[i], i)
-	# 选择状态随手牌变化校正
-	discard_sel = discard_sel.filter(func(c: Dictionary) -> bool: return _hand_has(c))
-	spear_cards = spear_cards.filter(func(c: Dictionary) -> bool: return _hand_has(c))
-	if not selected_card.is_empty() and not _hand_has(selected_card):
-		selected_card = {}
-		sel_target = -1
-		if not spear_targeting and not muniu_targeting:
-			targeting = false
-			target_candidates = []
-	for w in ordered:
-		_apply_card_state(w)
-	_layout_hand(true)
 
 
 func _is_lifted(w: Control) -> bool:
@@ -2131,18 +2305,29 @@ func _is_lifted(w: Control) -> bool:
 
 func _layout_hand(animate: bool) -> void:
 	var n := hand_cards.size()
-	if n == 0 or hand_row == null:
+	if not is_instance_valid(hand_row) or not is_instance_valid(hand_viewport):
 		return
-	var avail := hand_row.size.x
-	var step := CARD_W + 10.0
-	if n > 1:
-		step = minf(CARD_W + 10.0, (avail - CARD_W) / float(n - 1))
-	step = maxf(step, 30.0)
-	var total := CARD_W + step * float(n - 1)
+	var width := hand_x1 - hand_x0
+	var browsable := n > 1 and CARD_W + (CARD_W - 18.0) * float(n - 1) > width
+	var inset := HAND_BROWSE_BUTTON_W if browsable else 0.0
+	var avail := width - 2.0 * inset
+	hand_viewport.position.x = hand_x0 + inset
+	hand_viewport.size.x = avail
+	var step := CARD_W + HAND_CARD_GAP
+	if not browsable and n > 1:
+		step = minf(step, (avail - CARD_W) / float(n - 1))
+	var total := CARD_W + step * float(maxi(n - 1, 0))
+	hand_row.size.x = maxf(avail, total)
+	hand_scroll_limit = maxf(total - avail, 0.0) if browsable else 0.0
+	hand_prev_btn.visible = browsable
+	hand_next_btn.visible = browsable
+	_set_hand_scroll(hand_scroll_offset)
+	if n == 0:
+		return
 	var x0 := maxf((avail - total) * 0.5, 0.0)
 	var mid := float(n - 1) * 0.5
-	var ang := 0.0 if mid <= 0.0 else minf(1.2, 7.0 / mid)
-	var dip := 0.0 if mid <= 0.0 else 14.0 / (mid * mid)
+	var ang := 0.0 if browsable or mid <= 0.0 else minf(1.2, 7.0 / mid)
+	var dip := 0.0 if browsable or mid <= 0.0 else 14.0 / (mid * mid)
 	for i in n:
 		var w: Control = hand_cards[i]
 		if w == drag_wrap:
@@ -2154,6 +2339,54 @@ func _layout_hand(animate: bool) -> void:
 		_tween_card(w, Vector2(x0 + step * float(i), y), deg_to_rad(off * ang), animate)
 
 
+func _hand_point(height: float) -> Vector2:
+	if not is_instance_valid(hand_viewport):
+		return seat_center(0)
+	return hand_viewport.position + Vector2(hand_viewport.size.x * 0.5, height + LIFT + 10.0)
+
+
+func _set_hand_scroll(offset: float) -> void:
+	hand_scroll_offset = clampf(offset, 0.0, hand_scroll_limit)
+	hand_row.position.x = -hand_scroll_offset
+	hand_prev_btn.disabled = is_zero_approx(hand_scroll_offset)
+	hand_next_btn.disabled = is_equal_approx(hand_scroll_offset, hand_scroll_limit)
+
+
+func _scroll_hand_page(direction: int) -> void:
+	if hand_scroll_limit <= 0.0:
+		return
+	var step := CARD_W + HAND_CARD_GAP
+	var visible_cards := maxi(1, floori((hand_viewport.size.x + HAND_CARD_GAP) / step))
+	_set_hand_scroll(hand_scroll_offset + float(visible_cards * direction) * step)
+
+
+func _ensure_hand_card_visible(w: Control) -> void:
+	if hand_scroll_limit <= 0.0 or not is_instance_valid(w) or w.get_parent() != hand_row:
+		return
+	var x := w.position.x
+	if x < hand_scroll_offset:
+		_set_hand_scroll(x)
+	elif x + CARD_W > hand_scroll_offset + hand_viewport.size.x:
+		_set_hand_scroll(x + CARD_W - hand_viewport.size.x)
+
+
+func _on_hand_viewport_gui_input(event: InputEvent) -> void:
+	if hand_scroll_limit <= 0.0 or not event is InputEventMouseButton:
+		return
+	var mb := event as InputEventMouseButton
+	if not mb.pressed:
+		return
+	match mb.button_index:
+		MOUSE_BUTTON_WHEEL_UP, MOUSE_BUTTON_WHEEL_LEFT:
+			_set_hand_scroll(hand_scroll_offset - (CARD_W + HAND_CARD_GAP))
+			hand_viewport.accept_event()
+		MOUSE_BUTTON_WHEEL_DOWN, MOUSE_BUTTON_WHEEL_RIGHT:
+			_set_hand_scroll(hand_scroll_offset + CARD_W + HAND_CARD_GAP)
+			hand_viewport.accept_event()
+		MOUSE_BUTTON_LEFT:
+			_begin_hand_press(null, mb.global_position)
+
+
 func _tween_card(w: Control, pos: Vector2, rot: float, animate: bool) -> void:
 	var key := "%d,%d,%d" % [int(pos.x), int(pos.y), int(rad_to_deg(rot) * 10.0)]
 	var fresh := bool(w.get_meta("fresh", false))
@@ -2163,7 +2396,7 @@ func _tween_card(w: Control, pos: Vector2, rot: float, animate: bool) -> void:
 	var old: Variant = (w.get_meta("tw") if w.has_meta("tw") else null)
 	if old is Tween and (old as Tween).is_valid():
 		(old as Tween).kill()
-	if not animate or fast or auto_all or not is_inside_tree():
+	if not animate or fast or auto_all or reduced_motion or not is_inside_tree():
 		w.position = pos
 		w.rotation = rot
 		w.scale = Vector2.ONE
@@ -2174,8 +2407,8 @@ func _tween_card(w: Control, pos: Vector2, rot: float, animate: bool) -> void:
 	w.set_meta("spring", false)
 	var tw := w.create_tween()
 	tw.set_parallel(true)
-	var dur := 0.34 if spring else 0.22
-	var trans := Tween.TRANS_BACK if spring else Tween.TRANS_CUBIC
+	var dur := 0.17 if spring else (0.20 if fresh else 0.095)
+	var trans := Tween.TRANS_QUAD if spring else Tween.TRANS_CUBIC
 	tw.tween_property(w, "position", pos, dur).set_trans(trans).set_ease(Tween.EASE_OUT)
 	tw.tween_property(w, "rotation", rot, dur)
 	tw.tween_property(w, "scale", Vector2.ONE, dur)
@@ -2255,7 +2488,7 @@ func _apply_card_state(w: Control) -> void:
 
 func _nudge_card(card: Dictionary) -> void:
 	var w := _find_wrap(card)
-	if w == null or fast or auto_all:
+	if w == null or fast or auto_all or reduced_motion:
 		return
 	var base_x := w.position.x
 	var tw := w.create_tween()
@@ -2269,7 +2502,7 @@ func _nudge_card(card: Dictionary) -> void:
 func _can_drag(w: Control) -> bool:
 	if not interactive or turn_seat != 0 or game_over or asking or discard_mode or not in_play_phase:
 		return false
-	if spear_targeting or muniu_targeting or players.is_empty():
+	if skill_mode != "" or spear_targeting or muniu_targeting or muniu_storing or players.is_empty():
 		return false
 	var c: Dictionary = w.get_meta("card")
 	return _hand_has(c) and card_usable(players[0], c)
@@ -2278,28 +2511,97 @@ func _can_drag(w: Control) -> bool:
 func _on_card_gui_input(w: Control, event: InputEvent) -> void:
 	if not is_instance_valid(w):
 		return
-	if _lp_swallowing():  # V0.26：长按说明触发后，本次按压不再参与拖拽/出牌
-		drag_press = {}
-		return
 	if event is InputEventMouseButton and (event as InputEventMouseButton).button_index == MOUSE_BUTTON_LEFT:
 		var mb := event as InputEventMouseButton
 		if mb.pressed:
-			drag_press = {"wrap": w, "pos": mb.global_position, "offset": mb.global_position - w.global_position}
+			_begin_hand_press(w, mb.global_position)
 		else:
-			if drag_wrap == w:
-				_drag_finish(mb.global_position)
-			drag_press = {}
-	elif event is InputEventMouseMotion and not drag_press.is_empty() and drag_press.get("wrap") == w:
-		var mm := event as InputEventMouseMotion
-		if drag_wrap == null:
-			if (mm.global_position - Vector2(drag_press["pos"])).length() >= DRAG_START_PX and _can_drag(w):
-				_drag_begin(w)
-		if drag_wrap == w:
-			_drag_move(mm.global_position)
+			_release_hand_press(mb.global_position)
+	elif event is InputEventMouseMotion:
+		_move_hand_press((event as InputEventMouseMotion).global_position)
+
+
+func _input(event: InputEvent) -> void:
+	# GUI 焦点可能在拖出的牌转到桌面层时变化，按下之后由同一套手势接管释放。
+	if event is InputEventMouseButton and (event as InputEventMouseButton).button_index == MOUSE_BUTTON_LEFT:
+		var mb := event as InputEventMouseButton
+		if not mb.pressed:
+			_release_hand_press(mb.position)
+		elif hand_cancel_release:
+			hand_cancel_release = false
+	elif event is InputEventMouseMotion and not drag_press.is_empty():
+		_move_hand_press((event as InputEventMouseMotion).position)
+
+
+func _notification(what: int) -> void:
+	if what != NOTIFICATION_APPLICATION_FOCUS_OUT and what != NOTIFICATION_APPLICATION_PAUSED:
+		return
+	if drag_press.is_empty():
+		return
+	hand_cancel_release = true
+	drag_press.clear()
+	if IntroPop.inst != null:
+		IntroPop.inst.cancel_longpress()
+	if drag_wrap != null:
+		_restore_drag_selection()
+
+
+func _begin_hand_press(w: Control, gp: Vector2) -> void:
+	if _lp_swallowing():
+		return
+	if is_instance_valid(drag_wrap):
+		_restore_drag_selection()
+	drag_end_ms = 0
+	hand_cancel_release = false
+	var grip := Vector2.ZERO if w == null else gp - w.global_position
+	drag_press = {
+		"wrap": w, "pos": gp, "offset": grip, "latest": gp,
+		"scroll": hand_scroll_offset, "gesture": "pending",
+	}
+
+
+func _move_hand_press(gp: Vector2) -> void:
+	if drag_press.is_empty() or _lp_swallowing() or gp == drag_press["latest"]:
+		return
+	drag_press["latest"] = gp
+	var movement := gp - Vector2(drag_press["pos"])
+	if drag_press["gesture"] == "pending" and movement.length() >= DRAG_START_PX:
+		if IntroPop.inst != null:
+			IntroPop.inst.cancel_longpress()
+		var pressed_card: Variant = drag_press["wrap"]
+		if hand_scroll_limit > 0.0 and absf(movement.x) >= absf(movement.y) * 1.6:
+			drag_press["gesture"] = "browse"
+		elif movement.y < -DRAG_START_PX * 0.45 and is_instance_valid(pressed_card) and _can_drag(pressed_card):
+			drag_press["gesture"] = "drag"
+			_drag_begin(pressed_card)
+		else:
+			drag_press["gesture"] = "moved"
+	match drag_press["gesture"]:
+		"browse":
+			_set_hand_scroll(float(drag_press["scroll"]) - movement.x)
+		"drag":
+			_drag_move(gp)
+
+
+func _release_hand_press(gp: Vector2) -> void:
+	if hand_cancel_release:
+		hand_cancel_release = false
+		drag_end_ms = Time.get_ticks_msec()
+	if drag_press.is_empty():
+		return
+	if drag_press["gesture"] != "pending" or _lp_swallowing():
+		drag_end_ms = Time.get_ticks_msec()
+	if is_instance_valid(drag_wrap):
+		_drag_finish(gp)
+	drag_press.clear()
 
 
 func _drag_begin(w: Control) -> void:
 	var c: Dictionary = w.get_meta("card")
+	drag_previous = {
+		"card": selected_card, "target": sel_target, "extra": extra_target,
+		"candidates": target_candidates, "targeting": targeting,
+	}
 	if selected_card.is_empty() or not is_same(selected_card, c):
 		_select_card(c, false)  # 拖拽开始时的选中不触发自动确认（松手位置才决定出不出）
 		if selected_card.is_empty() or not is_same(selected_card, c):
@@ -2308,6 +2610,8 @@ func _drag_begin(w: Control) -> void:
 	var old: Variant = (w.get_meta("tw") if w.has_meta("tw") else null)
 	if old is Tween and (old as Tween).is_valid():
 		(old as Tween).kill()
+	# 真正拖出的牌退出裁剪区域，横览始终留在原手牌层。
+	w.reparent(self, true)
 	w.rotation = 0.0
 	w.scale = Vector2(1.06, 1.06)
 	w.z_index = 20
@@ -2315,7 +2619,26 @@ func _drag_begin(w: Control) -> void:
 	if drag_line != null:
 		drag_line.visible = true
 		drag_line.clear_points()
+	drag_hint.visible = true
 	_apply_seat_frames()
+
+
+func _drag_target_at(gp: Vector2) -> int:
+	var closest := -1
+	var best_distance := INF
+	for i in players.size():
+		var panel := seat_panel_of(i)
+		if panel == null:
+			continue
+		var rect := panel.get_global_rect()
+		if rect.has_point(gp):
+			return i if target_candidates.has(i) else -1
+		if target_candidates.has(i) and rect.grow(SNAP_PX).has_point(gp):
+			var distance := rect.get_center().distance_squared_to(gp)
+			if distance < best_distance:
+				closest = i
+				best_distance = distance
+	return closest
 
 
 func _drag_move(gp: Vector2) -> void:
@@ -2324,15 +2647,8 @@ func _drag_move(gp: Vector2) -> void:
 		return
 	var c: Dictionary = w.get_meta("card")
 	var card_pos: Vector2 = gp - Vector2(drag_press.get("offset", Vector2(CARD_W * 0.5, CARD_H * 0.5)))
-	var hover := -1
-	if card_needs_target(c):
-		for s in target_candidates:
-			var pn := seat_panel_of(int(s))
-			if pn == null:
-				continue
-			if Rect2(pn.global_position, pn.size).grow(SNAP_PX).has_point(gp):
-				hover = int(s)
-				break
+	var needs_target := card_needs_target(c)
+	var hover := _drag_target_at(gp) if needs_target else -1
 	if hover >= 0:
 		# 吸附：牌向目标头像中心靠拢
 		var pn2 := seat_panel_of(hover)
@@ -2345,13 +2661,20 @@ func _drag_move(gp: Vector2) -> void:
 		_update_action_bar()
 	w.global_position = card_pos
 	if drag_line != null:
-		var a := hand_row.position + Vector2(hand_row.size.x * 0.5, 40)
+		var a := _hand_point(40)
 		var b := card_pos - global_position + Vector2(CARD_W * 0.5, CARD_H * 0.35)
 		if hover >= 0:
 			b = seat_center(hover)
 		drag_line.points = PackedVector2Array([a, b])
-		var release_ok := hover >= 0 or (not card_needs_target(c) and gp.y < hand_row.global_position.y - 30.0)
+		var release_ok := hover >= 0 or (not needs_target and gp.y < hand_row.global_position.y - 30.0)
 		drag_line.default_color = Color(0.45, 1.0, 0.55, 0.95) if release_ok else Color(1.0, 0.85, 0.45, 0.8)
+	var card_name := String(c["name"])
+	if hover >= 0:
+		drag_hint.text = "松手对 %s 使用【%s】" % [String(players[hover]["char_name"]), card_name]
+	elif not needs_target:
+		drag_hint.text = "松手选中【%s】，随后出牌" % card_name if gp.y < hand_row.global_position.y - 30.0 else "向上拖出后松手选中"
+	else:
+		drag_hint.text = "拖到可选角色出牌，松手可取消"
 
 
 func _drag_finish(gp: Vector2) -> void:
@@ -2359,43 +2682,60 @@ func _drag_finish(gp: Vector2) -> void:
 	if w == null:
 		return
 	var c: Dictionary = w.get_meta("card")
-	var hover := drag_hover_seat
-	_drag_reset()
-	drag_end_ms = Time.get_ticks_msec()
-	var play := false
-	var tgt := -1
+	if not _can_drag(w):
+		_restore_drag_selection()
+		return
 	if card_needs_target(c):
+		var hover := _drag_target_at(gp)
 		if hover >= 0:
-			play = true
-			tgt = hover
+			_drag_reset()
+			# 等 GUI 松手完成再消耗牌，避免手牌节点在触摸释放分发中离树。
+			_play_selected.call_deferred(c, hover, -2)
+			return
 	elif gp.y < hand_row.global_position.y - 30.0:
-		# V0.27：无目标牌拖出手牌区只算「选中」，仍需点「确定」（只有拖到合法目标头像上松手才直接打出）
-		if is_instance_valid(w):
-			w.set_meta("lay", "")
-			w.set_meta("spring", true)
-		if not is_same(selected_card, c):
-			_select_card(c)
-		else:
-			_show_sel_hint()
-			_maybe_auto_confirm()
+		# 无目标牌进入普通确认流程。
+		_drag_reset()
+		_layout_hand(true)
+		_show_sel_hint()
+		_maybe_auto_confirm()
+		return
+	_restore_drag_selection()
+
+
+func _restore_drag_selection() -> void:
+	var previous := drag_previous
+	_drag_reset()
+	if not interactive or game_over or asking:
 		_layout_hand(true)
 		return
-	if is_instance_valid(w):
-		w.set_meta("lay", "")
-		w.set_meta("spring", not play)
-	if play:
-		_play_selected.call_deferred(c, tgt, -2)
-	else:
-		_layout_hand(true)
+	var card: Dictionary = previous.get("card", {})
+	if card.is_empty() or not _hand_has(card):
+		cancel_targeting()
+		return
+	selected_card = card
+	sel_target = int(previous["target"])
+	extra_target = int(previous["extra"])
+	target_candidates = previous["candidates"]
+	targeting = bool(previous["targeting"])
+	_show_sel_hint()
+	refresh()
 
 
 func _drag_reset() -> void:
-	if drag_wrap != null and is_instance_valid(drag_wrap):
+	if is_instance_valid(drag_wrap):
+		if is_instance_valid(hand_row) and drag_wrap.get_parent() != hand_row:
+			drag_wrap.reparent(hand_row, true)
+			hand_row.move_child(drag_wrap, hand_cards.find(drag_wrap))
 		drag_wrap.z_index = 0
+		drag_wrap.set_meta("lay", "")
+		drag_wrap.set_meta("spring", true)
 	drag_wrap = null
+	drag_previous = {}
 	drag_hover_seat = -1
-	if drag_line != null:
+	if is_instance_valid(drag_line):
 		drag_line.visible = false
+	if is_instance_valid(drag_hint):
+		drag_hint.visible = false
 	_apply_seat_frames()
 
 
@@ -2461,7 +2801,6 @@ func _play_selected(card: Dictionary, tgt_seat: int, extra: int = -1) -> void:
 		pre_answers.append({"kind": "chain2", "value": players[extra] if extra >= 0 and extra < players.size() else {}})
 	if card_kind(card) in ["武器", "防具", "饰品", "宝物"]:
 		eng.play_equip(me, card)
-		show_played_card(card, pname(me), 0)
 	elif needs:
 		await execute_targeted_card(me, card, players[tgt_seat])
 	else:
@@ -2483,6 +2822,9 @@ func _on_confirm_pressed() -> void:
 		return
 	if spear_targeting:
 		_commit_spear()
+		return
+	if muniu_storing:
+		_commit_muniu_store()
 		return
 	if muniu_targeting:
 		_commit_muniu_give()
@@ -2519,9 +2861,11 @@ func _update_action_bar() -> void:
 	action_bar.visible = show_bar
 	if not show_bar:
 		return
+	confirm_btn.text = _primary_action_label()
 	confirm_btn.disabled = not _can_confirm()
+	confirm_btn.tooltip_text = _confirm_disabled_hint() if confirm_btn.disabled else ""
 	if recast_btn != null:
-		var rc_ok: bool = skill_mode == "" and not spear_targeting and not muniu_targeting and not selected_card.is_empty() and eng != null and eng.can_recast(selected_card) and _hand_has(selected_card)
+		var rc_ok: bool = skill_mode == "" and not spear_targeting and not muniu_targeting and not muniu_storing and not selected_card.is_empty() and eng != null and eng.can_recast(selected_card) and _hand_has(selected_card)
 		recast_btn.visible = rc_ok
 		recast_btn.disabled = not (rc_ok and interactive)
 	if luck_btn != null:
@@ -2529,16 +2873,43 @@ func _update_action_bar() -> void:
 		luck_btn.visible = lk_ok
 		luck_btn.disabled = not (lk_ok and interactive)
 		luck_btn.text = "手气卡×%d" % luck_left
-	var five_btns := (recast_btn != null and recast_btn.visible) and (luck_btn != null and luck_btn.visible)
-	action_bar.add_theme_constant_override("separation", 12 if five_btns else 16)
-	var bw_act := 164.0 if five_btns else 188.0
-	var fs_act := 24 if five_btns else 28
-	for ab in [confirm_btn, cancel_btn, recast_btn, luck_btn, end_play_btn]:
-		if ab != null:
-			ab.custom_minimum_size = Vector2(bw_act, 64)
-			ab.add_theme_font_size_override("font_size", fs_act)
-	cancel_btn.disabled = not interactive or (selected_card.is_empty() and not targeting and skill_mode == "" and not spear_targeting and not muniu_targeting)
+	var count := 3 + int(recast_btn != null and recast_btn.visible) + int(luck_btn != null and luck_btn.visible)
+	if int(action_bar.get_meta("button_count", 0)) != count:
+		action_bar.set_meta("button_count", count)
+		const GAP := 12
+		action_bar.add_theme_constant_override("separation", GAP)
+		var bw_act := floorf(minf(188.0, (prompt_action_width - GAP * (count - 1)) / count))
+		var fs_act := 24 if bw_act < 175.0 else 27
+		for ab in [confirm_btn, cancel_btn, recast_btn, luck_btn, end_play_btn]:
+			if ab != null:
+				ab.custom_minimum_size = Vector2(bw_act, TABLE_ACTION_H)
+				ab.add_theme_font_size_override("font_size", fs_act)
+		action_bar.size.x = prompt_action_width
+	cancel_btn.disabled = not interactive or (selected_card.is_empty() and not targeting and skill_mode == "" and not spear_targeting and not muniu_targeting and not muniu_storing)
 	end_play_btn.disabled = not interactive
+
+
+func _primary_action_label() -> String:
+	if skill_mode != "":
+		return "发动技能"
+	if muniu_storing:
+		return "存入木牛"
+	if muniu_targeting:
+		return "转交木牛"
+	if not selected_card.is_empty() and card_kind(selected_card) in ["武器", "防具", "饰品", "宝物"]:
+		return "装备"
+	return "出牌"
+
+
+func _confirm_disabled_hint() -> String:
+	if not interactive:
+		return "正在结算，稍候即可出牌"
+	if not selected_card.is_empty() and skill_mode == "" and not spear_targeting and not muniu_targeting and not muniu_storing and not players.is_empty():
+		var reason := unusable_reason(players[0], selected_card)
+		if reason != "":
+			return reason
+	var selection := _sel_hint_text()
+	return selection if selection != "" else "先选择一张可用手牌"
 
 
 func _apply_seat_frames() -> void:
@@ -2548,9 +2919,13 @@ func _apply_seat_frames() -> void:
 		var want := Vector2(1.06, 1.06) if s == drag_hover_seat else Vector2.ONE
 		(panel as Control).pivot_offset = (panel as Control).size * 0.5
 		(panel as Control).scale = want
+		if s < players.size():
+			_sync_target_tag(panel, s, bool(players[s]["alive"]))
 	if me_panel_ref != null:
 		me_panel_ref.pivot_offset = me_panel_ref.size * 0.5
 		me_panel_ref.scale = Vector2(1.04, 1.04) if drag_hover_seat == 0 else Vector2.ONE
+		if not players.is_empty():
+			_sync_target_tag(me_panel_ref, 0, bool(players[0]["alive"]))
 
 
 # ---------- 弃牌多选 ----------
@@ -2628,40 +3003,35 @@ func _default_answer(options: Array) -> Variant:
 
 
 func _start_countdown(seq: int) -> void:
-	if ask_bar_tween and ask_bar_tween.is_valid():
-		ask_bar_tween.kill()
-	if ask_timeout <= 0.0 or auto_all or ask_bar_fill == null:
-		if ask_bar_bg_ref != null:
-			ask_bar_bg_ref.visible = false
-		if ask_secs_label != null:
-			ask_secs_label.visible = false
+	# 等候选项和可响应手牌完成这一帧的展示后再开始计时。
+	await get_tree().process_frame
+	if ask_seq != seq or not asking or not is_visible_in_tree() or ask_timeout <= 0.0 or auto_all:
 		return
+	ask_deadline_ms = Time.get_ticks_msec() + roundi(1000.0 * ask_timeout)
 	ask_bar_bg_ref.visible = true
 	ask_secs_label.visible = true
+	prompt_header.visible = true
 	_countdown_tick(ask_timeout)
-	ask_bar_tween = create_tween()
-	# 倒计时按真实时间走：倍速（Engine.time_scale）下补偿时长
-	ask_bar_tween.tween_method(_countdown_tick, ask_timeout, 0.0, ask_timeout * maxf(Engine.time_scale, 0.01))
-	ask_bar_tween.tween_callback(func() -> void:
-		if ask_seq == seq and asking:
-			log_msg("（作答超时，已自动选择）")
-			_on_decided(ask_default)
-	)
 
 
 func _countdown_tick(v: float) -> void:
 	if ask_bar_fill == null:
 		return
 	ask_bar_fill.scale.x = clampf(v / maxf(ask_timeout, 0.01), 0.0, 1.0)
-	ask_bar_fill.color = Color(0.95, 0.30, 0.35, 0.95) if v < 5.0 else Color(0.25, 0.90, 0.80, 0.95)
+	ask_bar_fill.color = C_TABLE_ACTION if v < 5.0 else Color("#739fca")
 	if ask_secs_label != null:
-		ask_secs_label.text = "%ds" % int(ceil(v))
+		var countdown := "剩余 %d 秒" % ceili(v)
+		if ask_default_caption != "" and ask_default_caption.length() <= 8:
+			countdown += " · 超时%s" % ask_default_caption
+		if ask_secs_label.text != countdown:
+			ask_secs_label.text = countdown
 
 
 # ================= V0.25 处理区与结算动画 =================
 # 对照无名杀 player.$throw（牌飞入处理区）、$draw（牌堆飞入）、$judge / $phaseJudge（判定牌）、$equip、$addVirtualJudge。
 # 处理区节点池复用（最多 PZ_MAX 张同时显示），空闲 PZ_IDLE 秒后整体淡出飞向弃牌堆。
-const FX_CAP := 90  # 特效层节点上限：超过时跳过新的飘字类特效，防止堆积
+const FX_CAP := 36
+const CARD_FLY_TIME := 0.18
 const PZ_W := 140.0
 const PZ_H := 204.0  # V0.43：微调留出底部播报条空间，保持手牌比例
 const PZ_MAX := 4
@@ -2728,9 +3098,9 @@ func _pz_make() -> Control:
 	cap_bg.position = Vector2(-34, PZ_H + 6)
 	cap_bg.size = Vector2(PZ_W + 68, 36)
 	cap_bg.mouse_filter = MOUSE_FILTER_IGNORE
-	cap_bg.add_theme_stylebox_override("panel", style(Color(0.16, 0.08, 0.24, 0.90), 16, C_GOLD, 2, true))
+	cap_bg.add_theme_stylebox_override("panel", style(_table_surface, 16, _table_edge, 1, true))
 	root.add_child(cap_bg)
-	var cap := lbl("", 19, Color(1, 0.96, 0.88), true, HORIZONTAL_ALIGNMENT_CENTER)
+	var cap := lbl("", 19, _table_text, true, HORIZONTAL_ALIGNMENT_CENTER)
 	cap.name = "Cap"
 	cap.position = Vector2(-28, PZ_H + 10)
 	cap.size = Vector2(PZ_W + 56, 28)
@@ -2768,7 +3138,9 @@ func _pz_fill(n: Control, card: Dictionary, caption: String) -> void:
 	(n.get_node("CapBg") as Control).visible = caption != ""
 	(n.get_node("Back") as Control).visible = false
 	(n.get_node("Face") as Control).visible = true
-	(n.get_node("Stamp") as Control).visible = false
+	var stamp := n.get_node("Stamp") as Label
+	stamp.text = ""
+	stamp.visible = false
 	n.modulate = Color(1, 1, 1, 1)
 
 
@@ -2786,11 +3158,47 @@ func _pz_relayout() -> void:
 		if n.has_meta("flying") and bool(n.get_meta("flying")):
 			continue
 		var dst := _pz_slot(i, cnt)
-		if fast:
+		_pz_stop_tween(n, "tw")
+		if n.position.is_equal_approx(dst):
+			continue
+		if not _motion_enabled():
 			n.position = dst
 			continue
 		var tw := n.create_tween()
-		tw.tween_property(n, "position", dst, 0.18).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+		tw.tween_property(n, "position", dst, CARD_FLY_TIME).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+		n.set_meta("tw", tw)
+
+
+func _pz_stop_tween(n: Control, key: String) -> void:
+	if n.has_meta(key):
+		var tween: Tween = n.get_meta(key)
+		if tween.is_valid():
+			tween.kill()
+		n.remove_meta(key)
+
+
+func _pz_finish_motion() -> void:
+	for n: Control in pz_pool:
+		if not is_instance_valid(n):
+			continue
+		_pz_stop_tween(n, "tw")
+		_pz_stop_tween(n, "reveal_tw")
+		n.set_meta("flying", false)
+		var index := pz_live.find(n)
+		if index < 0:
+			n.hide()
+			continue
+		n.position = _pz_slot(index, pz_live.size())
+		n.scale = Vector2.ONE
+		n.rotation = 0.0
+		var back := n.get_node("Back") as Control
+		if back.visible:
+			back.hide()
+			(n.get_node("Face") as Control).show()
+		var stamp := n.get_node("Stamp") as Label
+		stamp.scale = Vector2.ONE
+		stamp.modulate.a = 1.0
+		stamp.visible = stamp.text != ""
 
 
 func _pz_arm_clear() -> void:
@@ -2803,19 +3211,22 @@ func _pz_arm_clear() -> void:
 
 func _pz_clear() -> void:
 	# 结算完：处理区的牌缩小飞向弃牌堆并淡出
-	var dst := Vector2(vw - 352 + 70, 50)
+	var dst := disc_label.position + disc_label.size * 0.5
 	for n in pz_live:
 		if not is_instance_valid(n):
 			continue
+		_pz_stop_tween(n, "tw")
+		_pz_stop_tween(n, "reveal_tw")
 		n.set_meta("flying", false)
-		if fast:
+		if not _motion_enabled():
 			n.visible = false
 			continue
 		var tw: Tween = n.create_tween().set_parallel(true)
-		tw.tween_property(n, "position", dst - Vector2(PZ_W, PZ_H) * 0.25, 0.32).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
-		tw.tween_property(n, "scale", Vector2(0.25, 0.25), 0.32)
-		tw.tween_property(n, "modulate:a", 0.0, 0.32)
+		tw.tween_property(n, "position", dst - Vector2(PZ_W, PZ_H) * 0.25, CARD_FLY_TIME).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
+		tw.tween_property(n, "scale", Vector2(0.25, 0.25), CARD_FLY_TIME)
+		tw.tween_property(n, "modulate:a", 0.0, CARD_FLY_TIME)
 		tw.chain().tween_callback(func() -> void: if is_instance_valid(n): n.visible = false)
+		n.set_meta("tw", tw)
 	pz_live.clear()
 	_nullify_reset()
 
@@ -2828,28 +3239,30 @@ func _pz_add(card: Dictionary, caption: String, from_pos: Vector2) -> Control:
 	pz_live.append(n)
 	while pz_live.size() > PZ_MAX:
 		var old: Control = pz_live.pop_front()
+		_pz_stop_tween(old, "tw")
+		_pz_stop_tween(old, "reveal_tw")
 		old.visible = false
+	_pz_stop_tween(n, "tw")
+	_pz_stop_tween(n, "reveal_tw")
+	n.set_meta("flying", false)
 	_pz_fill(n, card, caption)
 	n.visible = true
 	pz_layer.move_child(n, pz_layer.get_child_count() - 1)
 	var cnt := pz_live.size()
 	var dst := _pz_slot(cnt - 1, cnt)
-	var old_tw: Variant = n.get_meta("tw") if n.has_meta("tw") else null
-	if old_tw is Tween and (old_tw as Tween).is_valid():
-		(old_tw as Tween).kill()
-	if fast:
+	if not _motion_enabled():
 		n.position = dst
 		n.scale = Vector2.ONE
 		n.rotation = 0.0
 	else:
 		n.position = from_pos - Vector2(PZ_W, PZ_H) * 0.5
 		n.scale = Vector2(0.6, 0.6)
-		n.rotation = randf_range(-0.35, 0.35)
+		n.rotation = rng.randf_range(-0.12, 0.12)
 		n.set_meta("flying", true)
 		var tw: Tween = n.create_tween().set_parallel(true)
-		tw.tween_property(n, "position", dst, 0.30).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
-		tw.tween_property(n, "scale", Vector2.ONE, 0.30).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-		tw.tween_property(n, "rotation", deg_to_rad(randf_range(-3.0, 3.0)), 0.30)
+		tw.tween_property(n, "position", dst, CARD_FLY_TIME).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+		tw.tween_property(n, "scale", Vector2.ONE, CARD_FLY_TIME).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+		tw.tween_property(n, "rotation", 0.0, CARD_FLY_TIME)
 		tw.chain().tween_callback(func() -> void:
 			if is_instance_valid(n):
 				n.set_meta("flying", false)
@@ -2887,7 +3300,7 @@ func _pz_judge(seat: int, card: Dictionary, reason: String) -> void:
 	var stamp := n.get_node("Stamp") as Label
 	stamp.text = String(res[0])
 	stamp.add_theme_color_override("font_outline_color", Color(0.2, 0.62, 0.34) if bool(res[1]) else Color(0.86, 0.18, 0.28))
-	if fast:
+	if not _motion_enabled():
 		stamp.visible = stamp.text != ""
 		return
 	# 先显示牌背，翻面露出牌面，再盖结果印章
@@ -2895,21 +3308,21 @@ func _pz_judge(seat: int, card: Dictionary, reason: String) -> void:
 	var back := n.get_node("Back") as Control
 	face.visible = false
 	back.visible = true
-	n.scale = Vector2(0.8, 0.8)
 	var tw := n.create_tween()
-	tw.tween_interval(0.34)
-	tw.tween_property(n, "scale:x", 0.02, 0.12)
+	tw.tween_interval(CARD_FLY_TIME)
+	tw.tween_property(n, "scale:x", 0.04, 0.07)
 	tw.tween_callback(func() -> void:
 		face.visible = true
 		back.visible = false)
-	tw.tween_property(n, "scale:x", 1.0, 0.14)
+	tw.tween_property(n, "scale:x", 1.0, 0.09)
 	if stamp.text != "":
 		tw.tween_callback(func() -> void:
 			stamp.visible = true
-			stamp.scale = Vector2(2.0, 2.0)
+			stamp.scale = Vector2(1.17, 1.17)
 			stamp.modulate.a = 0.0)
-		tw.tween_property(stamp, "scale", Vector2.ONE, 0.16).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-		tw.parallel().tween_property(stamp, "modulate:a", 1.0, 0.12)
+		tw.tween_property(stamp, "scale", Vector2.ONE, 0.12).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+		tw.parallel().tween_property(stamp, "modulate:a", 1.0, 0.10)
+	n.set_meta("reveal_tw", tw)
 
 
 # ---------- 看破链 ----------
@@ -2937,28 +3350,26 @@ func _nullify_push(seat: int, negated: bool) -> void:
 # ---------- 摸牌 / 装备 / 延时锦囊 ----------
 
 func fx_draw_fly(seat: int, n: int) -> void:
-	if fx_root == null or auto_all:
+	if not _can_show_fx():
 		return
 	var from := _deck_point()
 	var to := seat_center(seat)
 	if seat == 0 and hand_row != null:
-		to = hand_row.position + Vector2(hand_row.size.x * 0.5, 130)
-	if not fast:
-		var cnt := mini(n, 4)
+		to = _hand_point(130)
+	if _motion_enabled():
+		var cnt := mini(n, 3)
+		var back_style := style(Color(0.36, 0.30, 0.58), 8, Color(1.0, 0.82, 0.45), 2)
 		for i in cnt:
 			var back := Panel.new()
 			back.size = Vector2(60, 84)
 			back.pivot_offset = Vector2(30, 42)
 			back.position = from - Vector2(30, 42)
 			back.mouse_filter = MOUSE_FILTER_IGNORE
-			back.add_theme_stylebox_override("panel", style(Color(0.36, 0.30, 0.58), 8, Color(1.0, 0.82, 0.45), 2, true))
-			fx_root.add_child(back)
-			back.rotation = randf_range(-0.3, 0.3)
+			back.add_theme_stylebox_override("panel", back_style)
+			_add_motion_fx(back)
 			var tw := back.create_tween()
-			tw.tween_interval(0.08 * i)
-			tw.tween_property(back, "position", to - Vector2(30, 42) + Vector2((i - cnt * 0.5) * 18.0, 0), 0.36).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
-			tw.parallel().tween_property(back, "rotation", 0.0, 0.36)
-			tw.tween_property(back, "modulate:a", 0.0, 0.12)
+			tw.tween_property(back, "position", to - Vector2(30, 42) + Vector2((i - (cnt - 1) * 0.5) * 18.0, 0), CARD_FLY_TIME).set_delay(0.018 * i).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+			tw.tween_property(back, "modulate:a", 0.0, 0.075)
 			tw.tween_callback(back.queue_free)
 	if seat != 0:
 		fx_float(seat, "+%d" % n, Color(0.30, 0.55, 0.95), 40, 50.0)
@@ -2967,7 +3378,7 @@ func fx_draw_fly(seat: int, n: int) -> void:
 
 
 func _fx_float_at(pos: Vector2, text: String, color: Color, fsize: int) -> void:
-	if fx_root == null or fast or auto_all or fx_root.get_child_count() > FX_CAP:
+	if fast or not _can_show_fx():
 		return
 	var lb := lbl(text, fsize, color, true, HORIZONTAL_ALIGNMENT_CENTER)
 	lb.autowrap_mode = TextServer.AUTOWRAP_OFF
@@ -2978,19 +3389,23 @@ func _fx_float_at(pos: Vector2, text: String, color: Color, fsize: int) -> void:
 	lb.add_theme_constant_override("outline_size", 8)
 	lb.add_theme_color_override("font_outline_color", Color(1, 1, 1, 0.95))
 	fx_root.add_child(lb)
-	lb.scale = Vector2(0.5, 0.5)
 	var tw := lb.create_tween()
-	tw.tween_property(lb, "scale", Vector2.ONE, 0.14).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-	tw.parallel().tween_property(lb, "position:y", lb.position.y - 40.0, 0.8)
-	tw.tween_property(lb, "modulate:a", 0.0, 0.25)
+	if _motion_enabled():
+		_add_float_motion(lb, tw, 24.0)
+	else:
+		tw.tween_interval(0.52)
+	tw.tween_property(lb, "modulate:a", 0.0, 0.16)
 	tw.tween_callback(lb.queue_free)
 
 
 func fx_equip_fly(seat: int, nm: String) -> void:
-	if fx_root == null or fast or auto_all:
+	if not _can_show_fx():
 		return
 	var pn := seat_panel_of(seat)
 	if pn == null:
+		return
+	if not _motion_enabled():
+		fx_float(seat, "装备 · " + nm, C_GOLD, 35)
 		return
 	var from := _pz_center()
 	var to := pn.position + Vector2(pn.size.x * 0.5, pn.size.y * 0.62)
@@ -3002,13 +3417,11 @@ func fx_equip_fly(seat: int, nm: String) -> void:
 	var cl := lbl("⚙ " + nm, 22, C_WHITE, true)
 	cl.mouse_filter = MOUSE_FILTER_IGNORE
 	chip.add_child(cl)
-	fx_root.add_child(chip)
+	_add_motion_fx(chip)
 	chip.position = from - Vector2(70, 18)
-	chip.scale = Vector2(1.3, 1.3)
 	var tw := chip.create_tween()
-	tw.tween_property(chip, "position", to - Vector2(70, 18), 0.42).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN_OUT)
-	tw.parallel().tween_property(chip, "scale", Vector2(0.9, 0.9), 0.42)
-	tw.tween_property(chip, "modulate:a", 0.0, 0.2)
+	tw.tween_property(chip, "position", to - Vector2(70, 18), CARD_FLY_TIME).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	tw.tween_property(chip, "modulate:a", 0.0, 0.13)
 	tw.tween_callback(chip.queue_free)
 	fx_target_ring(seat, Color(1.0, 0.82, 0.45))
 
@@ -3163,9 +3576,8 @@ func refresh_skill_buttons() -> void:
 				pb.text = String(e["text"])
 				pb.add_theme_font_override("font", font_bold)
 				pb.add_theme_font_size_override("font_size", 19)
-				pb.add_theme_color_override("font_color", Color(1, 0.95, 0.85))
 				pb.custom_minimum_size = Vector2(72, 44)
-				_set_btn_theme(pb, Color(0.30, 0.22, 0.45, 0.85), Color(1.0, 0.82, 0.45, 0.85), Color(1, 0.95, 0.85), 14, 1, true, Vector2i(12, 6))
+				_set_btn_theme(pb, _table_inset, _table_edge, _table_text, 14, 1, true, Vector2i(12, 6))
 				_wire_btn_bounce(pb)
 				var title := String(e["name"])
 				var desc := String(e["desc"])
@@ -3190,7 +3602,7 @@ func refresh_skill_buttons() -> void:
 			gloss2.offset_right = -8
 			gloss2.offset_top = 4
 			gloss2.offset_bottom = 24
-			gloss2.add_theme_stylebox_override("panel", style(Color(1, 1, 1, 0.20), 20))
+			gloss2.add_theme_stylebox_override("panel", style(Color(Palette.MILK, 0.08), 20))
 			b.add_child(gloss2)
 			b.set_meta("_last_dis", false)
 			b.draw.connect(func() -> void:
@@ -3224,25 +3636,10 @@ func refresh_skill_buttons() -> void:
 		b2.set_meta("st", sig2)
 		b2.text = String(e["text"])
 		b2.disabled = st != "ready" and st != "sel"
-		var col := base
-		var fcol := C_WHITE
-		if st == "sel":
-			col = Color(1.0, 0.72, 0.22)
-			fcol = Color(0.25, 0.16, 0.05)
-		elif st == "used":
-			col = Color(0.55, 0.52, 0.60, 0.80)
-			fcol = Color(1, 1, 1, 0.75)
-		elif st == "idle":
-			col = Color(base.r, base.g, base.b, 0.45)
-			fcol = Color(1, 1, 1, 0.8)
-		b2.add_theme_color_override("font_color", fcol)
-		b2.add_theme_color_override("font_hover_color", fcol)
-		b2.add_theme_color_override("font_pressed_color", fcol)
-		b2.add_theme_color_override("font_disabled_color", fcol)
-		b2.add_theme_stylebox_override("normal", _tight(style(col, 30, Color(1, 1, 1, 0.98) if st == "sel" else Color(1, 1, 1, 0.75), 4 if st == "sel" else 2, st == "ready" or st == "sel"), 10, 6))
-		b2.add_theme_stylebox_override("hover", _tight(style(col.lightened(0.08), 30, Color(1, 1, 1, 0.9), 2, true), 10, 6))
-		b2.add_theme_stylebox_override("pressed", _tight(style(col.darkened(0.08), 30, Color(1, 1, 1, 0.9), 2, false), 10, 6))
-		b2.add_theme_stylebox_override("disabled", _tight(style(col, 30, Color(1, 1, 1, 0.45), 2, false), 10, 6))
+		var col := C_TABLE_ACTION if st == "sel" else _table_inset.lerp(base, 0.18)
+		var edge := Palette.ROSE_EDGE if st == "sel" else _table_edge
+		var ink := C_WHITE if st == "sel" else _table_text
+		_set_btn_theme(b2, col, edge, ink, 30, 2 if st == "sel" else 1, st in ["ready", "sel"], Vector2i(10, 6), Palette.ROSE_EDGE)
 
 
 func _skill_entries() -> Array:
@@ -3293,7 +3690,7 @@ func _skill_entries() -> Array:
 	# 木牛流马：存粮 / 转运
 	var trm: Dictionary = me["equip"]["treasure"]
 	if not trm.is_empty() and String(trm["name"]) == "木牛流马":
-		out.append({"key": "muniu_s", "kind": "muniu_store", "state": "ready", "text": "🌾 存粮 (选手牌)", "color": Color(0.45, 0.62, 0.35), "cb": _on_muniu_store})
+		out.append({"key": "muniu_s", "kind": "muniu_store", "state": "sel" if muniu_storing else "ready", "text": "🌾 存粮 (选手牌)", "color": Color(0.45, 0.62, 0.35), "cb": _on_muniu_store})
 		out.append({"key": "muniu_g", "kind": "muniu_give", "state": "sel" if muniu_targeting else "ready", "text": "🚚 转运木牛", "color": Color(0.45, 0.62, 0.35), "cb": _on_muniu_give})
 	return out
 
@@ -3306,79 +3703,61 @@ func _on_decided(value: Variant) -> void:
 
 func maybe_restore_hint() -> void:
 	if interactive and turn_seat == 0 and not game_over and in_play_phase:
-		show_hint("你的出牌阶段：点牌选中后点「确定」，或把牌拖到目标上；灰色牌暂时用不了")
+		show_hint("选一张手牌出牌，或拖到可用目标。", "你的出牌阶段")
 
 
-func ask(prompt: String, options: Array, on_built: Callable = Callable(), mode: String = "") -> Variant:
-	# V0.24 修复：认输/对局结束后引擎协程收尾时不再弹出新的询问（否则会卡在无人应答的提问上，结算界面迟迟不出）
+func ask(prompt: String, options: Array, on_built: Callable = Callable(), mode: String = "", presentation: Dictionary = {}) -> Variant:
+	# 对局结束后不再建立询问，避免协程等待无人可答的窗口。
 	if eng != null and eng.game_over:
 		return null
+	_set_tools_open(false)
 	asking = true
 	ask_seq += 1
 	var my_seq := ask_seq
-	prompt_panel.visible = true
-	prompt_label.text = prompt
-	for ch in prompt_btns.get_children():
-		prompt_btns.remove_child(ch)
-		ch.queue_free()
-	# V0.27：选牌/选人类询问（mode=pick）与响应询问（mode=respond）改为「先选中，再确定」
+	hide_prompt()
 	if mode == "":
 		for opt in options:
-			var ov0: Variant = (opt as Dictionary).get("value")
-			if ov0 is Dictionary and not (ov0 as Dictionary).is_empty():
+			var value: Variant = (opt as Dictionary).get("value")
+			if value is Dictionary and not (value as Dictionary).is_empty():
 				mode = "pick"
 				break
 	ask_mode = mode
 	ask_prompt = prompt
+	ask_context = String(presentation.get("context", ""))
+	ask_confirm_text = String(presentation.get("confirm", "确认选择"))
 	ask_options = options
+	ask_default = _default_answer(options)
+	ask_default_caption = ""
 	ask_sel_has = false
 	ask_sel_val = null
 	ask_opt_btns = []
 	ask_confirm_btn = null
+	show_hint(prompt, ask_context)
+	for option in options:
+		if _ask_same(option["value"], ask_default):
+			ask_default_caption = String(option["label"])
+			break
 	if mode == "pick" or mode == "respond":
 		_build_select_ask(options)
-		ask_default = _default_answer(options)
-		if on_built.is_valid():
-			on_built.call()
-		_start_countdown(my_seq)
-		_update_action_bar()
-		_queue_refresh()
-		var result2: Variant = await decided
-		if ask_seq == my_seq:
-			asking = false
-			_ask_reset_sel()
-			hide_prompt()
-			maybe_restore_hint()
-			_update_action_bar()
-			_queue_refresh()
-		return result2
-	var first := true
-	for opt in options:
-		var lab := String(opt["label"])
-		var b: Button
-		if first and options.size() > 1:
-			b = _make_action_btn(lab, C_GOLD, Color(0.25, 0.16, 0.05))
-		else:
-			b = _make_action_btn(lab, Color(1, 1, 1, 0.96), C_PINK_DEEP)
-		first = false
-		var tw_w := clampf(64.0 + lab.length() * 26.0, 146.0, 360.0)
-		b.custom_minimum_size = Vector2(tw_w, 64)
-		if lab.length() > 10:
-			b.add_theme_font_size_override("font_size", 22)
-		var v: Variant = opt["value"]
-		b.pressed.connect(func() -> void: _on_decided(v))
-		_attach_option_intro(b, lab, v)
-		prompt_btns.add_child(b)
-	_fit_prompt_btns()
-	ask_default = _default_answer(options)
+	else:
+		for index in options.size():
+			var option: Dictionary = options[index]
+			var label := String(option["label"])
+			var value: Variant = option["value"]
+			var button := _make_prompt_button(label, index == 0 and options.size() > 1)
+			button.pressed.connect(func() -> void: _on_decided(value))
+			_attach_option_intro(button, label, value)
+			prompt_btns.add_child(button)
 	if on_built.is_valid():
 		on_built.call()
-	_start_countdown(my_seq)
+	_fit_prompt_btns()
 	_update_action_bar()
 	_queue_refresh()
+	_start_countdown(my_seq)
 	var result: Variant = await decided
 	if ask_seq == my_seq:
 		asking = false
+		_ask_reset_sel()
 		hide_prompt()
 		maybe_restore_hint()
 		_update_action_bar()
@@ -3616,9 +3995,7 @@ func _populate_draft_cards(candidates: Array, my_identity: String) -> void:
 		var b := Button.new()
 		b.focus_mode = Control.FOCUS_NONE
 		b.custom_minimum_size = Vector2(400, 470)
-		b.add_theme_stylebox_override("normal", style(Color(1, 1, 1, 0.95), 22, C_GOLD, 3, true))
-		b.add_theme_stylebox_override("hover", style(Color(1, 0.97, 0.98, 1.0), 22, C_PINK_DEEP, 3, true))
-		b.add_theme_stylebox_override("pressed", style(Color(1, 0.93, 0.95, 1.0), 22, C_PINK_DEEP, 3, false))
+		_set_btn_theme(b, Palette.MILK, Palette.LILAC_EDGE, Palette.INK, 22, 1, true, Vector2i(-1, -1), Palette.ROSE_EDGE)
 		var vb := VBoxContainer.new()
 		vb.mouse_filter = MOUSE_FILTER_IGNORE
 		vb.set_anchors_preset(Control.PRESET_FULL_RECT)
@@ -3746,18 +4123,18 @@ func end_game(text: String) -> void:
 
 # ---------------- V0.30 教学关：脚本化单挑 ----------------
 # 固定花宫雏（先手）对柚木铃奈（简单 AI，体力 2），起手发好「星光长剑/突击/闪避/补给」，
-# 按步骤提示：装备 → 选突击 → 选目标 → 确定 → 结束回合 → 对手回合响应 → 自由练习。完成（分出胜负）记「新手毕业」。
+# 按步骤提示：装备 → 选突击 → 选目标 → 出牌 → 结束出牌 → 对手回合响应 → 自由练习。
 var tut_step := 0
 var tut_saw_enemy_turn := false  # V0.32：教学第 4 步保持到对手回合响应结束，不再只闪一句文字
 var tut_panel: PanelContainer = null
 var tut_label: Label = null
 var tut_timer: Timer = null
 const TUT_TEXT := [
-	"教学 1/5：点手牌里的「星光长剑」选中它，再点「确定」装备（装备后攻击范围变大）。",
-	"教学 2/5：点「突击」选中，然后点对手的头像，把她选为目标。",
-	"教学 3/5：点「确定」出牌。对手没有「闪避」就会受到 1 点伤害。",
-	"教学 4/5：没有要出的牌了，点「结束」结束回合。对手回合里如果对你出「突击」，点亮的「闪避」会提示你抵挡：点它选中，再点「确定」。",
-	"教学 5/5：自由练习！击败对手就能毕业。长按任意牌或角色可以看说明。",
+	"教学 1/5 · 选择【星光长剑】，点「装备」增加攻击范围。",
+	"教学 2/5 · 选择【突击】，再点对手头像。",
+	"教学 3/5 · 点「出牌」。对手可用【闪避】抵挡。",
+	"教学 4/5 · 点「结束出牌」。受到突击时，选中【闪避】并点「打出闪避」。",
+	"教学 5/5 · 击败对手完成练习。长按手牌或角色可读说明。",
 ]
 
 
@@ -3979,36 +4356,45 @@ func _mvp_info(winner_text: String) -> Array:
 
 func build_settlement(winner_text: String, your_result: String) -> void:
 	var dim := ColorRect.new()
-	dim.color = Color(0.14, 0.04, 0.10, 0.72)
+	dim.color = Color(Palette.NIGHT_PANEL, 0.70)
 	dim.position = Vector2.ZERO
 	dim.size = Vector2(vw, 1080)
 	add_child(dim)
 	settlement_layer = dim
 	var panel := PanelContainer.new()
-	panel.add_theme_stylebox_override("panel", style(Color(1, 1, 1, 0.97), 26, C_GOLD, 3, true))
-	panel.position = Vector2(vw / 2.0 - 570, 110)
-	panel.size = Vector2(1140, 860)
+	var panel_width := minf(1220.0, vw - safe_insets.x - safe_insets.z - 80.0)
+	panel.add_theme_stylebox_override("panel", _tight(style(Palette.MILK, 28, Palette.LILAC_EDGE, 1, true), 0, 0))
+	panel.position = Vector2((vw + safe_insets.x - safe_insets.z - panel_width) * 0.5, 92 + safe_insets.y)
+	panel.size = Vector2(panel_width, 896 - safe_insets.y - safe_insets.w)
 	dim.add_child(panel)
 	var mg := MarginContainer.new()
-	mg.add_theme_constant_override("margin_left", 44)
-	mg.add_theme_constant_override("margin_right", 44)
-	mg.add_theme_constant_override("margin_top", 30)
-	mg.add_theme_constant_override("margin_bottom", 30)
+	mg.add_theme_constant_override("margin_left", 36)
+	mg.add_theme_constant_override("margin_right", 36)
+	mg.add_theme_constant_override("margin_top", 24)
+	mg.add_theme_constant_override("margin_bottom", 26)
 	panel.add_child(mg)
-	var vb := VBoxContainer.new()
-	vb.add_theme_constant_override("separation", 12)
-	mg.add_child(vb)
+	var layout := VBoxContainer.new()
+	layout.add_theme_constant_override("separation", 12)
+	mg.add_child(layout)
 	var win := your_result == "你赢了！"
-	var title := lbl(your_result if your_result != "" else winner_text, 62, C_PINK_DEEP if win else Color(0.45, 0.45, 0.55), true)
+	var title := lbl(your_result if your_result != "" else winner_text, 62, C_TABLE_ACTION if win else C_INK, true)
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	vb.add_child(title)
-	var sub_text2 := winner_text + " · 身份全部揭示"
+	layout.add_child(title)
+	var sub_text2 := winner_text
 	if game_mode == "doudizhu" and eng != null:
 		sub_text2 += " · 叫分×%d · 加倍×%d（总×%d）" % [int(eng.ddz_multiplier), int(eng.ddz_double), int(eng.ddz_stake())]
-	var sub := lbl(sub_text2, 24, Color(0.55, 0.4, 0.45))
+	var sub := lbl(sub_text2, 24, C_INK_SOFT)
 	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	vb.add_child(sub)
-	# 本局 MVP（对标清瑶版 MVP 结算）：胜方阵营内综合评分最高者
+	layout.add_child(sub)
+	var review_scroll := ScrollContainer.new()
+	review_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	review_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	layout.add_child(review_scroll)
+	var vb := VBoxContainer.new()
+	vb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	vb.add_theme_constant_override("separation", 9)
+	review_scroll.add_child(vb)
+	# 本局 MVP 为胜方阵营内综合评分最高者。
 	var mvi := _mvp_info(winner_text)
 	var mvp_seat := int(mvi[0])
 	var mvp_score := float(mvi[1])
@@ -4026,7 +4412,7 @@ func build_settlement(winner_text: String, your_result: String) -> void:
 		mvp_row.add_child(mframe)
 		var mvp_texts := VBoxContainer.new()
 		mvp_texts.add_theme_constant_override("separation", 4)
-		var mt := lbl("★ 本局 MVP", 40, C_GOLD, true)
+		var mt := lbl("本局 MVP", 40, Color(0.50, 0.32, 0.11), true)
 		mt.autowrap_mode = TextServer.AUTOWRAP_OFF
 		mt.custom_minimum_size = Vector2(620, 0)
 		mvp_texts.add_child(mt)
@@ -4044,7 +4430,7 @@ func build_settlement(winner_text: String, your_result: String) -> void:
 		var row := PanelContainer.new()
 		var is_me := int(p["seat"]) == 0
 		var is_mvp := int(p["seat"]) == mvp_seat
-		row.add_theme_stylebox_override("panel", style(Color(1.0, 0.93, 0.96, 0.95) if is_me else Color(0.97, 0.96, 0.98, 0.9), 14, C_GOLD if is_mvp else Color(1, 1, 1, 0.6), 3 if is_mvp else 1))
+		row.add_theme_stylebox_override("panel", _tight(style(Palette.ROSE_SOFT if is_me else Palette.LILAC_SOFT, 14, Palette.ROSE_EDGE if is_mvp else Palette.LILAC_EDGE, 1), 16, 8))
 		var hb2 := HBoxContainer.new()
 		hb2.add_theme_constant_override("separation", 16)
 		row.add_child(hb2)
@@ -4068,7 +4454,7 @@ func build_settlement(winner_text: String, your_result: String) -> void:
 				idc = Color(0.55, 0.30, 0.78)
 			"先手", "后手":
 				idc = Color(0.35, 0.5, 0.8)
-		var head := lbl("%d号 %s%s" % [int(p["seat"]) + 1, String(p["char"]["name"]), " ★MVP" if is_mvp else ""], 26, Color(0.3, 0.22, 0.3), true)
+		var head := lbl("%s%s" % [String(p["char"]["name"]), " · 你" if is_me else ""], 26, C_INK, true)
 		head.custom_minimum_size = Vector2(230, 0)
 		hb2.add_child(head)
 		var idl := lbl(String(p["identity"]), 24, idc, true)
@@ -4123,41 +4509,41 @@ func build_settlement(winner_text: String, your_result: String) -> void:
 			var hl := lbl("💡 通关思路：" + String(pspec_end.get("hint", "")), 22, Color(0.45, 0.26, 0.08), true, HORIZONTAL_ALIGNMENT_CENTER)
 			hl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 			vb.add_child(hl)
-	vb.add_child(btn_row)
+	layout.add_child(btn_row)
 	if game_mode == "puzzle":
 		var nid := Puzzles.next_id(puzzle_id)
 		if win and nid != "":
-			var next_b := plain_btn("下一关 ▶", C_PLATE, C_WHITE, 28)
-			next_b.custom_minimum_size = Vector2(200, 66)
+			var next_b := plain_btn("下一关 ▶", C_TABLE_ACTION, C_WHITE, 28)
+			next_b.custom_minimum_size = Vector2(190, 92)
 			next_b.pressed.connect(func() -> void:
 				puzzle_id = nid
 				start_match(false))
 			btn_row.add_child(next_b)
-		var retry_b := plain_btn("重玩本关", Color(0.98, 0.62, 0.25) if not win else Color(1, 0.97, 0.94), C_WHITE if not win else C_INK, 26)
-		retry_b.custom_minimum_size = Vector2(190, 66)
+		var retry_b := plain_btn("重玩本关", C_TABLE_ACTION if not win else Palette.LILAC_SOFT, C_WHITE if not win else C_INK, 26)
+		retry_b.custom_minimum_size = Vector2(170, 92)
 		retry_b.pressed.connect(func() -> void: start_match(false))
 		btn_row.add_child(retry_b)
 		if open_puzzles_cb.is_valid():
 			var list_b := plain_btn("选关列表", Color(1, 1, 1, 0.95), C_INDIGO, 26)
-			list_b.custom_minimum_size = Vector2(170, 66)
+			list_b.custom_minimum_size = Vector2(166, 92)
 			list_b.pressed.connect(func() -> void: open_puzzles_cb.call())
 			btn_row.add_child(list_b)
 	else:
-		var again := plain_btn("再来一局", C_PLATE, C_WHITE, 30)
-		again.custom_minimum_size = Vector2(240, 66)
+		var again := plain_btn("再来一局", C_TABLE_ACTION, C_WHITE, 30)
+		again.custom_minimum_size = Vector2(240, 92)
 		again.pressed.connect(func() -> void: start_match(false))
 		btn_row.add_child(again)
-	var log_b := plain_btn("📜 完整战报", Color(1, 0.97, 0.92), Color(0.35, 0.22, 0.10), 26)
-	log_b.custom_minimum_size = Vector2(200, 66)
+	var log_b := plain_btn("完整战报", Palette.SKY_SOFT, C_INK, 26)
+	log_b.custom_minimum_size = Vector2(180, 92)
 	log_b.pressed.connect(func() -> void:
 		open_info_overlay("本局完整战报", "\n".join(eng.log_lines) if eng != null else "")
 		move_child(info_overlay, get_child_count() - 1))
 	btn_row.add_child(log_b)
-	var home := plain_btn("返回主页", C_WHITE, C_PINK_DEEP, 28)
-	home.custom_minimum_size = Vector2(200, 66)
+	var home := plain_btn("返回主页", Palette.LILAC_SOFT, C_INK, 28)
+	home.custom_minimum_size = Vector2(180, 92)
 	home.pressed.connect(func() -> void: go_home.call())
 	btn_row.add_child(home)
-	_extend_cover(dim, Color(0.14, 0.04, 0.10, 0.72))
+	_extend_cover(dim, dim.color)
 
 
 # V0.24 4:3 适配：主界面在较高视口里把 1080 高的内容区垂直居中（main._fit_wide），
@@ -4289,6 +4675,7 @@ func _on_hand_card_clicked(card: Dictionary) -> void:
 		return
 	if players.is_empty() or game_over or not _hand_has(card):
 		return
+	_ensure_hand_card_visible(_find_wrap(card))
 	if discard_mode:
 		_toggle_discard(card)
 		return
@@ -4309,10 +4696,10 @@ func _on_hand_card_clicked(card: Dictionary) -> void:
 		return
 	var me: Dictionary = players[0]
 	if muniu_storing:
-		muniu_storing = false
-		eng.muniu_store(me, card)
-		maybe_restore_hint()
-		refresh()
+		selected_card = {} if is_same(selected_card, card) else card
+		_show_sel_hint()
+		_queue_refresh()
+		_maybe_auto_confirm()
 		return
 	if skill_mode != "":
 		_skill_card_tap(card)
@@ -4422,12 +4809,12 @@ func execute_targeted_card(me: Dictionary, card: Dictionary, tgt: Dictionary) ->
 				log_msg("你使用「%s」，但 %s 身上没有任何牌。" % [n, pname(tgt)])
 			else:
 				await eng.play_card(me, card, tgt, entry["card"])
-	refresh()
+	_queue_refresh()
 
 
 func execute_simple_card(me: Dictionary, card: Dictionary) -> void:
 	await eng.play_card(me, card, {})
-	refresh()
+	_queue_refresh()
 
 
 func _on_difficulty(d: int) -> void:
@@ -4442,9 +4829,9 @@ func refresh_diff_buttons() -> void:
 		var b: Button = diff_btns[i]
 		_wire_btn_bounce(b)
 		if i == difficulty:
-			_set_btn_theme(b, C_PLATE, Color(1, 1, 1, 0.85), C_WHITE, 24, 2, true, Vector2i(10, 6))
+			_set_btn_theme(b, C_TABLE_ACTION, Palette.ROSE_EDGE, C_WHITE, 24, 1, true, Vector2i(10, 6))
 		else:
-			_set_btn_theme(b, Color(1, 1, 1, 0.92), C_GOLD, C_PINK_DEEP, 24, 2, true, Vector2i(10, 6), C_PINK_DEEP)
+			_set_btn_theme(b, _table_inset, _table_edge, _table_text, 24, 1, true, Vector2i(10, 6), Palette.ROSE_EDGE)
 
 
 func _on_spear_button() -> void:
@@ -4470,6 +4857,7 @@ func _on_spear_button() -> void:
 	skill_mode = ""
 	skill_card = {}
 	muniu_targeting = false
+	muniu_storing = false
 	spear_targeting = true
 	targeting = true
 	if target_candidates.size() == 1:
@@ -4497,25 +4885,32 @@ func _toggle_spear_card(card: Dictionary) -> void:
 
 
 func _on_muniu_store() -> void:
-	if not interactive or turn_seat != 0 or game_over:
+	if not interactive or asking or turn_seat != 0 or game_over or eng == null or players.is_empty():
+		return
+	if muniu_storing:
+		cancel_targeting()
 		return
 	var me: Dictionary = players[0]
+	if equip_name(me, "treasure") != "木牛流马":
+		return
 	if (me["hand"] as Array).is_empty():
 		show_hint("没有可以存入「木牛流马」的手牌")
 		return
-	if selected_card.is_empty() or not (me["hand"] as Array).has(selected_card):
-		muniu_storing = not muniu_storing
-		if muniu_storing:
-			show_hint("点选任意一张手牌存入「木牛流马」（再点取消）")
-		else:
-			maybe_restore_hint()
-		refresh()
-		return
-	var c: Dictionary = selected_card
-	selected_card = {}
-	muniu_storing = false
-	eng.muniu_store(me, c)
-	refresh()
+	if not _hand_has(selected_card):
+		selected_card = {}
+	targeting = false
+	target_candidates = []
+	sel_target = -1
+	extra_target = -1
+	spear_targeting = false
+	spear_cards = []
+	muniu_targeting = false
+	skill_mode = ""
+	skill_card = {}
+	muniu_storing = true
+	_show_sel_hint()
+	_queue_refresh()
+	_maybe_auto_confirm()
 
 
 func _on_muniu_give() -> void:
@@ -4537,6 +4932,7 @@ func _on_muniu_give() -> void:
 	skill_mode = ""
 	skill_card = {}
 	spear_targeting = false
+	muniu_storing = false
 	muniu_targeting = true
 	targeting = true
 	if target_candidates.size() == 1:
@@ -4566,10 +4962,12 @@ func _eng_is_human(p: Dictionary) -> bool:
 func open_info_overlay(title: String, body: String, bb: bool = false) -> void:
 	if info_overlay == null:
 		return
+	_set_tools_open(false)
 	info_title.text = title
 	info_text.bbcode_enabled = bb
 	info_text.text = body
 	info_overlay.visible = true
+	move_child(info_overlay, get_child_count() - 1)
 	if title == "战况记录":
 		await get_tree().process_frame
 		info_text.scroll_to_line(maxi(info_text.get_line_count() - 1, 0))
@@ -4691,7 +5089,7 @@ func sort_my_hand() -> void:
 	else:
 		(players[0]["hand"] as Array).sort_custom(hand_sort_cmp)
 	if sort_btn != null and is_instance_valid(sort_btn):
-		sort_btn.text = "花色" if hand_sort_by_suit else "排序"
+		sort_btn.text = "排序：花色" if hand_sort_by_suit else "排序：类型"
 	show_hint("已按【花色点数】整理手牌（再点切回类型）" if hand_sort_by_suit else "已按【卡牌类型】整理手牌（再点切换花色）")
 	refresh()
 
@@ -4699,7 +5097,9 @@ func sort_my_hand() -> void:
 func toggle_auto() -> void:
 	auto_mode = not auto_mode
 	if auto_btn:
-		auto_btn.text = "托管中" if auto_mode else "托管"
+		auto_btn.text = "取消托管" if auto_mode else "开始托管"
+	if is_instance_valid(tools_btn):
+		tools_btn.text = "托管中 ▾" if auto_mode else "工具 ▾"
 	show_hint("已开启托管，静替你出牌。" if auto_mode else "已关闭托管。")
 	# V0.25 修复：在自己出牌阶段中途开托管，旧版要等你手动点「结束」才生效；现立即由 AI 接管本阶段剩余出牌
 	if auto_mode and in_play_phase and turn_seat == 0 and not asking and eng != null and not eng.game_over:
@@ -4713,13 +5113,12 @@ func _style_concede_btn(armed: bool) -> void:
 		return
 	if armed:
 		concede_btn.text = "确认认输"
-		concede_btn.add_theme_font_size_override("font_size", 20)
+		concede_btn.add_theme_font_size_override("font_size", 27)
 		_set_btn_theme(concede_btn, Color(0.84, 0.18, 0.34), C_GOLD, C_WHITE, 18, 2, true, Vector2i(6, 6), C_GOLD)
 	else:
 		concede_btn.text = "认输"
-		concede_btn.add_theme_font_size_override("font_size", 23)
-		_set_btn_theme(concede_btn, Color(0.24, 0.12, 0.31, 0.92), C_GOLD, Color(1.0, 0.94, 0.84), 18, 2, false, Vector2i(10, 6), C_GOLD)
-	concede_btn.size = Vector2(108, 52)
+		concede_btn.add_theme_font_size_override("font_size", 27)
+		_set_btn_theme(concede_btn, _table_inset, _table_edge, _table_text, 18, 1, false, Vector2i(10, 6), Palette.ROSE_EDGE)
 
 
 func on_concede_pressed() -> void:
@@ -4735,6 +5134,7 @@ func on_concede_pressed() -> void:
 		return
 	_style_concede_btn(false)
 	concede_arm = false
+	_set_tools_open(false)
 	eng.concede(players[0])
 	# V0.24 修复：旧版在自己的出牌阶段或有提问等待作答时认输，引擎仍卡在等待「结束出牌」/作答，结算界面不出现
 	in_play_phase = false
@@ -4762,8 +5162,6 @@ func _eng_changed() -> void:
 				show_turn_banner(String(eng.turn_player["char_name"]))
 				if turn_seat == 0:
 					play_sfx("turn")
-		if eng.phase_text != "":
-			set_phase("▶ %s · [%d号 %s]" % [eng.phase_text, turn_seat + 1, pname(eng.turn_player)])
 	round_no = eng.round_no
 	_update_music_scene()
 	_queue_refresh()
@@ -4803,7 +5201,7 @@ var _refresh_pending := false
 
 
 func _queue_refresh() -> void:
-	# 引擎每次改动牌区都会回调 changed()（一张牌的结算可触发十几次），合并为本帧末一次重建，降低安卓端 CPU 与节点分配压力
+	# 合并同一动作的出牌事件和牌区变动，保留出牌动画的即时反馈。
 	if _refresh_pending:
 		return
 	_refresh_pending = true
@@ -4811,6 +5209,8 @@ func _queue_refresh() -> void:
 
 
 func _do_queued_refresh() -> void:
+	if not _refresh_pending:
+		return
 	_refresh_pending = false
 	if is_inside_tree():
 		refresh()
@@ -4823,24 +5223,29 @@ func _eng_pace(sec: float) -> void:
 
 
 func _eng_played(card: Dictionary, owner: String, target_name: String = "") -> void:
-	if String(card["name"]) in ["全场乱斗", "弹幕齐射"] and not auto_all:
-		fx_screen_shake()
 	var seat := -1
+	var actor := _short_name(owner)
 	for p in players:
-		if pname(p) == owner:
+		if (eng != null and eng.pname(p) == owner) or pname(p) == owner:
 			seat = int(p["seat"])
-	var label := _short_name(owner) if target_name == "" else "%s ➜ %s" % [_short_name(owner), _short_name(target_name)]
+			actor = String(p["char_name"])
+			break
+	var label := "你" if seat == 0 else actor
+	if target_name != "":
+		label += " ➜ " + _short_name(target_name)
 	if seat >= 0 and not auto_all:
 		fx_target_ring(seat, Color(1.0, 0.72, 0.22))
-	_show_play_callout(card, owner, target_name, seat)
+	if seat == 0:
+		_battle_haptic(12)
+	_show_play_callout(card, actor, target_name, seat)
 	show_played_card(card, label, seat)
-	refresh()
+	_queue_refresh()
 
 
 func _eng_ask_skill(p: Dictionary, sid: String, timing: String, ctx: Dictionary) -> bool:
 	var def: Dictionary = eng.skill_lib.get(sid, {})
 	var nm := String(def.get("name", sid))
-	var v: Variant = await ask("是否发动技能「%s」？" % nm, [{"label": "发动", "value": true}, {"label": "不发动", "value": false}])
+	var v: Variant = await ask("发动「%s」？" % nm, [{"label": "发动技能", "value": true}, {"label": "不发动", "value": false}], Callable(), "", {"context": IntroPop.timing_label(timing)})
 	return bool(v)
 
 
@@ -4853,9 +5258,11 @@ func _eng_ask_respond(p: Dictionary, card_name: String, reason: String) -> bool:
 		# V0.32：教学第 4 步的响应练习：面板改为当前情境提示，并保留到玩家作答
 		if tut_panel != null and is_instance_valid(tut_panel) and tut_label != null:
 			tut_panel.visible = true
-			tut_label.text = "教学 4/5：对手对你出「突击」了！点手牌里亮起的「闪避」选中，再点「确定」抵挡；点「不出」会受到 1 点伤害。"
+			tut_label.text = "对手使用了「突击」。选中亮起的闪避，再点「打出闪避」。"
 			move_child(tut_panel, get_child_count() - 1)
-	var v: Variant = await ask("是否打出「%s」？（%s）" % [card_name, reason], [{"label": "打出「%s」" % card_name, "value": true}, {"label": "不出", "value": false}], Callable(), "respond")
+	var reply := "打出%s" % card_name
+	var context := "受到「突击」" if reason == "抵挡突击" else reason
+	var v: Variant = await ask("选择一张「%s」" % card_name, [{"label": reply, "value": true}, {"label": "不响应", "value": false}], Callable(), "respond", {"context": context, "confirm": reply})
 	respond_name = ""
 	respond_names = []
 	_queue_refresh()
@@ -4867,7 +5274,7 @@ func _eng_ask_save(p: Dictionary, dying: Dictionary) -> bool:
 	respond_names = ["补给", "特饮"] if p == dying else ["补给"]
 	resp_pref_card = {}
 	var save_hint := "补给/特饮" if p == dying else "补给"
-	var v: Variant = await ask("%s 濒临阵亡，是否使用救援牌（%s）？" % [pname(dying), save_hint], [{"label": "使用救援", "value": true}, {"label": "不救", "value": false}], Callable(), "respond")
+	var v: Variant = await ask("选一张救援牌（%s）" % save_hint, [{"label": "救援", "value": true}, {"label": "不救", "value": false}], Callable(), "respond", {"context": "%s 濒死" % pname(dying), "confirm": "救援"})
 	respond_name = ""
 	respond_names = []
 	_queue_refresh()
@@ -4875,13 +5282,6 @@ func _eng_ask_save(p: Dictionary, dying: Dictionary) -> bool:
 
 
 func _eng_pick_card(p: Dictionary, cands: Array, prompt: String) -> Dictionary:
-	# V0.27：技能选择状态里已选好的牌直接作答（发动前已经确认过）
-	if skill_pre.has("card"):
-		var pc0: Dictionary = skill_pre["card"]
-		skill_pre.erase("card")
-		for c0 in cands:
-			if is_same(c0, pc0):
-				return c0
 	var options: Array = []
 	for c in cands:
 		options.append({"label": card_text(c), "value": c})
@@ -4897,12 +5297,6 @@ func _eng_pick_card(p: Dictionary, cands: Array, prompt: String) -> Dictionary:
 
 
 func _eng_pick_target(p: Dictionary, cands: Array, prompt: String) -> Dictionary:
-	if skill_pre.has("target"):
-		var pt0: int = int(skill_pre["target"])
-		skill_pre.erase("target")
-		for t0 in cands:
-			if int(t0["seat"]) == pt0:
-				return t0
 	var si := await ask_choose_target(prompt, cands, false)
 	if si >= 0 and si < players.size():
 		return players[si]
@@ -4957,19 +5351,18 @@ func _eng_choose_discard(p: Dictionary) -> Dictionary:
 	discard_mode = true
 	discard_need = need
 	discard_sel = []
-	discard_prompt = ("弃牌阶段：手牌超出上限，请弃置 %d 张" % need) if phase_need > 0 else "请选择 1 张手牌"
+	discard_prompt = "请选择 %d 张手牌弃置" % need
 	selected_card = {}
 	targeting = false
 	_queue_refresh()
-	var v: Variant = await ask(discard_prompt, [{"label": "确定", "value": "__confirm"}, {"label": "直接智能", "value": "__auto", "default": true}], func() -> void:
+	var v: Variant = await ask(discard_prompt, [{"label": "弃置 %d 张" % need, "value": "__confirm"}, {"label": "自动弃牌", "value": "__auto", "default": true}], func() -> void:
 		discard_confirm_btn = prompt_btns.get_child(0) as Button
 		var auto_pick_b := _make_action_btn("⚡ 选弱牌", Color(0.98, 0.76, 0.30), Color(0.24, 0.14, 0.04))
 		auto_pick_b.custom_minimum_size = Vector2(180, 64)
-		(auto_pick_b.get_child(0) as Control).size = Vector2(160, 24)
 		auto_pick_b.pressed.connect(_auto_select_discard_cards)
 		prompt_btns.add_child(auto_pick_b)
 		prompt_btns.move_child(auto_pick_b, 1)
-		_update_discard_ui())
+		_update_discard_ui(), "", {"context": "手牌超过上限" if phase_need > 0 else ""})
 	var picked: Array = discard_sel.duplicate()
 	discard_mode = false
 	discard_sel = []
@@ -4989,7 +5382,7 @@ func _eng_play_phase(eng_ref, p: Dictionary) -> void:
 	interactive = true
 	in_play_phase = true
 	end_play_btn.disabled = false
-	show_hint("你的出牌阶段：点牌选中后点「确定」，或把牌拖到目标上；灰色牌暂时用不了")
+	maybe_restore_hint()
 	refresh()
 	await end_play_pressed
 	in_play_phase = false
@@ -4997,6 +5390,7 @@ func _eng_play_phase(eng_ref, p: Dictionary) -> void:
 	spear_targeting = false
 	spear_cards = []
 	muniu_targeting = false
+	muniu_storing = false
 	selected_card = {}
 	sel_target = -1
 	extra_target = -1
@@ -5076,9 +5470,10 @@ static func line_for(cid: String, cat: String = "skill") -> String:
 
 
 func show_bubble(seat: int, cat: String) -> void:
-	if fx_root == null or seat < 0 or seat >= players.size():
+	if not _motion_enabled() or not _can_show_fx() or seat < 0 or seat >= players.size():
 		return
-	var cid := String(players[seat]["char"]["id"])
+	var ch: Dictionary = players[seat].get("char", {})
+	var cid := String(ch.get("id", ""))
 	if not CHAR_LINES.has(cid):
 		return
 	var entry = CHAR_LINES[cid].get(cat, "")
@@ -5086,12 +5481,10 @@ func show_bubble(seat: int, cat: String) -> void:
 	if entry is Array:
 		if (entry as Array).is_empty():
 			return
-		text = String(entry[randi() % (entry as Array).size()])
+		text = String(entry[rng.randi_range(0, (entry as Array).size() - 1)])
 	else:
 		text = String(entry)
 	if text == "":
-		return
-	if auto_all:
 		return
 	if bubble_nodes.has(seat) and is_instance_valid(bubble_nodes[seat]):
 		(bubble_nodes[seat] as Node).queue_free()
@@ -5143,7 +5536,7 @@ func show_bubble(seat: int, cat: String) -> void:
 	bl.clip_text = true
 	bl.mouse_filter = MOUSE_FILTER_IGNORE
 	bub.add_child(bl)
-	fx_root.add_child(bub)
+	_add_motion_fx(bub)
 	bubble_nodes[seat] = bub
 	bubble_order.append(seat)
 	bub.modulate.a = 0.0
@@ -5171,7 +5564,15 @@ func seat_center(seat: int) -> Vector2:
 
 
 func _process(delta: float) -> void:
-	if not is_visible_in_tree() or players.is_empty():
+	if ask_deadline_ms > 0 and asking:
+		var remaining := ask_deadline_ms - Time.get_ticks_msec()
+		if remaining <= 0:
+			ask_deadline_ms = 0
+			log_msg("作答超时，已按默认选项处理。")
+			_on_decided(ask_default)
+		else:
+			_countdown_tick(float(remaining) / 1000.0)
+	if not _motion_enabled() or not is_visible_in_tree() or players.is_empty():
 		return
 	breath_t += delta
 	for i in seat_panels.size():
@@ -5189,349 +5590,247 @@ func _process(delta: float) -> void:
 		player_portrait.position.y = -2.0 + sin(breath_t * 0.8 + 0.6) * 1.4
 
 
+func _motion_enabled() -> bool:
+	return not reduced_motion and not fast and not auto_all
+
+
+func _can_show_fx() -> bool:
+	return is_instance_valid(fx_root) and not auto_all and fx_root.get_child_count() < FX_CAP
+
+
+func _add_motion_fx(node: Node) -> void:
+	node.set_meta("transient_motion", true)
+	fx_root.add_child(node)
+
+
+func _skip_transient_motion() -> void:
+	_pz_finish_motion()
+	if turn_banner_tween != null and turn_banner_tween.is_valid():
+		turn_banner_tween.kill()
+		if is_instance_valid(turn_banner_panel):
+			turn_banner_panel.scale = Vector2.ONE
+			turn_banner_panel.modulate.a = 0.0
+	if not is_instance_valid(fx_root):
+		return
+	for node in fx_root.get_children():
+		if node.has_meta("transient_motion"):
+			fx_root.remove_child(node)
+			node.queue_free()
+
+
+func _add_float_motion(label: Label, tween: Tween, rise: float) -> void:
+	label.set_meta("transient_motion", true)
+	label.scale = Vector2(0.88, 0.88)
+	tween.tween_property(label, "scale", Vector2.ONE, 0.11).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	tween.parallel().tween_property(label, "position:y", label.position.y - rise, 0.48).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
+	tween.tween_property(label, "modulate:a", 0.0, 0.19)
+
+
 func fx_float(seat: int, text: String, color: Color, fsize: int = 46, rise: float = 84.0) -> void:
-	if fx_root == null or auto_all or fx_root.get_child_count() > FX_CAP:
+	if not _can_show_fx():
 		return
 	var lb := lbl(text, fsize, color, true, HORIZONTAL_ALIGNMENT_CENTER)
 	lb.autowrap_mode = TextServer.AUTOWRAP_OFF
 	lb.size = Vector2(320, 64)
 	lb.pivot_offset = Vector2(160, 32)
-	var c := seat_center(seat)
-	# 同一座位短时间内多次飘字（连续伤害、伤害+濒死等）逐层上移，不叠在一起
+	var center := seat_center(seat)
 	var now := Time.get_ticks_msec()
-	var st: Array = float_stack.get(seat, [0, 0])
-	var k := int(st[1]) + 1 if now - int(st[0]) < 420 else 0
-	k = k % 4
-	float_stack[seat] = [now, k]
-	lb.position = c + Vector2(-160, -110 - 70 * k)
+	var recent: Array = float_stack.get(seat, [0, 0])
+	var row := (int(recent[1]) + 1) % 3 if now - int(recent[0]) < 410 else 0
+	float_stack[seat] = [now, row]
+	lb.position = Vector2(clampf(center.x - 160.0, 4.0, vw - 324.0), maxf(116.0, center.y - 65.0) + row * 43.0)
 	lb.mouse_filter = MOUSE_FILTER_IGNORE
-	lb.add_theme_constant_override("outline_size", 9)
-	lb.add_theme_color_override("font_outline_color", Color(1, 1, 1, 0.95))
+	lb.add_theme_constant_override("outline_size", 7)
+	lb.add_theme_color_override("font_outline_color", Color(0.15, 0.09, 0.20, 0.98))
 	fx_root.add_child(lb)
-	lb.scale = Vector2(0.4, 0.4)
-	var tw := create_tween().bind_node(lb)
-	tw.tween_property(lb, "scale", Vector2(1.14, 1.14), 0.13).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-	tw.parallel().tween_property(lb, "position:y", lb.position.y - rise, 0.95)
-	tw.tween_property(lb, "scale", Vector2.ONE, 0.07)
-	tw.tween_interval(0.5)
-	tw.tween_property(lb, "modulate:a", 0.0, 0.3)
-	tw.tween_callback(func() -> void: if is_instance_valid(lb): lb.queue_free())
+	var tw := lb.create_tween()
+	if _motion_enabled():
+		_add_float_motion(lb, tw, minf(rise, 34.0))
+	else:
+		tw.tween_interval(0.56)
+		tw.tween_property(lb, "modulate:a", 0.0, 0.17)
+	tw.tween_callback(lb.queue_free)
 
 
 func fx_flash(seat: int, color: Color) -> void:
-	var pn := seat_panel_of(seat)
-	if pn == null or fx_root == null:
+	var panel := seat_panel_of(seat)
+	if not _motion_enabled() or not _can_show_fx() or panel == null:
 		return
-	var ov := Panel.new()
-	ov.position = pn.position
-	ov.size = pn.size
-	ov.mouse_filter = MOUSE_FILTER_IGNORE
-	ov.add_theme_stylebox_override("panel", style(Color(color.r, color.g, color.b, 0.42), 24))
-	fx_root.add_child(ov)
-	var tw := create_tween().bind_node(ov)
-	tw.tween_property(ov, "modulate:a", 0.0, 0.4)
-	tw.tween_callback(func() -> void: if is_instance_valid(ov): ov.queue_free())
-
-
-func fx_shake(seat: int) -> void:
-	var pn := seat_panel_of(seat)
-	if pn == null or pn.has_meta("shaking"):
-		return
-	pn.set_meta("shaking", true)
-	var base := pn.position
-	var tw := create_tween().bind_node(pn)
-	tw.tween_property(pn, "position:x", base.x + 10.0, 0.05)
-	tw.tween_property(pn, "position:x", base.x - 10.0, 0.08)
-	tw.tween_property(pn, "position:x", base.x + 6.0, 0.07)
-	tw.tween_property(pn, "position:x", base.x, 0.06)
-	tw.tween_callback(func() -> void: pn.remove_meta("shaking"))
+	var pulse := Panel.new()
+	pulse.position = panel.position
+	pulse.size = panel.size
+	pulse.add_theme_stylebox_override("panel", style(Color(color.r, color.g, color.b, 0.14), 22, color, 3))
+	_add_motion_fx(pulse)
+	var tw := pulse.create_tween()
+	tw.tween_property(pulse, "modulate:a", 0.0, 0.19)
+	tw.tween_callback(pulse.queue_free)
 
 
 func fx_target_ring(seat: int, col: Color) -> void:
-	if fx_root == null:
+	if not _can_show_fx() or fast:
 		return
-	var pn := seat_panel_of(seat)
-	if pn == null:
+	var panel := seat_panel_of(seat)
+	if panel == null:
 		return
 	var ring := Panel.new()
-	ring.position = pn.position - Vector2(10, 10)
-	ring.size = pn.size + Vector2(20, 20)
-	ring.pivot_offset = ring.size * 0.5
-	ring.mouse_filter = MOUSE_FILTER_IGNORE
-	ring.add_theme_stylebox_override("panel", style(Color(0, 0, 0, 0), 22, col, 4))
+	ring.position = panel.position - Vector2(5, 5)
+	ring.size = panel.size + Vector2(10, 10)
+	ring.add_theme_stylebox_override("panel", style(Color(0, 0, 0, 0), 22, col, 3))
 	fx_root.add_child(ring)
-	var tw := create_tween().bind_node(ring)
-	tw.tween_property(ring, "scale", Vector2(1.035, 1.035), 0.16)
-	tw.tween_property(ring, "scale", Vector2.ONE, 0.16)
-	tw.tween_property(ring, "scale", Vector2(1.035, 1.035), 0.16)
-	tw.tween_property(ring, "modulate:a", 0.0, 0.3)
-	tw.tween_callback(func() -> void: if is_instance_valid(ring): ring.queue_free())
+	var tw := ring.create_tween()
+	tw.tween_interval(0.14 if _motion_enabled() else 0.31)
+	tw.tween_property(ring, "modulate:a", 0.0, 0.15)
+	tw.tween_callback(ring.queue_free)
+
+
+func _fx_trace(src_seat: int, tgt_seat: int, color: Color) -> void:
+	if not _motion_enabled() or not _can_show_fx():
+		return
+	var a := seat_center(src_seat)
+	var b := seat_center(tgt_seat)
+	var dir := (b - a).normalized()
+	var trail := Line2D.new()
+	trail.name = "TargetTrace"
+	trail.width = 8.0
+	trail.default_color = color
+	trail.antialiased = true
+	trail.begin_cap_mode = Line2D.LINE_CAP_ROUND
+	trail.end_cap_mode = Line2D.LINE_CAP_ROUND
+	trail.add_point(-dir * 26.0)
+	trail.add_point(dir * 9.0)
+	trail.position = a
+	_add_motion_fx(trail)
+	var tw := trail.create_tween()
+	tw.tween_property(trail, "position", b, CARD_FLY_TIME).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	tw.parallel().tween_property(trail, "modulate:a", 0.30, CARD_FLY_TIME).set_ease(Tween.EASE_IN)
+	tw.tween_callback(trail.queue_free)
 
 
 func fx_target_mark(src_seat: int, tgt_seat: int) -> void:
-	if fx_root == null or src_seat < 0 or tgt_seat < 0 or src_seat == tgt_seat:
+	if src_seat < 0 or tgt_seat < 0 or src_seat == tgt_seat:
 		return
-	fx_target_ring(tgt_seat, Color(1.0, 0.72, 0.25, 0.95))
-	var a := seat_center(src_seat)
-	var b := seat_center(tgt_seat)
-	var d := b - a
-	var line := ColorRect.new()
-	line.color = Color(1.0, 0.72, 0.25, 0.8)
-	line.size = Vector2(d.length(), 5)
-	line.position = a + Vector2(0, -2.5)
-	line.pivot_offset = Vector2(0, 2.5)
-	line.rotation = d.angle()
-	line.mouse_filter = MOUSE_FILTER_IGNORE
-	fx_root.add_child(line)
-	var twl := create_tween().bind_node(line)
-	twl.tween_interval(0.6)
-	twl.tween_property(line, "modulate:a", 0.0, 0.25)
-	twl.tween_callback(func() -> void: if is_instance_valid(line): line.queue_free())
-	var dot := Panel.new()
-	dot.size = Vector2(24, 24)
-	dot.pivot_offset = Vector2(12, 12)
-	dot.position = a - Vector2(12, 12)
-	dot.rotation = 0.785
-	dot.mouse_filter = MOUSE_FILTER_IGNORE
-	dot.add_theme_stylebox_override("panel", style(Color(1.0, 0.78, 0.30, 1.0), 4, Color(1, 1, 1, 0.95), 2))
-	fx_root.add_child(dot)
-	var tw := create_tween().bind_node(dot)
-	tw.tween_property(dot, "position", b - Vector2(12, 12), 0.24)
-	tw.tween_property(dot, "modulate:a", 0.0, 0.2)
-	tw.tween_callback(func() -> void: if is_instance_valid(dot): dot.queue_free())
+	var gold := Color(1.0, 0.78, 0.45, 0.89)
+	fx_target_ring(tgt_seat, gold)
+	_fx_trace(src_seat, tgt_seat, gold)
 
 
 func fx_attack_fx(src_seat: int, tgt_seat: int, nature: String = "") -> void:
-	if fx_root == null or src_seat == tgt_seat:
+	if src_seat < 0 or tgt_seat < 0 or src_seat == tgt_seat:
 		return
-	fx_burst(src_seat, tgt_seat)
-	fx_target_ring(tgt_seat, Color(1.0, 0.30, 0.40, 0.95))
-	var a := seat_center(src_seat)
-	var b := seat_center(tgt_seat)
-	var d := b - a
-	var line := ColorRect.new()
-	line.color = Color(1.0, 0.35, 0.5, 0.75)
-	line.size = Vector2(d.length(), 6)
-	line.position = a + Vector2(0, -3)
-	line.pivot_offset = Vector2(0, 3)
-	line.rotation = d.angle()
-	line.mouse_filter = MOUSE_FILTER_IGNORE
-	fx_root.add_child(line)
-	var twl := create_tween().bind_node(line)
-	twl.tween_interval(0.28)
-	twl.tween_property(line, "modulate:a", 0.0, 0.25)
-	twl.tween_callback(func() -> void: if is_instance_valid(line): line.queue_free())
-	var dot := Panel.new()
-	dot.size = Vector2(30, 30)
-	dot.pivot_offset = Vector2(15, 15)
-	dot.position = a - Vector2(15, 15)
-	dot.mouse_filter = MOUSE_FILTER_IGNORE
-	dot.add_theme_stylebox_override("panel", style(Color(1.0, 0.8, 0.3, 1.0), 15, Color(1, 1, 1, 0.9), 2))
-	fx_root.add_child(dot)
-	var tw := create_tween().bind_node(dot)
-	tw.tween_property(dot, "position", b - Vector2(15, 15), 0.2)
-	tw.tween_callback(func() -> void:
-		if is_instance_valid(dot): dot.queue_free()
-		fx_slash(tgt_seat, nature)
-		fx_float(tgt_seat, "✕", Color(0.95, 0.2, 0.3), 64, 40.0)
-	)
+	var color := _attack_color(nature, Color(1.0, 0.48, 0.65))
+	fx_target_ring(tgt_seat, color)
+	_fx_trace(src_seat, tgt_seat, color)
 
 
-# 出框攻击（对标琉璃版）：攻击者立绘放大冲出座位框、朝目标方向扑出，再回位淡出
-func fx_burst(src_seat: int, tgt_seat: int) -> void:
-	if fx_root == null or fast or src_seat < 0 or src_seat >= players.size():
+func _attack_color(nature: String, fallback: Color) -> Color:
+	match nature:
+		"火":
+			return Color(1.0, 0.58, 0.29)
+		"雷":
+			return Color(0.80, 0.66, 1.0)
+		"冰":
+			return Color(0.56, 0.86, 1.0)
+	return fallback
+
+
+func fx_slash(tgt_seat: int, color: Color) -> void:
+	if not _motion_enabled() or not _can_show_fx():
 		return
-	var pn := seat_panel_of(src_seat)
-	if pn == null:
+	var strike := Line2D.new()
+	strike.name = "AttackImpact"
+	strike.width = 10.0
+	strike.default_color = color
+	strike.antialiased = true
+	strike.begin_cap_mode = Line2D.LINE_CAP_ROUND
+	strike.end_cap_mode = Line2D.LINE_CAP_ROUND
+	strike.add_point(Vector2(-57, 36))
+	strike.add_point(Vector2(57, -36))
+	strike.position = seat_center(tgt_seat)
+	_add_motion_fx(strike)
+	var tw := strike.create_tween()
+	tw.tween_property(strike, "scale", Vector2(1.18, 1.18), 0.15)
+	tw.parallel().tween_property(strike, "modulate:a", 0.0, 0.15)
+	tw.tween_callback(strike.queue_free)
+
+
+func fx_skill_banner(seat: int, skill_name: String, important: bool = false) -> void:
+	if not _can_show_fx() or seat < 0 or seat >= players.size():
 		return
-	if burst_tween and burst_tween.is_valid():
-		burst_tween.kill()
-	if burst_node != null and is_instance_valid(burst_node):
-		burst_node.queue_free()
-	burst_node = null
-	var p: Dictionary = players[src_seat]
-	var ch: Dictionary = p.get("char", {})
-	if not ch.has("portrait"):
-		return
-	var base_pos := pn.position
-	var base_size := pn.size
-	var big_size := base_size * 1.45
-	var dir := seat_center(tgt_seat) - seat_center(src_seat)
-	var dist := dir.length()
-	if dist > 1.0:
-		dir = dir / dist
+	var center := seat_center(seat)
+	var ribbon := PanelContainer.new()
+	ribbon.name = "SkillBanner"
+	var width := 344.0 if important else 268.0
+	ribbon.size = Vector2(width, 70 if important else 51)
+	ribbon.position = Vector2(clampf(center.x - width * 0.5, 18.0, vw - width - 18.0), clampf(center.y - 112.0, 126.0, 851.0))
+	var border := Color(1.0, 0.80, 0.52) if important else Color(0.77, 0.59, 0.80)
+	ribbon.add_theme_stylebox_override("panel", _tight(style(Color(0.19, 0.10, 0.24, 0.96), 17, border, 2), 14, 7))
+	var row := HBoxContainer.new()
+	row.alignment = BoxContainer.ALIGNMENT_CENTER
+	row.add_theme_constant_override("separation", 12)
+	ribbon.add_child(row)
+	if important and _motion_enabled():
+		var ch: Dictionary = players[seat].get("char", {})
+		if ch.has("portrait"):
+			var portrait := TextureRect.new()
+			portrait.custom_minimum_size = Vector2(56, 56)
+			portrait.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+			portrait.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
+			portrait.texture = Art.cg_crop(ch, 1.0, 1.0, 0.30, true)
+			row.add_child(portrait)
+	var title := lbl(skill_name, 31 if important else 26, border.lightened(0.3), true, HORIZONTAL_ALIGNMENT_CENTER)
+	title.autowrap_mode = TextServer.AUTOWRAP_OFF
+	row.add_child(title)
+	if _motion_enabled():
+		_add_motion_fx(ribbon)
 	else:
-		dir = Vector2.DOWN
-	var big_center := seat_center(src_seat) + dir * minf(dist * 0.30, 190.0)
-	big_center.x = clampf(big_center.x, big_size.x * 0.5 + 6.0, vw - big_size.x * 0.5 - 6.0)
-	big_center.y = clampf(big_center.y, big_size.y * 0.5 + 6.0, 1080.0 - big_size.y * 0.5 - 6.0)
-	# V0.31：出框的是整张 CG 卡（金框 + 竖排名牌），用 scale 放大冲出，不再改 size（子节点不随 size 缩放）
-	var holder := Art.cg_card(ch, base_size, {"zoom": 0.72, "face_y": 0.32, "fs": 26, "hp": false, "title": false})
-	holder.name = "BurstCG"
-	holder.position = base_pos
-	holder.pivot_offset = base_size * 0.5
-	holder.rotation = clampf(dir.x * 0.05, -0.05, 0.05)
-	var glow := Panel.new()
-	glow.name = "Glow"
-	glow.size = base_size
-	glow.mouse_filter = MOUSE_FILTER_IGNORE
-	glow.add_theme_stylebox_override("panel", style(Color(1, 1, 1, 0), 18, Color(1.0, 0.85, 0.4, 0.95) if src_seat == 0 else Color(1.0, 0.45, 0.6, 0.95), 5, true))
-	holder.add_child(glow)
-	fx_root.add_child(holder)
-	burst_node = holder
-	var big_scale := Vector2(1.45, 1.45)
-	var big_pos := big_center - base_size * 0.5
-	burst_tween = create_tween().bind_node(holder)
-	burst_tween.tween_property(holder, "position", big_pos, 0.18).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-	burst_tween.parallel().tween_property(holder, "scale", big_scale, 0.18).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-	burst_tween.tween_interval(0.30)
-	burst_tween.tween_property(holder, "position", base_pos, 0.22)
-	burst_tween.parallel().tween_property(holder, "scale", Vector2.ONE, 0.22)
-	burst_tween.parallel().tween_property(holder, "modulate:a", 0.0, 0.22)
-	burst_tween.tween_callback(func() -> void:
-		if is_instance_valid(holder): holder.queue_free()
-		if burst_node == holder: burst_node = null
-	)
-
-
-# 斩击光轨：三道斜向光刃在目标座位上交错扫过（颜色随突击属性：普通金/火橙/雷紫/冰青）
-func fx_slash(tgt_seat: int, nature: String = "") -> void:
-	if fx_root == null:
-		return
-	var c := seat_center(tgt_seat)
-	var col := Color(1.0, 0.80, 0.30)
-	if nature == "火":
-		col = Color(1.0, 0.50, 0.15)
-	elif nature == "雷":
-		col = Color(0.70, 0.55, 1.0)
-	elif nature == "冰":
-		col = Color(0.45, 0.80, 1.0)
-	var defs := [[320.0, 14.0, -52.0, 0.0], [268.0, 9.0, 4.0, 0.07], [216.0, 6.0, 56.0, 0.14]]
-	for d in defs:
-		var len_ := float(d[0])
-		var h := float(d[1])
-		var bar := Panel.new()
-		bar.size = Vector2(len_, h)
-		bar.pivot_offset = Vector2(len_ * 0.5, h * 0.5)
-		bar.position = c + Vector2(-len_ * 0.5 - 26.0, float(d[2]))
-		bar.rotation = -0.62
-		bar.mouse_filter = MOUSE_FILTER_IGNORE
-		bar.add_theme_stylebox_override("panel", style(Color(col.r, col.g, col.b, 0.85), int(h * 0.5)))
-		var core := Panel.new()
-		core.size = Vector2(len_, maxf(h * 0.42, 2.0))
-		core.position = Vector2(0, (h - core.size.y) * 0.5)
-		core.mouse_filter = MOUSE_FILTER_IGNORE
-		core.add_theme_stylebox_override("panel", style(Color(1, 1, 1, 0.95), int(core.size.y * 0.5)))
-		bar.add_child(core)
-		fx_root.add_child(bar)
-		bar.modulate.a = 0.0
-		var tw := create_tween().bind_node(bar)
-		tw.tween_interval(float(d[3]))
-		tw.tween_property(bar, "modulate:a", 1.0, 0.05)
-		tw.parallel().tween_property(bar, "position:x", bar.position.x + 52.0, 0.17)
-		tw.tween_property(bar, "modulate:a", 0.0, 0.15)
-		tw.tween_callback(func() -> void: if is_instance_valid(bar): bar.queue_free())
-
-
-func fx_skill_banner(seat: int, skill_name: String) -> void:
-	if fx_root == null or auto_all or fx_root.get_child_count() > FX_CAP:
-		return
-	# V0.25 技能名横幅：深色缎带底（先横向展开）+ 金字 + 扫光，对照十周年发动技能的名字条（代码绘制，无贴图）
-	var c0 := seat_center(seat)
-	var bx := clampf(c0.x - 190.0, 8.0, vw - 388.0)
-	var rib := Panel.new()
-	rib.size = Vector2(380, 62)
-	rib.position = Vector2(bx, c0.y - 139)
-	rib.pivot_offset = Vector2(190, 31)
-	rib.mouse_filter = MOUSE_FILTER_IGNORE
-	rib.add_theme_stylebox_override("panel", style(Color(0.20, 0.10, 0.26, 0.88), 31, Color(1.0, 0.78, 0.35, 0.95), 3, true))
-	fx_root.add_child(rib)
-	for side in [-1, 1]:
-		var tail := Panel.new()
-		tail.size = Vector2(30, 30)
-		tail.rotation = PI / 4.0
-		tail.position = Vector2(190 + side * 196 - 15, 10)
-		tail.mouse_filter = MOUSE_FILTER_IGNORE
-		tail.add_theme_stylebox_override("panel", style(Color(1.0, 0.78, 0.35, 0.9), 4))
-		rib.add_child(tail)
-	rib.scale = Vector2(0.05, 1.0)
-	var rtw := create_tween().bind_node(rib)
-	rtw.tween_property(rib, "scale:x", 1.0, 0.16).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
-	rtw.tween_interval(0.66)
-	rtw.tween_property(rib, "modulate:a", 0.0, 0.3)
-	rtw.tween_callback(func() -> void: if is_instance_valid(rib): rib.queue_free())
-	var lb := lbl("【%s】" % skill_name, 42, Color(1.0, 0.80, 0.30), true, HORIZONTAL_ALIGNMENT_CENTER)
-	lb.autowrap_mode = TextServer.AUTOWRAP_OFF
-	lb.size = Vector2(340, 60)
-	lb.pivot_offset = Vector2(170, 30)
-	lb.position = Vector2(bx + 20, c0.y - 138)
-	lb.mouse_filter = MOUSE_FILTER_IGNORE
-	lb.add_theme_constant_override("outline_size", 9)
-	lb.add_theme_color_override("font_outline_color", Color(0.5, 0.22, 0.3, 0.95))
-	fx_root.add_child(lb)
-	var sheen := Panel.new()
-	sheen.size = Vector2(46, 64)
-	sheen.position = lb.position + Vector2(-30, -2)
-	sheen.rotation = 0.35
-	sheen.mouse_filter = MOUSE_FILTER_IGNORE
-	sheen.add_theme_stylebox_override("panel", style(Color(1, 1, 1, 0.5), 6))
-	fx_root.add_child(sheen)
-	var stw := create_tween().bind_node(sheen)
-	stw.tween_property(sheen, "position:x", lb.position.x + 330.0, 0.45).set_delay(0.18)
-	stw.parallel().tween_property(sheen, "modulate:a", 0.0, 0.45).set_delay(0.18)
-	stw.tween_callback(func() -> void: if is_instance_valid(sheen): sheen.queue_free())
-	lb.scale = Vector2(0.4, 0.4)
-	var tw := create_tween().bind_node(lb)
-	tw.tween_property(lb, "scale", Vector2(1.08, 1.08), 0.16)
-	tw.tween_property(lb, "scale", Vector2.ONE, 0.08)
-	tw.tween_interval(0.55)
-	tw.tween_property(lb, "modulate:a", 0.0, 0.3)
-	tw.tween_callback(func() -> void: if is_instance_valid(lb): lb.queue_free())
+		fx_root.add_child(ribbon)
+	var tw := ribbon.create_tween()
+	if _motion_enabled():
+		ribbon.position.y += 10
+		tw.tween_property(ribbon, "position:y", ribbon.position.y - 10, 0.12).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	tw.tween_interval(0.78 if important else 0.54)
+	tw.tween_property(ribbon, "modulate:a", 0.0, 0.16)
+	tw.tween_callback(ribbon.queue_free)
 
 
 func show_turn_banner(char_name: String) -> void:
 	if turn_banner == null or turn_banner_panel == null:
 		return
-	var seat_tag := ""
-	if turn_seat >= 0 and turn_seat < players.size():
-		var tp: Dictionary = players[turn_seat]
-		var id_t := identity_visible(tp)
-		seat_tag = "你 · " if turn_seat == 0 else ("%d号位 · %s · " % [turn_seat + 1, id_t])
-	var r_tag := ("第 %d 轮 · " % eng.round_no) if eng != null else ""
-	turn_banner.text = "⚡ %s%s%s 的回合" % [r_tag, seat_tag, char_name]
+	turn_banner.text = "轮到你了" if turn_seat == 0 else "%d号位 · %s 的回合" % [turn_seat + 1, char_name]
 	if turn_banner_tween and turn_banner_tween.is_valid():
 		turn_banner_tween.kill()
 	turn_banner_panel.modulate = Color(1, 1, 1, 0)
-	turn_banner_panel.scale = Vector2(0.88, 0.88)
+	turn_banner_panel.scale = Vector2(0.96, 0.96) if _motion_enabled() else Vector2.ONE
 	turn_banner_tween = create_tween()
 	var pg := turn_banner_tween.set_parallel(true)
 	pg.tween_property(turn_banner_panel, "modulate:a", 1.0, 0.16)
-	pg.tween_property(turn_banner_panel, "scale", Vector2.ONE, 0.20).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-	turn_banner_tween.chain().tween_interval(1.15)
-	turn_banner_tween.tween_property(turn_banner_panel, "modulate:a", 0.0, 0.35)
+	if _motion_enabled():
+		pg.tween_property(turn_banner_panel, "scale", Vector2.ONE, 0.16).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	turn_banner_tween.chain().tween_interval(0.66)
+	turn_banner_tween.tween_property(turn_banner_panel, "modulate:a", 0.0, 0.18)
 
 
 func _show_play_callout(card: Dictionary, owner: String, target_name: String, seat: int) -> void:
 	if play_callout_panel == null or play_callout_label == null or auto_all or card.is_empty():
 		return
-	var actor_s := ("你（%s）" % owner) if seat == 0 else (("%d号·%s" % [seat + 1, owner]) if seat > 0 else owner)
+	var actor_s := "你" if seat == 0 else owner
 	var cname := String(card.get("name", ""))
 	var kind := CardDefs.kind_of(cname)
 	var action_txt := ""
 	if target_name != "":
-		action_txt = "🃏 【%s】 对 【%s】 使用了 「%s」" % [actor_s, target_name, cname]
+		action_txt = "%s 对 %s 使用「%s」" % [actor_s, _short_name(target_name), cname]
 	elif kind in ["武器", "防具", "饰品", "宝物"]:
-		action_txt = "🛡 【%s】 装备了 「%s」" % [actor_s, cname]
+		action_txt = "%s 装备「%s」" % [actor_s, cname]
 	else:
-		action_txt = "🃏 【%s】 打出了 「%s」" % [actor_s, cname]
+		action_txt = "%s 打出「%s」" % [actor_s, cname]
 	play_callout_label.text = action_txt
 	if play_callout_tween and play_callout_tween.is_valid():
 		play_callout_tween.kill()
 	play_callout_panel.visible = true
 	play_callout_panel.modulate = Color(1, 1, 1, 1)
 	play_callout_tween = create_tween()
-	play_callout_tween.tween_interval(0.05 if fast else 2.8)
-	play_callout_tween.tween_property(play_callout_panel, "modulate:a", 0.0, 0.35)
+	play_callout_tween.tween_interval(0.05 if fast else 1.50)
+	play_callout_tween.tween_property(play_callout_panel, "modulate:a", 0.0, 0.20)
 	play_callout_tween.tween_callback(func() -> void:
 		if play_callout_panel != null and is_instance_valid(play_callout_panel):
 			play_callout_panel.visible = false)
@@ -5543,31 +5842,26 @@ func _eng_fx(kind: String, data: Dictionary) -> void:
 	var seat := int(data.get("seat", -1))
 	match kind:
 		"damage":
-			var dcol := Color(0.92, 0.18, 0.28)
 			var nat := String(data.get("nature", ""))
-			if nat == "火":
-				dcol = Color(1.0, 0.52, 0.16)
-			elif nat == "雷":
-				dcol = Color(0.65, 0.45, 1.0)
-			elif nat == "冰":
-				dcol = Color(0.40, 0.75, 1.0)
-			fx_float(seat, "-%d" % int(data["num"]), dcol, 60)
-			fx_shake(seat)
-			fx_flash(seat, Color(1.0, 0.25, 0.35))
+			var dcol := _attack_color(nat, Color(1.0, 0.44, 0.51))
+			if bool(data.get("attack_hit", false)):
+				fx_slash(seat, dcol)
+			fx_flash(seat, dcol)
+			fx_float(seat, "−%d" % int(data["num"]), dcol, 57)
 			if seat == 0:
-				fx_vignette()
+				_battle_haptic(28 if int(data["num"]) >= 2 else 20)
 			play_sfx("fire_hit" if nat == "火" else ("thunder_hit" if nat == "雷" else "hit"))
-			if seat == 0 or randf() < 0.78:
+			if seat == 0 or rng.randf() < 0.78:
 				play_cv_battle(seat, "hurt", 2)
-			if randf() < 0.45:
+			if _motion_enabled() and rng.randf() < 0.32:
 				show_bubble(seat, "hurt")
 		"heal":
 			fx_float(seat, "+%d" % int(data["num"]), Color(0.25, 0.78, 0.38), 56)
 			fx_flash(seat, Color(0.4, 1.0, 0.55))
 			play_sfx("heal")
-			if randf() < 0.65:
+			if rng.randf() < 0.65:
 				play_cv_battle(seat, "heal", 1)
-			if randf() < 0.35:
+			if _motion_enabled() and rng.randf() < 0.35:
 				show_bubble(seat, "heal")
 		"draw":
 			fx_draw_fly(seat, int(data.get("n", data.get("num", 1))))
@@ -5575,13 +5869,10 @@ func _eng_fx(kind: String, data: Dictionary) -> void:
 		"skill":
 			_count_skill(seat, String(data.get("name", "")))
 			var sid_fx := String(data.get("sid", ""))
-			if (bool(data.get("big", false)) or sid_fx in ["shuangfeng", "mingzha", "xinyan", "canyue"]) and not fast and not auto_all:
-				fx_cutin(seat, String(data["name"]))
-			else:
-				fx_skill_banner(seat, String(data["name"]))
+			var important := bool(data.get("big", false)) or sid_fx in ["shuangfeng", "mingzha", "xinyan", "canyue"]
+			fx_skill_banner(seat, String(data["name"]), important)
 			play_sfx("skill")
-			play_cv_battle(seat, "skill", 3)
-			show_bubble(seat, "skill")
+			play_cv_battle(seat, "skill", 3 if important else 2)
 		"judge":
 			_pz_judge(seat, data["card"], String(data["label"]))
 			play_sfx("judge")
@@ -5594,31 +5885,33 @@ func _eng_fx(kind: String, data: Dictionary) -> void:
 		"attack":
 			var a_src := int(data.get("src_seat", -1))
 			fx_attack_fx(a_src, int(data.get("tgt_seat", -1)), String(data.get("nature", "")))
-			play_sfx("slash")
-			if a_src == 0 or randf() < 0.80:
-				play_cv_battle(a_src, "attack", 2)
+			if not bool(data.get("extra_target", false)):
+				play_sfx("slash")
+				if a_src == 0 or rng.randf() < 0.80:
+					play_cv_battle(a_src, "attack", 2)
 		"yingbian":
 			fx_float(seat, String(data.get("text", "应变")), Color(0.95, 0.45, 0.75), 40, 70.0)
 			play_sfx("skill")
 		"target":
 			fx_target_mark(int(data.get("src_seat", -1)), int(data.get("tgt_seat", -1)))
-			if randf() < 0.3:
+			if _motion_enabled() and rng.randf() < 0.25:
 				show_bubble(int(data["src_seat"]), "attack")
 		"dodge":
-			fx_float(seat, "闪避！", Color(0.3, 0.6, 1.0), 44, 60.0)
+			var dodge_color := Color(0.58, 0.80, 1.0)
+			fx_target_ring(seat, dodge_color)
+			fx_float(seat, "闪避", dodge_color, 45, 34.0)
 			play_sfx("dodge")
 		"dying":
-			fx_float(seat, "濒死！", Color(0.75, 0.15, 0.6), 56, 50.0)
-			fx_flash(seat, Color(0.9, 0.1, 0.4))
+			fx_target_ring(seat, Color(1.0, 0.33, 0.46))
 			play_sfx("dying")
-			play_cv_battle(seat, "dying", 3)
-			show_bubble(seat, "dying")
+			play_cv_battle(seat, "dying", 4)
 			fx_dying_show(seat)
 		"death":
 			_fx_reveal_gem(seat)
 			play_sfx("death")
 			play_cv_battle(seat, "death", 3)
-			show_bubble(seat, "death")
+			if _motion_enabled():
+				show_bubble(seat, "death")
 			if seat == dying_seat:
 				fx_dying_hide()
 		"revived":
@@ -5627,8 +5920,10 @@ func _eng_fx(kind: String, data: Dictionary) -> void:
 			fx_float(seat, "获救！", Color(0.25, 0.78, 0.38), 48, 50.0)
 			play_sfx("revive")
 		"nullify":
-			fx_float(seat, "看破！", Color(0.85, 0.62, 0.1), 50, 55.0)
-			_nullify_push(seat, bool(data.get("negated", true)))
+			var response := String(data.get("name", "看破"))
+			fx_float(seat, response, Color(1.0, 0.82, 0.40), 46, 28.0)
+			if response == "看破":
+				_nullify_push(seat, bool(data.get("negated", true)))
 			play_sfx("nullify")
 		"chain":
 			if bool(data.get("on", false)):
@@ -5640,12 +5935,10 @@ func _eng_fx(kind: String, data: Dictionary) -> void:
 		"chain_hit":
 			fx_float(seat, "传导！", Color(1.0, 0.52, 0.16), 44, 60.0)
 			fx_target_ring(seat, Color(1.0, 0.52, 0.16))
-			play_sfx("hit")
 		"heavy_hit":
 			var hnum := int(data.get("num", 2))
 			var htitle := "万夫莫敌 · 无双乱舞！" if hnum >= 3 else "雷霆万钧 · 癫狂屠戮！"
 			fx_spree_banner(htitle, "单次造成 %d 点高额伤害" % hnum, false)
-			fx_screen_shake()
 			play_sfx("spree")
 		"kill_spree":
 			var kcnt := int(data.get("kills", 1))
@@ -5653,13 +5946,11 @@ func _eng_fx(kind: String, data: Dictionary) -> void:
 			var ktitles := {1: "一破 · 卧龙出山", 2: "双连 · 一战成名", 3: "三连 · 举世皆惊"}
 			var ktitle := String(ktitles.get(kcnt, "四连 · 天下无双"))
 			fx_spree_banner(ktitle, "%s 已累计击杀 %d 人" % [knm, kcnt], true)
-			fx_screen_shake()
 			play_sfx("spree")
 		"awaken":
 			var awk_nm := String(data.get("name", "觉醒"))
 			var awk_ch := String(data.get("char", ""))
 			fx_spree_banner("★ 觉醒 · %s ★" % awk_nm, "%s 突破界限，习得新技能！" % awk_ch, true)
-			fx_screen_shake()
 			play_sfx("win")
 		"switch_skill":
 			var sw_st := String(data.get("state", "阳"))
@@ -5683,8 +5974,14 @@ func _eng_fx(kind: String, data: Dictionary) -> void:
 			var sh_now := int(data.get("shield", 0))
 			var sh_col := Color(0.35, 0.78, 1.0) if sh_d > 0 else (Color(1.0, 0.56, 0.25) if sh_now == 0 else Color(0.75, 0.85, 0.95))
 			var sh_msg := ("🛡护甲+%d" % sh_d) if sh_d > 0 else (("🛡抵消%d·碎甲" % (-sh_d)) if sh_now == 0 else ("🛡抵消%d" % (-sh_d)))
+			fx_target_ring(seat, sh_col)
 			fx_float(seat, sh_msg, sh_col, 44, 62.0)
-			play_sfx("shield" if sh_d > 0 else "dodge")
+			play_sfx("shield")
+		"prevented":
+			var prevent_color := Color(0.60, 0.91, 0.86)
+			fx_target_ring(seat, prevent_color)
+			fx_float(seat, "%s · 抵消 %d" % [String(data["name"]), int(data["num"])], prevent_color, 40)
+			play_sfx("shield")
 		"mark":
 			var mk_n := String(data.get("name", ""))
 			var mk_d := int(data.get("delta", 1))
@@ -5707,52 +6004,35 @@ func _eng_fx(kind: String, data: Dictionary) -> void:
 
 func fx_dying_show(seat: int) -> void:
 	fx_dying_hide()
-	if seat < 0 or seat >= players.size() or fx_root == null:
+	if seat < 0 or seat >= players.size() or not is_instance_valid(fx_root) or auto_all:
 		return
 	dying_seat = seat
-	if seat == 0 and me_panel_ref != null:
-		fx_flash(0, Color(0.95, 0.15, 0.35))
-	var p: Dictionary = players[seat]
+	var player: Dictionary = players[seat]
 	var holder := PanelContainer.new()
-	holder.mouse_filter = MOUSE_FILTER_IGNORE
-	holder.add_theme_stylebox_override("panel", style(Color(1, 1, 1, 0.97), 22, Color(0.85, 0.2, 0.35), 5, true))
-	holder.position = Vector2(vw / 2.0 - 200, 168)
-	holder.size = Vector2(400, 540)
-	var vb := VBoxContainer.new()
-	vb.mouse_filter = MOUSE_FILTER_IGNORE
-	vb.add_theme_constant_override("separation", 8)
-	holder.add_child(vb)
-	var dcc := Art.cg_card(p["char"], Vector2(368, 396), {"zoom": 0.78, "face_y": 0.30, "fs": 32, "title": false})
-	dcc.name = "DyingCG"
-	vb.add_child(dcc)
-	var cap := lbl("%s 濒临死亡！" % pname(p), 36, Color(0.85, 0.15, 0.3), true)
-	cap.mouse_filter = MOUSE_FILTER_IGNORE
-	cap.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	vb.add_child(cap)
-	var savers: Array = []
-	for q in players:
-		if not q["alive"]:
+	holder.name = "DyingNotice"
+	holder.add_theme_stylebox_override("panel", _tight(style(Color(0.24, 0.08, 0.18, 0.96), 18, Color(1.0, 0.48, 0.55), 2), 18, 9))
+	var body := VBoxContainer.new()
+	body.add_theme_constant_override("separation", 2)
+	holder.add_child(body)
+	var title := lbl("%s · 濒死" % pname(player), 33, Color(1.0, 0.80, 0.83), true, HORIZONTAL_ALIGNMENT_CENTER)
+	title.autowrap_mode = TextServer.AUTOWRAP_OFF
+	body.add_child(title)
+	var savers := PackedStringArray()
+	for helper: Dictionary in players:
+		if not helper["alive"]:
 			continue
-		var can := false
-		for c in q["hand"]:
-			if String(c["name"]) == "补给":
-				can = true
-			if q == p and String(c["name"]) == "特饮":
-				can = true
-		if can:
-			savers.append(pname(q))
-	var sub := lbl("可救援：" + ("、".join(PackedStringArray(savers)) if not savers.is_empty() else "无人持有补给"), 21, Color(0.45, 0.3, 0.35))
-	sub.mouse_filter = MOUSE_FILTER_IGNORE
-	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	vb.add_child(sub)
+		for card: Dictionary in helper["hand"]:
+			if String(card["name"]) == "补给" or (helper == player and String(card["name"]) == "特饮"):
+				savers.append(String(helper["char_name"]))
+				break
+	var details := "可救援 · " + "、".join(savers) if not savers.is_empty() else "无人持有救援牌"
+	var caption := lbl(details, 20, Color(1.0, 0.89, 0.87), false, HORIZONTAL_ALIGNMENT_CENTER)
+	caption.autowrap_mode = TextServer.AUTOWRAP_OFF
+	body.add_child(caption)
+	holder.size = Vector2(maxf(400.0, holder.get_combined_minimum_size().x), 92)
+	holder.position = Vector2((vw - holder.size.x) * 0.5, 139.0)
 	fx_root.add_child(holder)
 	dying_holder = holder
-	holder.pivot_offset = Vector2(200, 270)
-	holder.scale = Vector2(0.92, 0.92)
-	var tw := create_tween().bind_node(holder)
-	tw.set_loops()
-	tw.tween_property(holder, "scale", Vector2(1.0, 1.0), 0.55)
-	tw.tween_property(holder, "scale", Vector2(0.94, 0.94), 0.55)
 
 
 func fx_dying_hide() -> void:
@@ -5823,7 +6103,37 @@ func _ensure_sfx() -> void:
 	add_child(voice_player)
 
 
+func _fallback_sfx(key: String) -> AudioStream:
+	match key:
+		"hit":
+			return _synth_hit()
+		"equip":
+			return _synth_clink()
+		"slash":
+			return _synth_whoosh()
+		"chain":
+			return _synth_chain()
+		"win", "revive":
+			return _synth_melody([523.0, 659.0, 784.0, 1047.0], 0.08)
+		"lose", "dying", "death":
+			return _synth_melody([392.0, 311.0, 262.0], 0.13)
+	return _synth_melody([660.0, 880.0], 0.06)
+
+
 const VOICE_KEYS := {"slash": "attack", "dodge": "dodge", "heal": "heal", "dying": "dying", "win": "win", "lose": "lose", "skill": "skill"}
+const SFX_LEVELS := {"click": -8.0, "card": -5.0, "draw": -7.0, "slash": -3.0, "turn": -5.0, "spree": -4.0}
+const SFX_PRIORITIES := {"dying": 3, "death": 3, "revive": 3, "win": 3, "lose": 3, "hit": 2, "fire_hit": 2, "thunder_hit": 2, "dodge": 2, "shield": 2, "skill": 2}
+var last_haptic_ms := -120
+
+
+func _battle_haptic(duration_ms: int) -> void:
+	if not OS.has_feature("android") or not _motion_enabled():
+		return
+	var now := Time.get_ticks_msec()
+	if now - last_haptic_ms < 120:
+		return
+	last_haptic_ms = now
+	Input.vibrate_handheld(duration_ms)
 
 
 func play_cv_battle(seat: int, cat: String, priority: int = 1) -> bool:
@@ -5851,7 +6161,7 @@ func play_cv_battle(seat: int, cat: String, priority: int = 1) -> bool:
 	if not bool(AudioCfg.get_v("voice_on")) or float(AudioCfg.get_v("master")) <= 0.001 or float(AudioCfg.get_v("voice_vol")) <= 0.001:
 		return false
 	if voice_player.playing:
-		if priority < 3 or (now - _cv_last_ms < 420 and priority <= _cv_last_prio):
+		if priority < 3 or priority < _cv_last_prio or (priority == _cv_last_prio and now - _cv_last_ms < 420):
 			return false
 	voice_player.stream = cv_st
 	voice_player.play()
@@ -5863,9 +6173,12 @@ func play_cv_battle(seat: int, cat: String, priority: int = 1) -> bool:
 func play_sfx(key: String) -> void:
 	if auto_all or fast or not is_inside_tree():
 		return
-	if not sfx_streams.has(key):
+	var stream := sfx_streams.get(key) as AudioStream
+	if stream == null:
 		return
 	sfx_count += 1
+	if DisplayServer.get_name() == "headless" or not bool(AudioCfg.get_v("sfx_on")) or float(AudioCfg.get_v("master")) <= 0.001 or float(AudioCfg.get_v("sfx_vol")) <= 0.001:
+		return
 	# 语音（有打包语音文件且开启时才会响；当前版本未打包）
 	if VOICE_KEYS.has(key) and voice_player != null and not voice_player.playing and bool(AudioCfg.get_v("voice_on")):
 		var vs := AudioCfg.voice_stream(String(VOICE_KEYS[key]))
@@ -5873,13 +6186,24 @@ func play_sfx(key: String) -> void:
 			if voice_player.is_inside_tree():
 				voice_player.stream = vs
 				voice_player.play()
-	for pl in sfx_players:
-		if not is_instance_valid(pl) or not (pl as Node).is_inside_tree():
+	var priority := int(SFX_PRIORITIES.get(key, 1))
+	var lowest := priority
+	var candidate: AudioStreamPlayer
+	for player: AudioStreamPlayer in sfx_players:
+		if not is_instance_valid(player) or not player.is_inside_tree():
 			continue
-		if not (pl as AudioStreamPlayer).playing:
-			(pl as AudioStreamPlayer).stream = sfx_streams[key]
-			(pl as AudioStreamPlayer).play()
-			return
+		if not player.playing:
+			candidate = player
+			break
+		var active_priority := int(player.get_meta("priority", 1))
+		if active_priority < lowest:
+			lowest = active_priority
+			candidate = player
+	if candidate != null:
+		candidate.set_meta("priority", priority)
+		candidate.volume_db = float(SFX_LEVELS.get(key, 0.0))
+		candidate.stream = stream
+		candidate.play()
 
 
 func _synth_melody(freqs: Array, step: float) -> AudioStreamWAV:
@@ -6004,79 +6328,14 @@ func show_match_banner() -> void:
 	if match_banner_tween and match_banner_tween.is_valid():
 		match_banner_tween.kill()
 	match_banner.modulate = Color(1, 1, 1, 0)
-	match_banner.scale = Vector2(0.6, 0.6)
+	match_banner.scale = Vector2(0.94, 0.94) if _motion_enabled() else Vector2.ONE
 	match_banner.pivot_offset = Vector2(960, 60)
 	match_banner_tween = create_tween()
 	match_banner_tween.tween_property(match_banner, "modulate:a", 1.0, 0.15)
-	match_banner_tween.parallel().tween_property(match_banner, "scale", Vector2.ONE, 0.2)
+	if _motion_enabled():
+		match_banner_tween.parallel().tween_property(match_banner, "scale", Vector2.ONE, 0.16)
 	match_banner_tween.tween_interval(0.6)
 	match_banner_tween.tween_property(match_banner, "modulate:a", 0.0, 0.3)
-
-
-func fx_cutin(seat: int, skill_name: String) -> void:
-	if fx_root == null or seat < 0 or seat >= players.size():
-		return
-	var p: Dictionary = players[seat]
-	var ch: Dictionary = p.get("char", {})
-	if not ch.has("portrait"):
-		fx_skill_banner(seat, skill_name)
-		return
-	var from_left := seat <= 2
-	var holder := PanelContainer.new()
-	holder.size = Vector2(430, 545)
-	holder.mouse_filter = MOUSE_FILTER_IGNORE
-	holder.add_theme_stylebox_override("panel", style(Color(1, 1, 1, 0.97), 22, Color(1.0, 0.72, 0.25), 5, true))
-	var vb := VBoxContainer.new()
-	vb.mouse_filter = MOUSE_FILTER_IGNORE
-	vb.add_theme_constant_override("separation", 2)
-	holder.add_child(vb)
-	var ccc := Art.cg_card(ch, Vector2(400, 440), {"zoom": 0.82, "face_y": 0.30, "fs": 34, "title": false})
-	ccc.name = "CutinCG"
-	vb.add_child(ccc)
-	var cap := lbl("【%s】%s" % [skill_name, String(ch["name"])], 34, C_PINK_DEEP, true, HORIZONTAL_ALIGNMENT_CENTER)
-	cap.mouse_filter = MOUSE_FILTER_IGNORE
-	vb.add_child(cap)
-	var start_x := -450.0 if from_left else vw
-	var end_x := 110.0 if from_left else vw - 540.0
-	holder.position = Vector2(start_x, 235)
-	fx_root.add_child(holder)
-	var band := Panel.new()
-	band.position = Vector2(0, 392)
-	band.size = Vector2(vw, 132)
-	band.mouse_filter = MOUSE_FILTER_IGNORE
-	var b_sb := style(Color(0.18, 0.06, 0.22, 0.88), 0, C_GOLD, 0, true)
-	b_sb.border_width_top = 3
-	b_sb.border_width_bottom = 3
-	band.add_theme_stylebox_override("panel", b_sb)
-	var sk_big := lbl("★ 必杀奥义 · %s ★" % skill_name, 52, Color(1.0, 0.88, 0.42), true, HORIZONTAL_ALIGNMENT_CENTER)
-	sk_big.add_theme_color_override("font_outline_color", Color(0.32, 0.08, 0.20, 0.95))
-	sk_big.add_theme_constant_override("outline_size", 10)
-	sk_big.position = Vector2(0, 16)
-	sk_big.size = Vector2(vw, 60)
-	sk_big.autowrap_mode = TextServer.AUTOWRAP_OFF
-	sk_big.mouse_filter = MOUSE_FILTER_IGNORE
-	band.add_child(sk_big)
-	var cid_c := String(ch.get("id", ""))
-	var vline := line_for(cid_c, "skill")
-	var sub_c := lbl("「%s」—— %s" % [vline if vline != "" else skill_name, String(ch.get("name", ""))], 25, Color(1.0, 0.95, 0.88), true, HORIZONTAL_ALIGNMENT_CENTER)
-	sub_c.position = Vector2(0, 82)
-	sub_c.size = Vector2(vw, 36)
-	sub_c.autowrap_mode = TextServer.AUTOWRAP_OFF
-	sub_c.mouse_filter = MOUSE_FILTER_IGNORE
-	band.add_child(sub_c)
-	fx_root.add_child(band)
-	fx_root.move_child(holder, fx_root.get_child_count() - 1)
-	band.modulate.a = 0.0
-	var btw := create_tween().bind_node(band)
-	btw.tween_property(band, "modulate:a", 1.0, 0.16)
-	btw.tween_interval(0.82)
-	btw.tween_property(band, "modulate:a", 0.0, 0.24)
-	btw.tween_callback(func() -> void: if is_instance_valid(band): band.queue_free())
-	var tw := create_tween().bind_node(holder)
-	tw.tween_property(holder, "position:x", end_x, 0.26)
-	tw.tween_interval(0.7)
-	tw.tween_property(holder, "position:x", start_x, 0.26)
-	tw.tween_callback(func() -> void: if is_instance_valid(holder): holder.queue_free())
 
 
 var _emote_cycle := 0
@@ -6092,60 +6351,25 @@ func _throw_seat_emote(seat_idx: int) -> void:
 	]
 	var em: Dictionary = emotes[_emote_cycle % emotes.size()]
 	_emote_cycle += 1
-	var a := Vector2(180, 820)
-	var b := seat_center(seat_idx)
-	var fly := lbl(String(em["icon"]), 56, Color.WHITE, true, HORIZONTAL_ALIGNMENT_CENTER)
-	fly.position = a - Vector2(32, 32)
-	fly.size = Vector2(64, 64)
-	fly.pivot_offset = Vector2(32, 32)
-	fly.mouse_filter = MOUSE_FILTER_IGNORE
-	fx_root.add_child(fly)
-	play_sfx("play")
-	var cid_e := String(players[seat_idx]["char"].get("id", ""))
+	var cid := String(players[seat_idx]["char"].get("id", ""))
 	if String(em["icon"]) != "🥿":
-		Meta.touch_char(cid_e, 2)
-	var tw := create_tween().bind_node(fly)
-	tw.tween_property(fly, "position", b - Vector2(32, 32), 0.32).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
-	tw.parallel().tween_property(fly, "rotation", TAU, 0.32)
-	tw.tween_callback(func() -> void:
-		if is_instance_valid(fly):
-			fly.queue_free()
-		fx_float(seat_idx, String(em["txt"]), em["col"], 36, 58.0)
+		Meta.touch_char(cid, 2)
+	var feedback := func() -> void:
+		fx_float(seat_idx, String(em["txt"]), em["col"], 36, 34.0)
 		play_sfx(String(em["sfx"]))
 		play_cv_battle(seat_idx, String(em["cat"]), 2)
-		show_bubble(seat_idx, String(em["cat"]))
-		if not fast and not auto_all and fx_root != null:
-			for pi_b in 4:
-				var pl_b := lbl("🌸" if pi_b % 2 == 0 else "💕", 26, Color.WHITE, true, HORIZONTAL_ALIGNMENT_CENTER)
-				pl_b.position = b + Vector2(-14, -14)
-				pl_b.mouse_filter = MOUSE_FILTER_IGNORE
-				fx_root.add_child(pl_b)
-				var ang := float(pi_b) * PI * 0.5 + randf_range(-0.35, 0.35)
-				var ptw := create_tween().bind_node(pl_b).set_parallel(true)
-				ptw.tween_property(pl_b, "position", b + Vector2(cos(ang), sin(ang)) * 68.0 - Vector2(14, 24), 0.55).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
-				ptw.tween_property(pl_b, "modulate:a", 0.0, 0.55)
-				ptw.chain().tween_callback(func() -> void: if is_instance_valid(pl_b): pl_b.queue_free()))
-
-
-func fx_vignette() -> void:
-	if fx_root == null:
+	if not _motion_enabled():
+		feedback.call()
 		return
-	var ov := Panel.new()
-	ov.set_anchors_preset(Control.PRESET_FULL_RECT)
-	ov.mouse_filter = MOUSE_FILTER_IGNORE
-	ov.add_theme_stylebox_override("panel", style(Color(0, 0, 0, 0), 0, Color(1.0, 0.2, 0.3, 0.85), 34))
-	fx_root.add_child(ov)
-	var tw := create_tween().bind_node(ov)
-	tw.tween_property(ov, "modulate:a", 0.0, 0.55)
-	tw.tween_callback(func() -> void: if is_instance_valid(ov): ov.queue_free())
-
-
-func fx_screen_shake() -> void:
-	var tw := create_tween()
-	tw.tween_property(self, "position", Vector2(7, 3), 0.05)
-	tw.tween_property(self, "position", Vector2(-7, -2), 0.07)
-	tw.tween_property(self, "position", Vector2(4, 1), 0.06)
-	tw.tween_property(self, "position", Vector2.ZERO, 0.06)
+	var fly := lbl(String(em["icon"]), 56, Color.WHITE, true, HORIZONTAL_ALIGNMENT_CENTER)
+	fly.position = Vector2(148, 788)
+	fly.size = Vector2(64, 64)
+	_add_motion_fx(fly)
+	play_sfx("play")
+	var tw := fly.create_tween()
+	tw.tween_property(fly, "position", seat_center(seat_idx) - Vector2(32, 32), CARD_FLY_TIME).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	tw.tween_callback(feedback)
+	tw.tween_callback(fly.queue_free)
 
 
 func _short_name(s: String) -> String:
@@ -6199,10 +6423,10 @@ func _skills_of(p: Dictionary) -> Array:
 		var sk2: Dictionary = texts.get(String(sid), {})
 		var def: Dictionary = eng.skill_lib.get(sid, {}) if eng != null else {}
 		var nm := String(sk2.get("name", def.get("name", sid)))
-		out.append({"name": nm, "text": String(sk2.get("text", def.get("text", "（暂无说明）"))), "active": def.has("active")})
+		out.append({"sid": sid, "name": nm, "text": String(sk2.get("text", def.get("text", "（暂无说明）"))), "active": def.has("active")})
 	if sids.is_empty():
 		for sk3 in (p["char"].get("skills", []) as Array):
-			out.append({"name": String(sk3["name"]), "text": String(sk3["text"]), "active": sk3.has("btn")})
+			out.append({"sid": String(sk3.get("sid", "")), "name": String(sk3["name"]), "text": String(sk3["text"]), "active": sk3.has("btn")})
 	if game_mode == "doudizhu" and String(p.get("identity", "")) == "地主":
 		for d in DDZ_SKILLS:
 			out.append({"name": d["name"], "text": d["text"], "active": false})
@@ -6214,9 +6438,11 @@ func _intro_skill_sid(sid: String) -> Dictionary:
 		return {}
 	var me: Dictionary = players[0]
 	for sk in _skills_of(me):
-		var def: Dictionary = eng.skill_lib.get(sid, {}) if eng != null else {}
-		if String(sk["name"]) == String(def.get("name", sid)):
-			return IntroPop.skill_spec(String(sk["name"]), String(sk["text"]), bool(sk["active"]), _skill_used_text(0, String(sk["name"])))
+		if String(sk.get("sid", "")) == sid:
+			var def: Dictionary = eng.skill_lib.get(sid, {}) if eng != null else {}
+			var selection: Dictionary = eng.active_selection(me, sid) if eng != null else {}
+			var nm := String(sk["name"])
+			return IntroPop.skill_spec(nm, String(sk["text"]), bool(sk["active"]), _skill_used_text(0, nm), def, selection)
 	return {}
 
 
@@ -6350,15 +6576,15 @@ func _maybe_first_hint(force: bool = false) -> void:
 		return
 	mark_first_hint_seen()
 	if first_hint_label == null or not is_instance_valid(first_hint_label):
-		first_hint_label = lbl("💡 长按牌或角色可查看说明（电脑上右键或鼠标悬停也可以）", 30, Color(1.0, 0.96, 0.86), true, HORIZONTAL_ALIGNMENT_CENTER)
+		first_hint_label = lbl("长按手牌或角色\n查看详细效果", 26, _table_text, true, HORIZONTAL_ALIGNMENT_CENTER)
 		first_hint_label.name = "FirstHint"
 		first_hint_label.autowrap_mode = TextServer.AUTOWRAP_OFF
+		first_hint_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 		first_hint_label.mouse_filter = MOUSE_FILTER_IGNORE
-		first_hint_label.add_theme_stylebox_override("normal", _tight(style(Color(0.20, 0.12, 0.28, 0.90), 26, Color(1.0, 0.80, 0.42, 0.95), 3, true), 30, 12))
+		first_hint_label.add_theme_stylebox_override("normal", _tight(style(_table_surface, 14, _table_edge, 1, true), 18, 9))
 		add_child(first_hint_label)
-	first_hint_label.size = Vector2(0, 0)
-	first_hint_label.reset_size()
-	first_hint_label.position = Vector2((vw - first_hint_label.size.x) * 0.5, 150)
+	first_hint_label.size = Vector2(log_panel.size.x, 92)
+	first_hint_label.position = log_panel.position + Vector2(0, log_panel.size.y + 12.0)
 	first_hint_label.visible = true
 	first_hint_label.modulate.a = 1.0
 	var tw := first_hint_label.create_tween()
@@ -6371,19 +6597,21 @@ func _maybe_first_hint(force: bool = false) -> void:
 # 对照无名杀 game.check() + ui.click.ok()：点牌/点目标/点技能只改变「选中状态」，由「确定」统一提交；
 # 只有拖拽到合法目标头像上松手保留直接打出（无名杀 ui.click 拖拽松手同样直接 ok）。
 # 「自动确认」（无名杀 auto_confirm）默认关闭：开启后选够且无需再选时自动提交。
-const FEAT_END := 16.0 + 7.0 * 118.0
 var auto_confirm := false
 var double_tap_play := false
+var reduced_motion := false
+var reduced_motion_check: CheckButton
 var _last_card_tap_ms := 0
 var double_tap_check: CheckButton = null
 var extra_target := -1          # 多目标牌（羁绊锁链）的第二个目标
 var skill_mode := ""            # 技能选择状态中的技能 sid
 var skill_card: Dictionary = {} # 技能选择状态中选中的手牌
-var skill_pre: Dictionary = {}  # 确认发动后预先作答引擎询问 {card, target}
 var pre_answers: Array = []     # 出牌确认时已选好的附加作答（羁绊锁链第二目标）
 var resp_pref_card: Dictionary = {}  # 响应时选中的那张牌（引擎优先打出它）
 var ask_mode := ""
 var ask_prompt := ""
+var ask_context := ""
+var ask_confirm_text := ""
 var ask_options: Array = []
 var ask_sel_has := false
 var ask_sel_val: Variant = null
@@ -6414,6 +6642,26 @@ static func save_double_tap(on: bool) -> void:
 	cf.load(SETTINGS_PATH)
 	cf.set_value("play", "double_tap_play", on)
 	cf.save(SETTINGS_PATH)
+
+
+static func reduced_motion_saved() -> bool:
+	var config := ConfigFile.new()
+	if config.load(SETTINGS_PATH) != OK:
+		return false
+	return bool(config.get_value("play", "reduced_motion", false))
+
+
+func set_reduced_motion(on: bool, persist: bool = true) -> void:
+	reduced_motion = on
+	if persist:
+		var config := ConfigFile.new()
+		config.load(SETTINGS_PATH)
+		config.set_value("play", "reduced_motion", on)
+		config.save(SETTINGS_PATH)
+	if on:
+		_skip_transient_motion()
+	if is_instance_valid(reduced_motion_check):
+		reduced_motion_check.set_pressed_no_signal(on)
 
 
 func set_double_tap(on: bool, persist: bool = true) -> void:
@@ -6447,20 +6695,22 @@ func toggle_settings_panel() -> void:
 		auto_confirm_check.set_pressed_no_signal(auto_confirm)
 		if double_tap_check != null and is_instance_valid(double_tap_check):
 			double_tap_check.set_pressed_no_signal(double_tap_play)
+		if is_instance_valid(reduced_motion_check):
+			reduced_motion_check.set_pressed_no_signal(reduced_motion)
 		move_child(settings_panel, get_child_count() - 1)
 
 
 func _build_settings_panel() -> void:
 	settings_panel = PanelContainer.new()
-	settings_panel.position = Vector2(16.0 + 4.0 * 118.0, 82)
+	settings_panel.position = Vector2(safe_insets.x + 26.0, safe_insets.y + table_hud_height + 12.0)
 	settings_panel.custom_minimum_size = Vector2(660, 0)
 	settings_panel.mouse_filter = MOUSE_FILTER_STOP
-	settings_panel.add_theme_stylebox_override("panel", _tight(style(Color(1, 1, 1, 0.97), 22, C_GOLD, 3, true), 22, 14))
+	settings_panel.add_theme_stylebox_override("panel", _tight(style(Palette.MILK, 22, Palette.LILAC_EDGE, 1, true), 22, 14))
 	settings_panel.visible = false
 	var vb := VBoxContainer.new()
 	vb.add_theme_constant_override("separation", 8)
 	settings_panel.add_child(vb)
-	var tl := lbl("对局设置", 28, C_PINK_DEEP, true)
+	var tl := lbl("对局设置", 28, C_TABLE_ACTION, true)
 	tl.autowrap_mode = TextServer.AUTOWRAP_OFF
 	vb.add_child(tl)
 	var chk_row := HBoxContainer.new()
@@ -6477,7 +6727,7 @@ func _build_settings_panel() -> void:
 	auto_confirm_check.set_pressed_no_signal(auto_confirm)
 	auto_confirm_check.toggled.connect(func(on: bool) -> void:
 		set_auto_confirm(on)
-		show_hint("自动确认：%s" % ("已开启——选够且无需再选时自动出牌/作答" if on else "已关闭——选中后需点「确定」才会出牌")))
+		show_hint("自动确认已开启。选好后会自动出牌或作答。" if on else "自动确认已关闭。选好后仍需确认操作。"))
 	chk_row.add_child(auto_confirm_check)
 	double_tap_check = CheckButton.new()
 	double_tap_check.focus_mode = Control.FOCUS_NONE
@@ -6492,11 +6742,23 @@ func _build_settings_panel() -> void:
 		set_double_tap(on)
 		show_hint("双击手牌直出：%s" % ("已开启——快速双击已选中的牌可直接打出" if on else "已关闭")))
 	chk_row.add_child(double_tap_check)
+	reduced_motion_check = CheckButton.new()
+	reduced_motion_check.name = "ReducedMotion"
+	reduced_motion_check.focus_mode = Control.FOCUS_NONE
+	reduced_motion_check.text = "减少动态效果"
+	reduced_motion_check.custom_minimum_size.y = 46
+	reduced_motion_check.add_theme_font_override("font", font_bold)
+	reduced_motion_check.add_theme_font_size_override("font_size", 24)
+	for state in ["font_color", "font_hover_color", "font_pressed_color", "font_hover_pressed_color", "font_focus_color"]:
+		reduced_motion_check.add_theme_color_override(state, C_INK)
+	reduced_motion_check.set_pressed_no_signal(reduced_motion)
+	reduced_motion_check.toggled.connect(func(on: bool) -> void: set_reduced_motion(on))
+	chk_row.add_child(reduced_motion_check)
 	var desc := lbl("自动确认：选够目标自动提交；双击直出：450ms 内双击同一张牌直出。", 19, C_INK_SOFT)
 	desc.autowrap_mode = TextServer.AUTOWRAP_OFF
 	vb.add_child(desc)
 	# V0.32/V0.44 声音设置：总音量、音效/语音/背景音乐开关与音量
-	var at := lbl("声音与配音", 24, C_PINK_DEEP, true)
+	var at := lbl("声音与配音", 24, C_TABLE_ACTION, true)
 	at.autowrap_mode = TextServer.AUTOWRAP_OFF
 	vb.add_child(at)
 	build_audio_rows(vb)
@@ -6506,7 +6768,7 @@ func _build_settings_panel() -> void:
 	var bgm_lbl := lbl("配乐曲风", 24, C_INK, true)
 	bgm_lbl.custom_minimum_size = Vector2(190, 0)
 	bgm_hb.add_child(bgm_lbl)
-	var bgm_btn := plain_btn(MusicDirector.style_label(), Color(0.24, 0.12, 0.31, 0.92), Color(1.0, 0.94, 0.84), 22)
+	var bgm_btn := plain_btn(MusicDirector.style_label(), Palette.LILAC_SOFT, C_INK, 22)
 	bgm_btn.custom_minimum_size = Vector2(300, 48)
 	bgm_btn.pressed.connect(func() -> void:
 		var md := get_tree().get_first_node_in_group("music_director") as MusicDirector
@@ -6521,7 +6783,7 @@ func _build_settings_panel() -> void:
 	var hb := HBoxContainer.new()
 	hb.add_theme_constant_override("separation", 14)
 	vb.add_child(hb)
-	var hb_cv := plain_btn("🎙 试听语音", Color(0.95, 0.86, 0.96), C_PINK_DEEP, 23)
+	var hb_cv := plain_btn("🎙 试听语音", Palette.ROSE_SOFT, C_TABLE_ACTION, 23)
 	hb_cv.custom_minimum_size = Vector2(170, 52)
 	hb_cv.pressed.connect(func() -> void:
 		var cid_t := String(players[0]["char"]["id"]) if not players.is_empty() and players[0].has("char") else "sena"
@@ -6529,13 +6791,13 @@ func _build_settings_panel() -> void:
 			AudioCfg.play_cv(self, cid_t, "skill")
 		show_hint("正在试听角色战斗语音（请在上方调节语音开关与音量）"))
 	hb.add_child(hb_cv)
-	var hb1 := plain_btn("新手说明", Color(1, 0.94, 0.80), C_INK, 24)
+	var hb1 := plain_btn("新手说明", Palette.SKY_SOFT, C_INK, 24)
 	hb1.custom_minimum_size = Vector2(150, 52)
 	hb1.pressed.connect(func() -> void:
 		settings_panel.visible = false
 		open_info_overlay("新手说明", HelpText.bbcode(), true))
 	hb.add_child(hb1)
-	var hb2 := plain_btn("关闭", Color(1, 1, 1, 0.96), C_PINK_DEEP, 24)
+	var hb2 := plain_btn("关闭", Palette.LILAC_SOFT, C_INK, 24)
 	hb2.custom_minimum_size = Vector2(120, 52)
 	hb2.pressed.connect(func() -> void: settings_panel.visible = false)
 	hb.add_child(hb2)
@@ -6602,14 +6864,11 @@ func _can_confirm() -> bool:
 	if not interactive or asking or game_over or players.is_empty() or turn_seat != 0 or discard_mode:
 		return false
 	if skill_mode != "":
-		var spec := _skill_ui_spec(skill_mode)
-		if String(spec["card"]) != "none" and (skill_card.is_empty() or not _hand_has(skill_card) or not _skill_card_ok(skill_card)):
-			return false
-		if spec["targets"] != null and (sel_target < 0 or not target_candidates.has(sel_target)):
-			return false
-		return true
+		return eng != null and eng.active_choice_is_valid(players[0], skill_mode, skill_card, sel_target)
 	if spear_targeting or muniu_targeting:
 		return sel_target >= 0 and target_candidates.has(sel_target) and (muniu_targeting or spear_cards.size() == 2)
+	if muniu_storing:
+		return eng != null and equip_name(players[0], "treasure") == "木牛流马" and not selected_card.is_empty() and _hand_has(selected_card)
 	if selected_card.is_empty() or not _hand_has(selected_card):
 		return false
 	if unusable_reason(players[0], selected_card) != "":
@@ -6623,7 +6882,7 @@ func _can_confirm() -> bool:
 func _selection_complete() -> bool:
 	if not _can_confirm():
 		return false
-	if skill_mode == "" and not spear_targeting and not muniu_targeting and card_max_targets(selected_card) >= 2:
+	if skill_mode == "" and not spear_targeting and not muniu_targeting and not muniu_storing and card_max_targets(selected_card) >= 2:
 		return extra_target >= 0 or target_candidates.size() < 2
 	return true
 
@@ -6650,40 +6909,44 @@ func _sel_hint_text() -> String:
 		var need_card := String(spec["card"]) != "none"
 		var card_desc: String = {"any": "1 张手牌", "red": "1 张红色手牌", "black": "1 张黑色手牌"}.get(String(spec["card"]), "")
 		if need_card and skill_card.is_empty():
-			return "「%s」：请选择%s（%s）——再点技能按钮或「取消」退出" % [nm, card_desc, String(spec.get("card_role", "作为代价"))]
+			return "「%s」请选择%s（%s）" % [nm, card_desc, String(spec.get("card_role", "作为代价"))]
 		if spec["targets"] != null and sel_target < 0:
-			return "「%s」：请选择 1 名角色（绿色高亮）" % nm
+			return "「%s」：请选择 1 名标有「可选」的角色" % nm
 		var parts: Array = []
 		if need_card:
 			parts.append("用 %s" % card_text(skill_card))
 		if spec["targets"] != null:
 			parts.append("对 %s" % _tgt_name(sel_target))
-		return "%s发动「%s」——点「确定」发动" % [" ".join(parts) + " " if not parts.is_empty() else "", nm]
+		return "%s发动「%s」" % [" ".join(parts) + " " if not parts.is_empty() else "", nm]
 	if spear_targeting:
 		if sel_target < 0:
 			return "「合璧长枪」：请选择 1 名目标，再点选两张要拼的手牌"
 		if spear_cards.size() < 2:
 			return "对 %s 使用「合璧长枪」：请再点选 %d 张手牌（已选 %d/2）" % [_tgt_name(sel_target), 2 - spear_cards.size(), spear_cards.size()]
-		return "对 %s 使用 %s 与 %s 拼成突击——点「确定」出牌" % [_tgt_name(sel_target), card_text(spear_cards[0]), card_text(spear_cards[1])]
+		return "用 %s 和 %s 拼成突击，对 %s 出牌" % [card_text(spear_cards[0]), card_text(spear_cards[1]), _tgt_name(sel_target)]
 	if muniu_targeting:
 		if sel_target < 0:
 			return "「木牛流马」：请选择 1 名要转交的角色"
-		return "把木牛流马转交给 %s——点「确定」" % _tgt_name(sel_target)
+		return "把木牛流马转交给 %s" % _tgt_name(sel_target)
+	if muniu_storing:
+		if selected_card.is_empty():
+			return "「木牛流马」：请选择 1 张手牌存粮"
+		return "把 %s 存入木牛流马" % card_text(selected_card)
 	if selected_card.is_empty():
 		return ""
 	var cn := String(selected_card["name"])
 	if card_needs_target(selected_card):
 		var mx := card_max_targets(selected_card)
 		if sel_target < 0:
-			return "「%s」：请选择 %s 名目标（绿色高亮，或拖到目标头像上）%s" % [cn, "1~2" if mx >= 2 else "1", "；也可点「重铸」弃置并摸 1 张" if eng != null and eng.can_recast(selected_card) else ""]
+			return "「%s」：请选择 %s 名目标（标有「可选」）%s" % [cn, "1~2" if mx >= 2 else "1", "；也可点「重铸」弃置并摸 1 张" if eng != null and eng.can_recast(selected_card) else ""]
 		var who := _tgt_name(sel_target)
 		if extra_target >= 0:
 			who += "、" + _tgt_name(extra_target)
 		var more := "（可再选 1 名）" if mx >= 2 and extra_target < 0 and target_candidates.size() >= 2 else ""
-		return "对 %s 使用「%s」%s——点「确定」出牌" % [who, cn, more]
+		return "对 %s 使用「%s」%s" % [who, cn, more]
 	if card_kind(selected_card) in ["武器", "防具", "饰品", "宝物"]:
-		return "装备「%s」——点「确定」装备（再点一下这张牌取消）" % cn
-	return "使用「%s」——点「确定」使用（再点一下这张牌取消）" % cn
+		return "装备「%s」" % cn
+	return "使用「%s」" % cn
 
 
 func _commit_spear() -> void:
@@ -6706,6 +6969,16 @@ func _commit_spear() -> void:
 		refresh()
 
 
+func _commit_muniu_store() -> void:
+	var card := selected_card
+	selected_card = {}
+	muniu_storing = false
+	hide_prompt()
+	eng.muniu_store(players[0], card)
+	maybe_restore_hint()
+	refresh()
+
+
 func _commit_muniu_give() -> void:
 	var seat := sel_target
 	muniu_targeting = false
@@ -6718,78 +6991,24 @@ func _commit_muniu_give() -> void:
 	refresh()
 
 
-# 技能选择所需：card = none/any/red/black；targets = null（无需选人）或候选座位数组
+# 规则层提供候选角色；这里转换为牌桌使用的座位号。
 func _skill_ui_spec(sid: String) -> Dictionary:
-	var me: Dictionary = players[0]
-	var others_alive: Array = []
-	var all_alive: Array = []
-	for t in players:
-		if bool(t["alive"]):
-			all_alive.append(int(t["seat"]))
-			if t != me:
-				others_alive.append(int(t["seat"]))
-	match sid:
-		"yingyuan":
-			return {"card": "any", "card_role": "作为代价弃置", "targets": all_alive}
-		"fengji":
-			return {"card": "none", "targets": others_alive.filter(func(s: int) -> bool: return not (players[s]["hand"] as Array).is_empty())}
-		"gesheng":
-			return {"card": "none", "targets": others_alive}
-		"yuanqi":
-			return {"card": "black", "card_role": "当作「补给」", "targets": null}
-		"chahui":
-			return {"card": "any", "card_role": "作为代价弃置", "targets": others_alive.filter(func(s: int) -> bool: return int(players[s]["hp"]) < int(players[s]["max_hp"]))}
-		"qinyin":
-			var qs: Array = []
-			if eng != null and eng.get("_skill_owner") != null:
-				for t in eng._skill_owner._qinyin_cands(eng, me):
-					qs.append(int(t["seat"]))
-			return {"card": "red", "card_role": "当作「突击」", "targets": qs}
-		"shifeng":
-			return {"card": "any", "card_role": "交给对方", "targets": others_alive}
-		"caijue":
-			return {"card": "any", "card_role": "作为代价弃置", "targets": others_alive}
-		"canyue":
-			return {"card": "none", "targets": null}
-		"zhouye":
-			if int(me.get("switch_zhouye", 0)) == 0:
-				return {"card": "any", "card_role": "昼夜卷·阳：弃置并造成1点火焰伤害", "targets": others_alive}
-			return {"card": "none", "targets": all_alive}
-		"shenshe":
-			var ss: Array = []
-			if eng != null and eng.get("_skill_owner") != null:
-				for t in eng._skill_owner._shenshe_cands(eng, me):
-					ss.append(int(t["seat"]))
-			return {"card": "any", "card_role": "当作无视距离且强命的「突击」", "targets": ss}
-		"cuihua":
-			return {"card": "none", "targets": all_alive}
-		"wangshou":
-			return {"card": "none", "targets": others_alive.filter(func(s: int) -> bool: return not (players[s]["hand"] as Array).is_empty())}
-		"jingsuan":
-			return {"card": "any", "card_role": "精算置换（弃1摸2，黑色牌且受伤则回1血）", "targets": null}
-		"yuanhu":
-			return {"card": "any", "card_role": "作为代价弃置（令目标获得1点护甲）", "targets": all_alive}
-		"shiji":
-			return {"card": "none", "targets": null}
-		"pokong":
-			return {"card": "none", "targets": null}
-	return {"card": "none", "targets": null}
+	if eng == null or players.is_empty():
+		return {"card": "none", "targets": null}
+	var spec: Dictionary = eng.active_selection(players[0], sid)
+	if spec["targets"] != null:
+		spec["targets"] = (spec["targets"] as Array).map(func(t: Dictionary) -> int: return int(t["seat"]))
+	return spec
 
 
 func _skill_card_ok(c: Dictionary) -> bool:
-	if skill_mode == "":
-		return false
-	match String(_skill_ui_spec(skill_mode)["card"]):
-		"any":
-			return true
-		"red":
-			return is_red(c)
-		"black":
-			return not is_red(c)
-	return false
+	return skill_mode != "" and eng != null and eng.active_card_matches(c, String(_skill_ui_spec(skill_mode)["card"]))
 
 
 func _enter_skill_mode(sid: String) -> void:
+	if eng == null or players.is_empty() or not eng.can_use_active(players[0], sid):
+		show_hint("当前无法发动这个技能")
+		return
 	var spec := _skill_ui_spec(sid)
 	skill_mode = sid
 	skill_card = {}
@@ -6838,11 +7057,11 @@ func _skill_card_tap(card: Dictionary) -> void:
 func _commit_skill() -> void:
 	var sid := skill_mode
 	var spec := _skill_ui_spec(sid)
-	skill_pre = {}
+	var choice := {}
 	if String(spec["card"]) != "none":
-		skill_pre["card"] = skill_card
+		choice["card"] = skill_card
 	if spec["targets"] != null:
-		skill_pre["target"] = sel_target
+		choice["target"] = sel_target
 	skill_mode = ""
 	skill_card = {}
 	targeting = false
@@ -6852,8 +7071,7 @@ func _commit_skill() -> void:
 	interactive = false
 	end_play_btn.disabled = true
 	refresh()
-	await eng.use_active_skill(players[0], sid)
-	skill_pre = {}
+	await eng.use_active_skill(players[0], sid, choice)
 	if not game_over and is_inside_tree() and turn_seat == 0 and players[0]["alive"]:
 		interactive = true
 		end_play_btn.disabled = false
@@ -6875,55 +7093,68 @@ func _is_cancel_val(v: Variant) -> bool:
 	return false
 
 
+func _make_prompt_button(label: String, prominent: bool = false) -> Button:
+	var button := _make_action_btn(label, C_TABLE_ACTION, C_WHITE) if prominent else _make_action_btn(label, _table_button, _table_text)
+	button.custom_minimum_size = Vector2(clampf(64.0 + label.length() * 24.0, 136.0, 360.0), 64)
+	button.add_theme_font_size_override("font_size", 21 if label.length() > 10 else 26)
+	button.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	button.tooltip_text = label
+	return button
+
+
 func _fit_prompt_btns() -> void:
-	if prompt_btns == null:
+	var buttons := prompt_btns.get_children()
+	prompt_btns.add_theme_constant_override("separation", 12)
+	prompt_btns.size = Vector2(prompt_action_width, TABLE_ACTION_H)
+	var required := float(maxi(0, buttons.size() - 1)) * 12.0
+	for button in buttons:
+		required += (button as Control).custom_minimum_size.x
+	if required <= prompt_action_width:
 		return
-	var bs: Array = prompt_btns.get_children()
-	if bs.is_empty():
+	var choices: Array[Node] = []
+	if ask_mode == "pick":
+		for option in ask_opt_btns:
+			choices.append(option["btn"])
+	else:
+		choices.assign(buttons)
+	if choices.is_empty():
 		return
-	var total_w := float(maxi(0, bs.size() - 1)) * 12.0
-	for c in bs:
-		total_w += (c as Control).custom_minimum_size.x
-	if total_w <= 892.0:
-		prompt_btns.add_theme_constant_override("separation", 12)
-		return
-	prompt_btns.add_theme_constant_override("separation", 8)
-	var avail := 892.0 - float(maxi(0, bs.size() - 1)) * 8.0
-	var sum_w := maxf(total_w - float(maxi(0, bs.size() - 1)) * 12.0, 1.0)
-	var ratio := avail / sum_w
-	for c in bs:
-		var bc := c as Control
-		bc.custom_minimum_size.x = floorf(maxf(bc.custom_minimum_size.x * ratio, 110.0))
+	var scroll := ScrollContainer.new()
+	scroll.custom_minimum_size = Vector2(100, 78)
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
+	scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	prompt_btns.add_child(scroll)
+	prompt_btns.move_child(scroll, 1 if ask_mode == "pick" else 0)
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+	scroll.add_child(row)
+	for button in choices:
+		button.reparent(row, false)
+	if ask_context == "":
+		ask_context = "可左右滑动查看更多选项"
+		show_hint(ask_prompt, ask_context)
 
 
 func _build_select_ask(options: Array) -> void:
-	ask_confirm_btn = _make_action_btn("确定", C_GOLD, Color(0.25, 0.16, 0.05))
+	ask_confirm_btn = _make_prompt_button(ask_confirm_text, true)
 	ask_confirm_btn.disabled = true
-	ask_confirm_btn.custom_minimum_size = Vector2(168, 64)
+	ask_confirm_btn.tooltip_text = "先选一张亮起的手牌" if ask_mode == "respond" else "先选择一项"
 	ask_confirm_btn.pressed.connect(_ask_confirm)
 	prompt_btns.add_child(ask_confirm_btn)
-	var selectable: Array = []
 	for opt in options:
 		var lab := String(opt["label"])
-		var v: Variant = opt["value"]
-		if ask_mode == "respond" and v is bool and bool(v):
-			continue  # 「打出X」由「确定」代替：先点亮的牌选中，再点确定
-		var b := _make_action_btn(lab, Color(1, 1, 1, 0.96), C_PINK_DEEP)
-		var tw_w := clampf(64.0 + lab.length() * 26.0, 146.0, 360.0)
-		b.custom_minimum_size = Vector2(tw_w, 64)
-		if lab.length() > 10:
-			b.add_theme_font_size_override("font_size", 22)
-		if _is_cancel_val(v) or ask_mode == "respond":
-			b.pressed.connect(func() -> void: _on_decided(v))
+		var value: Variant = opt["value"]
+		if ask_mode == "respond" and value is bool and bool(value):
+			continue
+		var button := _make_prompt_button(lab)
+		if _is_cancel_val(value) or ask_mode == "respond":
+			button.pressed.connect(func() -> void: _on_decided(value))
 		else:
-			b.pressed.connect(func() -> void: _ask_select(v))
-			ask_opt_btns.append({"btn": b, "value": v})
-			selectable.append(v)
-		_attach_option_intro(b, lab, v)
-		prompt_btns.add_child(b)
-	# 不预选：点一下就是「选中」，避免点已预选的牌反而取消；选中后才能点「确定」
-	_fit_prompt_btns()
-	prompt_label.text = ask_prompt + ("（点亮的牌选中后点「确定」）" if ask_mode == "respond" else "（选中后点「确定」）")
+			button.pressed.connect(func() -> void: _ask_select(value))
+			ask_opt_btns.append({"btn": button, "value": value})
+		_attach_option_intro(button, lab, value)
+		prompt_btns.add_child(button)
 
 
 func _ask_same(a: Variant, b: Variant) -> bool:
@@ -6965,6 +7196,8 @@ func _ask_reset_sel() -> void:
 	ask_sel_has = false
 	ask_sel_val = null
 	ask_mode = ""
+	ask_context = ""
+	ask_options = []
 	ask_opt_btns = []
 	ask_confirm_btn = null
 
@@ -6989,20 +7222,20 @@ func _ask_sel_label() -> String:
 func _ask_refresh_btns() -> void:
 	if ask_confirm_btn != null and is_instance_valid(ask_confirm_btn):
 		ask_confirm_btn.disabled = not ask_sel_has
+		ask_confirm_btn.tooltip_text = "" if ask_sel_has else ("先选一张亮起的手牌" if ask_mode == "respond" else "先选择一项")
 	for e in ask_opt_btns:
 		var b: Button = e["btn"]
 		if not is_instance_valid(b):
 			continue
 		var on := ask_sel_has and _ask_same(ask_sel_val, e["value"])
-		var bg := Color(1.0, 0.86, 0.45) if on else Color(1, 1, 1, 0.96)
-		b.add_theme_stylebox_override("normal", style(bg, 32, Color(1.0, 0.55, 0.15) if on else Color(1, 1, 1, 0.85), 4 if on else 2, true))
-		b.add_theme_stylebox_override("hover", style(bg.lightened(0.06), 32, Color(1.0, 0.55, 0.15) if on else Color(1, 1, 1, 0.95), 4 if on else 2, true))
-	if ask_sel_has and ask_mode == "respond":
-		prompt_label.text = "已选 %s——点「确定」打出，点「不出」放弃" % _ask_sel_label()
-	elif ask_sel_has:
-		prompt_label.text = "%s——已选：%s，点「确定」" % [ask_prompt, _ask_sel_label()]
-	else:
-		prompt_label.text = ask_prompt + ("（点亮的牌选中后点「确定」）" if ask_mode == "respond" else "（选中后点「确定」）")
+		if bool(b.get_meta("ask_selected", false)) == on:
+			continue
+		b.set_meta("ask_selected", on)
+		var selected_bg := Palette.NIGHT_PANEL.lerp(C_TABLE_ACTION, 0.52) if _night_ui else Palette.ROSE_SOFT
+		var bg := selected_bg if on else _table_button
+		var edge := Palette.ROSE_EDGE if on else _table_edge
+		_set_btn_theme(b, bg, edge, _table_text, 19, 2 if on else 1, false, Vector2i(14, 10), Palette.ROSE_EDGE)
+	show_hint("已选 %s" % _ask_sel_label() if ask_sel_has else ask_prompt, ask_context)
 	_queue_refresh()
 
 
@@ -7064,7 +7297,7 @@ var free_pick_overlay: Control = null
 
 
 func fx_spree_banner(title_text: String, sub_text: String, is_kill: bool) -> void:
-	if fx_root == null or fast or auto_all:
+	if fast or not _can_show_fx():
 		return
 	var box := PanelContainer.new()
 	box.mouse_filter = MOUSE_FILTER_IGNORE
@@ -7075,28 +7308,27 @@ func fx_spree_banner(title_text: String, sub_text: String, is_kill: bool) -> voi
 	vb.mouse_filter = MOUSE_FILTER_IGNORE
 	vb.alignment = BoxContainer.ALIGNMENT_CENTER
 	vb.add_theme_constant_override("separation", 2)
-	var tl := lbl(title_text, 44, Color(1.0, 0.94, 0.72), true, HORIZONTAL_ALIGNMENT_CENTER)
+	var tl := lbl(title_text, 32, Color(1.0, 0.94, 0.72), true, HORIZONTAL_ALIGNMENT_CENTER)
 	tl.add_theme_constant_override("outline_size", 8)
 	tl.add_theme_color_override("font_outline_color", Color(0.22, 0.04, 0.08, 0.95))
 	vb.add_child(tl)
-	var sl := lbl(sub_text, 22, Color(1.0, 0.92, 0.88), false, HORIZONTAL_ALIGNMENT_CENTER)
+	var sl := lbl(sub_text, 20, Color(1.0, 0.92, 0.88), false, HORIZONTAL_ALIGNMENT_CENTER)
 	vb.add_child(sl)
 	box.add_child(vb)
-	box.size = Vector2(620, 108)
-	box.position = Vector2(vw * 0.5 - 310, 128 if is_kill else 242)
+	box.size = Vector2(maxf(482.0, box.get_combined_minimum_size().x), 88)
+	box.position = Vector2((vw - box.size.x) * 0.5, 130 if is_kill else 218)
 	box.pivot_offset = box.size * 0.5
-	box.scale = Vector2(0.45, 0.45)
-	box.modulate.a = 0.0
-	fx_root.add_child(box)
-	var tw := create_tween().bind_node(box)
-	tw.set_parallel(true)
-	tw.tween_property(box, "scale", Vector2.ONE, 0.24).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-	tw.tween_property(box, "modulate:a", 1.0, 0.16)
-	tw.chain().tween_interval(1.05)
-	tw.chain().tween_property(box, "modulate:a", 0.0, 0.30)
-	tw.chain().tween_callback(func() -> void:
-		if is_instance_valid(box):
-			box.queue_free())
+	if _motion_enabled():
+		_add_motion_fx(box)
+	else:
+		fx_root.add_child(box)
+	var tw := box.create_tween()
+	if _motion_enabled():
+		box.scale = Vector2(0.96, 0.96)
+		tw.tween_property(box, "scale", Vector2.ONE, 0.12).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	tw.tween_interval(0.78)
+	tw.tween_property(box, "modulate:a", 0.0, 0.16)
+	tw.tween_callback(box.queue_free)
 
 
 func _on_luck_pressed() -> void:

@@ -2,6 +2,7 @@ class_name IntroPop
 extends CanvasLayer
 const CardDefs = preload("res://data/cards.gd")
 const Art = preload("res://scripts/art.gd")
+const Palette = preload("res://scripts/ui_palette.gd")
 
 # V0.26 长按说明卡（对照无名杀 longpress + get.nodeintro）
 # - 长按（约 0.4 秒）任意带 meta "intro" 的控件弹出说明卡；松手关闭。
@@ -73,7 +74,7 @@ static func _sb(color: Color, radius: int, border: Color = Color(0, 0, 0, 0), bw
 		s.border_color = border
 		s.set_border_width_all(bw)
 	if shadow:
-		s.shadow_color = Color(0.2, 0.05, 0.15, 0.45)
+		s.shadow_color = Palette.SHADOW
 		s.shadow_size = 16
 		s.shadow_offset = Vector2(0, 6)
 	s.content_margin_left = 26
@@ -97,7 +98,7 @@ func _build() -> void:
 	panel = PanelContainer.new()
 	panel.name = "IntroPanel"
 	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	panel.add_theme_stylebox_override("panel", _sb(Color(0.13, 0.09, 0.19, 0.96), 22, Color(1.0, 0.80, 0.42, 0.95), 3, true))
+	panel.add_theme_stylebox_override("panel", _sb(Palette.MILK, 22, Palette.LILAC_EDGE, 2, true))
 	panel.visible = false
 	add_child(panel)
 	var hb := HBoxContainer.new()
@@ -109,7 +110,7 @@ func _build() -> void:
 	face.custom_minimum_size = Vector2(150, 210)
 	face.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
 	face.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	face_sb = _sb(Color(1, 0.98, 0.95), 14, Color(0.91, 0.64, 0.24), 4, false)
+	face_sb = _sb(Palette.LILAC_SOFT, 14, Palette.LILAC_EDGE, 2)
 	face.add_theme_stylebox_override("panel", face_sb)
 	hb.add_child(face)
 	# V0.29：长按牌说明卡左侧显示原创卡图（与手牌同一套样式）
@@ -124,15 +125,15 @@ func _build() -> void:
 	chip.position = Vector2(8, 8)
 	chip.size = Vector2(66, 40)
 	chip.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	chip.add_theme_stylebox_override("panel", _sb(Color(1, 0.98, 0.95, 0.92), 10, Color(0, 0, 0, 0), 0, false))
+	chip.add_theme_stylebox_override("panel", _sb(Color(Palette.MILK, 0.96), 10, Palette.ROSE_EDGE, 1))
 	face.add_child(chip)
-	face_suit = _mk_label(28, Color(0.85, 0.2, 0.3), true)
+	face_suit = _mk_label(28, Palette.ROSE_PRIMARY, true)
 	face_suit.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	face_suit.position = Vector2(0, -1)
 	face_suit.size = Vector2(66, 40)
 	face_suit.autowrap_mode = TextServer.AUTOWRAP_OFF
 	chip.add_child(face_suit)
-	face_name = _mk_label(24, Color(1, 1, 1), true)
+	face_name = _mk_label(24, Palette.INK, true)
 	face_name.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	face_name.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	face_name.position = Vector2(4, 158)
@@ -152,12 +153,12 @@ func _build() -> void:
 	vb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	vb.add_theme_constant_override("separation", 6)
 	hb.add_child(vb)
-	title_l = _mk_label(40, Color(1.0, 0.86, 0.50), true)
+	title_l = _mk_label(40, Palette.INK, true)
 	vb.add_child(title_l)
-	sub_l = _mk_label(23, Color(0.86, 0.80, 0.92), false)
+	sub_l = _mk_label(23, Palette.MUTED, false)
 	vb.add_child(sub_l)
 	var sep := ColorRect.new()
-	sep.color = Color(1.0, 0.80, 0.42, 0.5)
+	sep.color = Palette.LILAC_EDGE
 	sep.custom_minimum_size = Vector2(0, 2)
 	sep.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	vb.add_child(sep)
@@ -176,7 +177,7 @@ func _build() -> void:
 	body.add_theme_font_override("bold_font", font_bold)
 	body.add_theme_font_size_override("normal_font_size", 25)
 	body.add_theme_font_size_override("bold_font_size", 25)
-	body.add_theme_color_override("default_color", Color(0.96, 0.93, 0.97))
+	body.add_theme_color_override("default_color", Palette.INK)
 	body.add_theme_constant_override("line_separation", 6)
 	scroll.add_child(body)
 
@@ -413,17 +414,17 @@ func show_spec(spec: Dictionary, at: Vector2, how: String) -> void:
 		portrait.add_child(Art.cg_card(cd, Vector2(250, 330), {"zoom": 0.8, "face_y": 0.30, "fs": 30, "title": false}))
 	if face.visible:
 		face_suit.text = String(spec.get("face_suit", ""))
-		face_suit.add_theme_color_override("font_color", spec.get("face_color", Color(0.3, 0.28, 0.38)))
+		face_suit.add_theme_color_override("font_color", spec.get("face_color", Palette.INK))
 		face_name.text = String(spec.get("title", ""))
 		face_art.texture = Art.card_tex(String(spec.get("title", "")))
 		var fc := Art.frame_color(String(spec.get("title", "")))
-		face_sb.bg_color = fc
-		face_sb.border_color = fc
+		face_sb.bg_color = Palette.MILK.lerp(fc, 0.13)
+		face_sb.border_color = Palette.LILAC_EDGE.lerp(fc, 0.24)
 	title_l.text = String(spec.get("title", ""))
 	sub_l.text = String(spec.get("sub", ""))
 	sub_l.visible = sub_l.text != ""
 	_set_body_font(25)
-	body.text = String(spec.get("body", ""))
+	body.text = _paper_bbcode(String(spec.get("body", "")))
 	var side := 150.0 if face.visible else (250.0 if portrait.visible else 0.0)
 	var text_w := w - 52.0 - (side + 22.0 if side > 0.0 else 0.0)
 	body.custom_minimum_size = Vector2(text_w, 0)
@@ -490,13 +491,34 @@ const KW_TERMS := ["锁定技", "限定技", "觉醒技", "出牌阶段", "摸�
 const KW_HURT := ["火焰伤害", "雷电伤害", "伤害", "失去体力", "弃置"]
 const KW_GOOD := ["回复", "摸两张牌", "摸一张牌", "摸牌", "获得"]
 const KW_CARDS := ["突击", "闪避", "补给", "特饮"]
+const RULE_NAME := "#a43e6b"
+const RULE_TIMING := "#4c6387"
+const RULE_HARM := "#a04161"
+const RULE_GAIN := "#346b5c"
+const RULE_VARIANT := "#87551c"
+const RULE_SECTION := "#665389"
+
+# 对局追加的装备、判定和计数行仍可使用原来的亮色标记。
+const LEGACY_PAPER_INK := {
+	"#ffd27a": RULE_NAME,
+	"#8fd3ff": RULE_TIMING,
+	"#ff8a8a": RULE_HARM,
+	"#9df0a8": RULE_GAIN,
+	"#c9b8e8": RULE_SECTION,
+}
+
+
+static func _paper_bbcode(text: String) -> String:
+	for old_color in LEGACY_PAPER_INK:
+		text = text.replace("[color=%s]" % old_color, "[color=%s]" % LEGACY_PAPER_INK[old_color])
+	return text
 
 
 static func esc(t: String) -> String:
 	return t.replace("[", "[lb]")
 
 
-# 关键词高亮：【牌名/技能名】金色加粗；突击/闪避/补给/特饮 粉色；阶段与规则名词 蓝色；伤害/弃置 红色；回复/摸牌 绿色
+# 深玫瑰显示牌名和技能名，规则阶段、伤害、收益分别使用蓝、红、绿字。
 static func highlight(text: String) -> String:
 	var t := esc(text)
 	var re := RegEx.new()
@@ -510,17 +532,13 @@ static func highlight(text: String) -> String:
 	for m in re.search_all(t):
 		out += t.substr(last, m.get_start() - last)
 		var s := m.get_string()
-		var col := "#ffd27a"
-		if s.begins_with("【") or s.begins_with("「"):
-			col = "#ffd27a"
-		elif KW_CARDS.has(s):
-			col = "#ff9ec4"
-		elif KW_TERMS.has(s):
-			col = "#8fd3ff"
+		var col := RULE_NAME
+		if KW_TERMS.has(s):
+			col = RULE_TIMING
 		elif KW_HURT.has(s):
-			col = "#ff8a8a"
+			col = RULE_HARM
 		elif KW_GOOD.has(s):
-			col = "#9df0a8"
+			col = RULE_GAIN
 		out += "[color=%s][b]%s[/b][/color]" % [col, s]
 		last = m.get_end()
 	out += t.substr(last)
@@ -531,14 +549,14 @@ static func card_desc_bb(c: Dictionary, with_type: bool = false) -> String:
 	var nm := String(c.get("name", ""))
 	var lines: Array = []
 	if with_type:
-		lines.append("[color=#c9b8e8]%s[/color]" % CardDefs.type_label_of(nm))
+		lines.append("[color=%s]%s[/color]" % [RULE_SECTION, CardDefs.type_label_of(nm)])
 	var tx := CardDefs.text_of(nm)
 	lines.append(highlight(tx if tx != "" else "（暂无说明）"))
 	if CardDefs.kind_of(nm) == "武器":
-		lines.append("[color=#8fd3ff][b]攻击范围：%d[/b][/color]" % CardDefs.weapon_range_of(nm))
+		lines.append("[color=%s][b]攻击范围：%d[/b][/color]" % [RULE_TIMING, CardDefs.weapon_range_of(nm)])
 	var yb: Array = c.get("yb", [])
 	if yb.size() >= 2:
-		lines.append("[color=#ffb070][b]%s[/b][/color]" % esc(CardDefs.yingbian_text(yb)))
+		lines.append("[color=%s][b]%s[/b][/color]" % [RULE_VARIANT, esc(CardDefs.yingbian_text(yb))])
 	return "\n".join(PackedStringArray(lines))
 
 
@@ -560,15 +578,72 @@ static func card_spec(c: Dictionary) -> Dictionary:
 	return {
 		"kind": "card", "title": nm, "sub": " · ".join(PackedStringArray(sub_parts)),
 		"body": card_desc_bb(c), "face_suit": "%s%s" % [sym, pstr],
-		"face_color": Color(0.85, 0.18, 0.28) if red else Color(0.18, 0.16, 0.26),
+		"face_color": Palette.ROSE_PRIMARY if red else Palette.INK,
 	}
 
 
-static func skill_spec(nm: String, text: String, active: bool, extra: String = "") -> Dictionary:
-	var b := highlight(text)
+static func timing_label(timing: String, who: String = "") -> String:
+	match timing:
+		"phaseZhunbeiStart":
+			return "准备阶段开始时"
+		"phaseJieshuStart":
+			return "结束阶段开始时"
+		"phaseJieshu":
+			return "结束阶段"
+		"damageBefore", "damageAfter":
+			var subject: String = {"player": "你受到", "source": "你造成", "global": "场上有角色受到"}.get(who, "")
+			var stage := "前" if timing == "damageBefore" else "后"
+			return "伤害结算%s" % stage if subject == "" else "%s伤害%s" % [subject, stage]
+		"useCardBegin":
+			return "你成为牌的目标时" if who == "target" else ("你使用牌时" if who == "source" else "使用牌时")
+		"attackDodged":
+			return "你的突击被闪避后" if who == "source" else "突击被闪避后"
+	return ""
+
+
+static func _skill_row(label: String, text: String) -> String:
+	return "[color=%s][b]%s[/b][/color]  %s" % [RULE_SECTION, label, highlight(text)]
+
+
+static func skill_spec(nm: String, text: String, active: bool, extra: String = "", definition: Dictionary = {}, selection: Dictionary = {}) -> Dictionary:
+	var rows: Array[String] = []
+	var types: Array[String] = ["主动技" if active else "被动技"]
+	for flag in ["locked", "limited", "awaken", "switchable"]:
+		if bool(definition.get(flag, false)):
+			types.append({"locked": "锁定技", "limited": "限定技", "awaken": "觉醒技", "switchable": "转换技"}[flag])
+	var summary: Dictionary = definition.get("summary", {})
+	var timings: Array[String] = []
+	if active:
+		timings.append("你的出牌阶段")
+	var triggers: Dictionary = definition.get("timings", {})
+	for timing in triggers:
+		var visible_timing := timing_label(String(timing), String(triggers[timing].get("who", "player")))
+		if visible_timing != "" and not timings.has(visible_timing):
+			timings.append(visible_timing)
+	if not timings.is_empty():
+		rows.append(_skill_row("时机", "、".join(timings)))
+	if summary.has("condition"):
+		rows.append(_skill_row("条件", String(summary["condition"])))
+	var cost := String(summary.get("cost", ""))
+	if cost == "":
+		var card_type := String(selection.get("card", "none"))
+		var card_amount: String = {"any": "1 张手牌", "red": "1 张红色手牌", "black": "1 张黑色手牌"}.get(card_type, "")
+		if card_amount != "":
+			cost = "%s（%s）" % [card_amount, String(selection.get("card_role", "作为代价"))]
+	if cost != "":
+		rows.append(_skill_row("代价", cost))
+	var times := String(summary.get("limit", ""))
+	if times == "" and not definition.is_empty():
+		if bool(definition.get("limited", false)) or bool(definition.get("awaken", false)):
+			times = "整局限 1 次"
+		elif active:
+			times = "每个出牌阶段限 1 次"
 	if extra != "":
-		b += "\n[color=#c9b8e8]%s[/color]" % esc(extra)
-	return {"kind": "skill", "title": "【%s】" % nm, "sub": "主动技（点技能按钮发动）" if active else "被动技（满足条件时自动触发或询问你）", "body": b, "w": 820.0}
+		times = "%s · %s" % [times, extra] if times != "" else extra
+	if times != "":
+		rows.append(_skill_row("次数", times))
+	rows.append(_skill_row("效果与规则", text if text != "" else "暂无技能说明。"))
+	return {"kind": "skill", "title": nm, "sub": " · ".join(types), "body": "\n\n".join(rows), "w": 820.0}
 
 
 # 角色说明卡（图鉴/选将用：只有静态资料）；rt 为对局中的动态信息（BBCode 行，可空）
@@ -584,24 +659,24 @@ static func char_spec(cd: Dictionary, rt: Dictionary = {}) -> Dictionary:
 	if rt.has("ident"):
 		head.append(String(rt["ident"]))
 	if rt.has("stats"):
-		lines.append("[color=#8fd3ff]%s[/color]" % esc(String(rt["stats"])))
+		lines.append("[color=%s]%s[/color]" % [RULE_TIMING, esc(String(rt["stats"]))])
 	var used: Dictionary = rt.get("used", {})
 	var skills: Array = rt.get("skills", cd.get("skills", []))
 	for sk in skills:
 		var snm := String(sk.get("name", ""))
 		var active: bool = sk.has("btn") or bool(sk.get("active", false))
-		var tag := "[color=#ff9ec4]〔主动〕[/color]" if active else "[color=#9fb8ff]〔被动〕[/color]"
+		var tag := "[color=%s]〔主动〕[/color]" % RULE_NAME if active else "[color=%s]〔被动〕[/color]" % RULE_SECTION
 		var n_used := int(used.get(snm, 0))
 		var utag := ""
 		if rt.has("used"):
-			utag = " [color=#9df0a8]（本局已发动 %d 次）[/color]" % n_used if n_used > 0 else " [color=#a89cb8]（本局未发动）[/color]"
-		lines.append("%s [color=#ffd27a][b]【%s】[/b][/color]%s\n%s" % [tag, esc(snm), utag, highlight(String(sk.get("text", "")))])
+			utag = " [color=%s]（本局已发动 %d 次）[/color]" % [RULE_GAIN, n_used] if n_used > 0 else " [color=#625774]（本局未发动）[/color]"
+		lines.append("%s [color=%s][b]【%s】[/b][/color]%s\n%s" % [tag, RULE_NAME, esc(snm), utag, highlight(String(sk.get("text", "")))])
 	if rt.has("equips"):
 		lines.append(String(rt["equips"]))
 	if rt.has("judges"):
 		lines.append(String(rt["judges"]))
 	if not rt.has("stats") and cd.has("intro"):
-		lines.append("[color=#c9b8e8]%s[/color]" % esc(String(cd["intro"])))
+		lines.append("[color=#625774]%s[/color]" % esc(String(cd["intro"])))
 	return {"kind": "char", "title": String(cd.get("name", "")), "sub": "  ·  ".join(PackedStringArray(head)), "portrait": String(cd.get("portrait", "")), "char_id": String(cd.get("id", "")), "body": "\n".join(PackedStringArray(lines)), "w": 1120.0}
 
 

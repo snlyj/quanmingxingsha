@@ -1,7 +1,7 @@
 extends Node
 
 # 全明星杀 V0.24 自测（由 main.gd 的 _maybe_shot 按命令行参数分派）
-#   --stress=<局数>[,<identity|doudizhu|duel|all>][,<起始种子>]  全 AI 多种子压力测试＋不变量检查，结果 /tmp/ask_stress.txt
+#   --stress=<局数>[,<identity|doudizhu|duel|twovtwo|boss|all>][,<起始种子>]  全 AI 多种子压力测试＋不变量检查
 #   --regtest   V0.24 修复项的确定性回归断言，结果 /tmp/ask_regtest.txt（须 REGTEST_DONE fails=0）
 #   --uiplay=<局数>  真人路径随机点选（会真的点手牌/目标/技能按钮），结果 /tmp/ask_uiplay.txt
 
@@ -14,23 +14,22 @@ var main_ref = null
 
 func run(m, arg: String) -> void:
 	main_ref = m
+	var passed := false
 	if arg.begins_with("--stress="):
-		await _run_stress(arg.trim_prefix("--stress="))
+		passed = await _run_stress(arg.trim_prefix("--stress="))
 	elif arg == "--regtest":
-		await _run_reg_test()
+		passed = await _run_reg_test()
 	elif arg.begins_with("--uiplay="):
-		await _run_ui_play(int(arg.trim_prefix("--uiplay=")))
-	get_tree().quit()
+		passed = await _run_ui_play(int(arg.trim_prefix("--uiplay=")))
+	get_tree().quit(0 if passed else 1)
 
 
 func _has_arg(a: String) -> bool:
 	return OS.get_cmdline_user_args().has(a)
 
 
-func _write(path: String, lines: Array) -> void:
-	var f := FileAccess.open(path, FileAccess.WRITE)
-	f.store_string("\n".join(lines))
-	f.close()
+func _write(filename: String, lines: Array) -> bool:
+	return main_ref.write_test_report(filename, "\n".join(lines))
 
 
 func make_chars(n: int, hp_override: int = 0) -> Array:
@@ -106,6 +105,12 @@ static func expected_winner_ok(eng) -> bool:
 		if wt == "农民阵营获胜！":
 			return not dz_alive
 		return false
+	if eng.mode == "twovtwo" or eng.mode == "boss":
+		var living_sides := {}
+		for p in eng.players:
+			if p["alive"]:
+				living_sides[String(p["identity"])] = true
+		return living_sides.size() == 1 and wt == String(living_sides.keys()[0]) + "获胜！"
 	var lord_alive := false
 	var fan_alive := false
 	var nei_alive := false
@@ -148,10 +153,14 @@ static func state_errors(eng) -> Array:
 
 
 # ---------------- 压力测试 ----------------
-func _run_stress(arg: String) -> void:
+func _run_stress(arg: String) -> bool:
 	var parts := arg.split(",")
 	var games := maxi(1, int(parts[0]))
 	var mode_sel := parts[1] if parts.size() > 1 else "all"
+	var modes := ["identity", "doudizhu", "duel", "twovtwo", "boss"]
+	if mode_sel != "all" and not modes.has(mode_sel):
+		push_error("不支持的压力测试模式 %s" % mode_sel)
+		return false
 	var seed0 := int(parts[2]) if parts.size() > 2 else 1000
 	var fixed_diff := int(parts[3]) if parts.size() > 3 else -1
 	var lines: Array = []
@@ -162,13 +171,14 @@ func _run_stress(arg: String) -> void:
 	for g in games:
 		var m := mode_sel
 		if mode_sel == "all":
-			m = ["identity", "doudizhu", "duel"][g % 3]
+			m = modes[g % modes.size()]
 		var sd := seed0 + g
 		seed(sd)
 		var eng = EngineS.new()
 		eng.load_skills()
 		eng.mode = m
-		eng.difficulty = (g / 3) % 3 if fixed_diff < 0 else fixed_diff
+		var difficulty_step := modes.size() if mode_sel == "all" else 1
+		eng.difficulty = (g / difficulty_step) % 3 if fixed_diff < 0 else fixed_diff
 		var ids: Array = []
 		var n := 5
 		if m == "doudizhu":
@@ -176,8 +186,14 @@ func _run_stress(arg: String) -> void:
 			ids = ["农民", "农民", "农民"]
 		elif m == "duel":
 			n = 2
-			ids = ["先手", "后手"]
 			eng.duel_first_seat = randi() % 2
+			ids = ["先手", "后手"] if eng.duel_first_seat == 0 else ["后手", "先手"]
+		elif m == "twovtwo":
+			n = 4
+			ids = ["红方", "蓝方", "蓝方", "红方"]
+		elif m == "boss":
+			n = 4
+			ids = ["联军", "联军", "魔王", "联军"]
 		else:
 			ids = ["主公", "忠臣", "反贼", "反贼", "内奸"]
 			ids.shuffle()
@@ -255,7 +271,7 @@ func _run_stress(arg: String) -> void:
 				for c in p["judge"]:
 					jn.append(String(c["name"]))
 				dump.append("STATE seat=%d %s id=%s alive=%s hp=%d/%d hand=%s equip=%s judge=%s guard=%s chained=%s" % [int(p["seat"]), eng.pname(p), String(p["identity"]), str(p["alive"]), int(p["hp"]), int(p["max_hp"]), str(hn), str(eq), str(jn), str(p.get("dream_guard", false)), str(p.get("chained", false))])
-			_write("/tmp/ask_stress_log_%d.txt" % sd, dump)
+				_write("ask_stress_log_%d.txt" % sd, dump)
 	var keys := totals.keys()
 	keys.sort()
 	for k in keys:
@@ -266,8 +282,9 @@ func _run_stress(arg: String) -> void:
 		var st3: Array = cstats[k]
 		lines.append("STAT %s games=%d wins=%d rate=%.1f%%" % [k, int(st3[0]), int(st3[1]), 100.0 * float(st3[1]) / maxf(1.0, float(st3[0]))])
 	lines.append("STRESS_DONE games=%d fails=%d secs=%.1f" % [games, fails, float(Time.get_ticks_msec() - t_start) / 1000.0])
-	_write("/tmp/ask_stress.txt", lines)
 	print(lines[lines.size() - 1])
+	var wrote_report := _write("ask_stress.txt", lines)
+	return wrote_report and fails == 0
 
 
 # ---------------- 回归断言（V0.24 修复项） ----------------
@@ -300,6 +317,7 @@ func _clean_eng(mode: String = "identity", ids: Array = ["主公", "忠臣", "�
 		p["max_hp"] = hp
 		p["hp"] = hp
 	eng.turn_player = eng.players[0]
+	eng.phase_text = "出牌阶段"
 	eng.log_lines.clear()
 	return eng
 
@@ -347,15 +365,19 @@ func _script_ui(eng, humans: Array, script: Dictionary, rec: Array) -> void:
 	})
 
 
-func _run_reg_test() -> void:
+func _run_reg_test() -> bool:
 	_reg_lines.clear()
 	_reg_fails = 0
 	_reg_n = 0
 	await _reg_engine_rules()
+	await _reg_attack_target_resolution()
+	await _reg_round_boundary()
+	await _reg_lord_rescue()
 	await _reg_cards()
 	await _reg_skills()
 	await _reg_ui_crash()
 	await _reg_ui_v25()
+	await _reg_hand_browse()
 	await _reg_v26()
 	await _reg_v27()
 	await _reg_v28()
@@ -373,9 +395,114 @@ func _run_reg_test() -> void:
 	await _reg_v42()
 	await _reg_v43()
 	await _reg_v44()
+	await _reg_battle_fx()
 	_reg_lines.append("REGTEST_DONE tests=%d fails=%d" % [_reg_n, _reg_fails])
-	_write("/tmp/ask_regtest.txt", _reg_lines)
 	print(_reg_lines[_reg_lines.size() - 1])
+	var wrote_report := _write("ask_regtest.txt", _reg_lines)
+	return wrote_report and _reg_fails == 0
+
+
+func _reg_attack_target_resolution() -> void:
+	var e = _clean_eng("twovtwo", ["红方", "蓝方", "蓝方", "红方"], 4)
+	var src: Dictionary = e.players[0]
+	var primary: Dictionary = e.players[1]
+	var secondary: Dictionary = e.players[2]
+	var third: Dictionary = e.players[3]
+	e.play_equip(src, _give(e, src, "星月画戟", "方块", 12))
+	var sha := _give(e, src, "突击", "梅花", 2)
+	sha["yb"] = ["空巢", "目标+"]
+	_give(e, primary, "金蝉脱壳", "梅花", 12)
+	_give(e, secondary, "金蝉脱壳", "梅花", 13)
+	await e.use_attack(src, primary, sha)
+	_ok(int(primary["hp"]) == 4 and primary["hand"].size() == 2 and int(third["hp"]) == 3, "多目标突击：主目标金蝉只抵消自己的结算，画戟目标继续结算")
+	_ok(int(secondary["hp"]) == 4 and secondary["hand"].size() == 2, "多目标突击：应变追加目标同样可以打出金蝉")
+
+	e = _clean_eng("doudizhu", ["地主", "农民", "农民"], 4)
+	src = e.players[0]
+	primary = e.players[1]
+	secondary = e.players[2]
+	e.play_equip(src, _give(e, src, "星月画戟", "方块", 12))
+	sha = _give(e, src, "突击", "梅花", 2)
+	sha["yb"] = ["空巢", "目标+"]
+	await e.use_attack(src, primary, sha)
+	_ok(int(primary["hp"]) == 3 and int(secondary["hp"]) == 3 and int(src["attack_count"]) == 1, "多目标突击：应变与画戟合用也只命中同一目标一次")
+
+	e = _clean_eng("doudizhu", ["地主", "农民", "农民"], 4)
+	e.difficulty = 1
+	src = e.players[0]
+	primary = e.players[1]
+	secondary = e.players[2]
+	e.add_skill(src, "shuangfeng")
+	e.play_equip(src, _give(e, src, "星月画戟", "方块", 12))
+	sha = _give(e, src, "突击", "方块", 6)
+	_give(e, primary, "闪避", "方块", 3)
+	_give(e, secondary, "闪避", "方块", 5)
+	e.deck.append(_mk("补给", "红桃", 3))
+	e.deck.append(_mk("看破", "黑桃", 11))
+	await e.use_attack(src, primary, sha)
+	_ok(int(primary["hp"]) == 3 and primary["hand"].size() == 1 and int(secondary["hp"]) == 4 and secondary["hand"].is_empty(), "多目标突击：主目标霜封判黑不影响追加目标判红后的闪避")
+
+	e = _clean_eng("doudizhu", ["地主", "农民", "农民"], 4)
+	e.difficulty = 1
+	src = e.players[0]
+	primary = e.players[1]
+	secondary = e.players[2]
+	e.play_equip(src, _give(e, src, "星月画戟", "方块", 12))
+	sha = _give(e, src, "突击", "方块", 8)
+	sha["yb"] = ["残躯", "强命"]
+	src["hp"] = 1
+	_give(e, primary, "闪避", "方块", 3)
+	_give(e, secondary, "闪避", "方块", 5)
+	await e.use_attack(src, primary, sha)
+	_ok(int(primary["hp"]) == 3 and primary["hand"].size() == 1 and int(secondary["hp"]) == 3 and secondary["hand"].size() == 1, "多目标突击：应变强命对所有目标生效")
+
+
+func _reg_round_boundary() -> void:
+	for mode in ["twovtwo", "boss"]:
+		var ids := ["红方", "蓝方", "蓝方", "红方"] if mode == "twovtwo" else ["联军", "联军", "魔王", "联军"]
+		var e = _clean_eng(mode, ids, 4)
+		await e.die(e.players[0], e.players[2])
+		var rounds: Array = []
+		e.set_ui({"is_human": func(_p): return true, "play_phase": func(_engine, _p): pass})
+		e.turn_hook = func(eng, p: Dictionary) -> void:
+			if p.is_empty() or int(p["seat"]) != 1:
+				return
+			rounds.append([eng.round_no, eng.round_marked(p, "huayu")])
+			if rounds.size() == 1:
+				eng.mark_round(p, "huayu")
+			else:
+				eng.game_over = true
+		await e.run_game()
+		_ok(rounds == [[1, false], [2, false]], "%s 首位阵亡后仍推进轮次并重置每轮技能" % mode)
+
+
+func _reg_lord_rescue() -> void:
+	var e = _clean_eng()
+	var lord: Dictionary = e.players[0]
+	var loyal: Dictionary = e.players[1]
+	e.add_skill(lord, "xingying_lord")
+	lord["hp"] = 1
+	_give(e, loyal, "补给", "红桃", 6)
+	await e.damage(e.players[2], lord, 1, "回归测试")
+	_ok(int(lord["hp"]) == 1 and loyal["hand"].size() == 1, "星樱号令：忠臣在求援窗口使用补给后摸 1 张牌")
+
+	e = _clean_eng()
+	lord = e.players[0]
+	var rebel: Dictionary = e.players[2]
+	e.add_skill(lord, "xingying_lord")
+	lord["hp"] = 1
+	_give(e, rebel, "补给", "红桃", 6)
+	await e.damage(rebel, lord, 1, "回归测试")
+	_ok(not bool(lord["alive"]) and rebel["hand"].size() == 1, "反贼 AI 不交补给救主公")
+
+	e = _clean_eng()
+	lord = e.players[0]
+	var traitor: Dictionary = e.players[4]
+	e.add_skill(lord, "xingying_lord")
+	lord["hp"] = 1
+	_give(e, traitor, "补给", "红桃", 6)
+	await e.damage(e.players[2], lord, 1, "回归测试")
+	_ok(int(lord["hp"]) == 1 and traitor["hand"].is_empty(), "内奸可按局势救主公，但不获得星樱号令奖励")
 
 
 func _reg_engine_rules() -> void:
@@ -658,14 +785,27 @@ func _reg_skills() -> void:
 	var e = _clean_eng()
 	var mk: Dictionary = e.players[0]
 	mk["skills"] = ["qinyin"]
-	var lib = e._skill_owner
-	_give(e, mk, "补给", "红桃", 6)
-	var cands: Array = lib._qinyin_cands(e, mk)
+	var red_cost := _give(e, mk, "补给", "红桃", 6)
+	var cands: Array = e.active_selection(mk, "qinyin")["targets"]
 	_ok(cands.size() == 2, "S1 琴音候选为攻击范围内的全部其他角色（实际 %d）" % cands.size())
 	var rec: Array = []
 	_script_ui(e, [0], {}, rec)
-	_ok(lib._qinyin_filter(e, mk), "S1 真人有红牌时可发动琴音")
-	await lib._qinyin_content(e, mk)
+	e.phase_text = "摸牌阶段"
+	_ok(not e.can_use_active(mk, "qinyin"), "S1 摸牌阶段不能发动主动技")
+	e.phase_text = "出牌阶段"
+	mk["skills_sealed"] = true
+	e.add_skill(mk, "qinyin")
+	var sealed_action: bool = await e.use_active_skill(mk, "qinyin", {"card": red_cost, "target": 4})
+	_ok(e.active_options(mk).is_empty() and not sealed_action and mk["skills"].count("qinyin") == 1, "S1 霜封下不能发动琴音，也不能重复添加已拥有的技能")
+	mk["skills_sealed"] = false
+	_ok(e.can_use_active(mk, "qinyin"), "S1 真人有红牌时可发动琴音")
+	var invalid_target: bool = await e.use_active_skill(mk, "qinyin", {"card": red_cost, "target": 2})
+	var foreign_card: bool = await e.use_active_skill(mk, "qinyin", {"card": red_cost.duplicate(), "target": 4})
+	_ok(not invalid_target and not foreign_card and e.can_use_active(mk, "qinyin"), "S1 拒绝非法目标和非原实体手牌，不消耗次数")
+	var hp_before: int = e.players[4]["hp"]
+	var played: bool = await e.use_active_skill(mk, "qinyin", {"card": red_cost, "target": 4})
+	var repeated: bool = await e.use_active_skill(mk, "qinyin")
+	_ok(played and int(e.players[4]["hp"]) == hp_before - 1 and not repeated, "S1 琴音采用传入的合法目标，并拒绝同回合重复发动")
 	var sha_logged := _log_index(e, "使用「突击」") >= 0
 	var rc_in_discard := false
 	for c in e.discard_pile:
@@ -675,7 +815,7 @@ func _reg_skills() -> void:
 	_ok(sha_logged and rc_in_discard, "S1 琴音以虚拟突击结算，原牌以原名进入弃牌堆")
 	# S2 怒喝：只弃手牌/装备，不碰判定区；可选发动
 	e = _clean_eng()
-	lib = e._skill_owner
+	var lib = e._skill_owner
 	var src: Dictionary = e.players[0]
 	var tgt: Dictionary = e.players[2]
 	tgt["judge"].append(_mk("沉迷游戏"))
@@ -712,7 +852,8 @@ func _reg_skills() -> void:
 	_ok(not lib._chahui_aiuse(e, src), "S3 只有敌人受伤时 AI 不发动茶会")
 	e.players[1]["hp"] = 2
 	_ok(lib._chahui_aiuse(e, src), "S3 友方受伤时 AI 发动茶会")
-	await lib._chahui_content(e, src)
+	e.add_skill(src, "chahui")
+	await e.use_active_skill(src, "chahui")
 	_ok(int(e.players[1]["hp"]) == 3 and int(e.players[2]["hp"]) == 1 and int(src.get("stat_heal", 0)) == 1, "S3 茶会治疗友方并计入治疗统计")
 
 
@@ -879,8 +1020,10 @@ func _auto_answer(bs, random: bool) -> bool:
 		if not ds.is_empty():
 			(ds[randi() % ds.size()] if random else ds[0]).pressed.emit()
 			return true
-	if bs.prompt_panel != null and bs.prompt_panel.visible and not bs.targeting and not (bs.interactive and bs.turn_seat == 0):
-		var ps := _live_buttons(bs.prompt_btns)
+	if bs.asking and bs.prompt_panel != null and bs.prompt_panel.visible:
+		var ps: Array = bs.prompt_btns.find_children("*", "Button", true, false).filter(func(node: Node) -> bool:
+			var button := node as Button
+			return not button.disabled and not button.is_queued_for_deletion() and button.is_visible_in_tree())
 		if not ps.is_empty():
 			(ps[randi() % ps.size()] if random else ps[0]).pressed.emit()
 			return true
@@ -890,7 +1033,7 @@ func _auto_answer(bs, random: bool) -> bool:
 # ---------------- 真人路径随机点选 ----------------
 # 每局：真人位随机点手牌 / 目标 / 技能按钮 / 取消 / 结束出牌，所有询问随机作答；
 # 检查：无脚本错误（由外层日志判定）、对局在步数上限内结束、牌数守恒、体力不越界
-func _run_ui_play(games: int) -> void:
+func _run_ui_play(games: int) -> bool:
 	var lines: Array = []
 	var fails := 0
 	var modes := ["identity", "doudizhu", "duel"]
@@ -988,7 +1131,7 @@ func _run_ui_play(games: int) -> void:
 			if randf() < 0.03 and bs.interactive and bs.turn_seat == 0 and bs.in_play_phase and not bs.asking and not bs.targeting and IntroPop.inst != null:
 				var lp_nodes: Array = []
 				for x in bs.hand_cards:
-					if is_instance_valid(x) and (x as Control).is_visible_in_tree():
+					if is_instance_valid(x) and (x as Control).is_visible_in_tree() and bs.hand_viewport.get_global_rect().has_point((x as Control).get_global_rect().get_center() + Vector2(0, -40)):
 						lp_nodes.append(x)
 				for sp in bs.seat_panels:
 					if (sp as Control).is_visible_in_tree():
@@ -1107,12 +1250,14 @@ func _run_ui_play(games: int) -> void:
 	else:
 		lines.append("OK meta_records=%d（战绩写入测试存档）" % mrecs)
 	lines.append("UIPLAY_DONE games=%d fails=%d secs=%.1f" % [games, fails, float(Time.get_ticks_msec() - t0) / 1000.0])
-	_write("/tmp/ask_uiplay.txt", lines)
 	print(lines[lines.size() - 1])
+	var wrote_report := _write("ask_uiplay.txt", lines)
+	return wrote_report and fails == 0
 
 
 # ---------------- V0.25 触屏交互回归：拖拽出牌 / 回弹 / 弃牌多选 / 作答超时 / 点自己为目标 / 点牌响应 ----------------
 static func sim_drag(bs, w: Control, to_global: Vector2, steps: int = 8) -> void:
+	bs._ensure_hand_card_visible(w)
 	var start: Vector2 = w.global_position + Vector2(86, 134)
 	var press := InputEventMouseButton.new()
 	press.button_index = MOUSE_BUTTON_LEFT
@@ -1120,9 +1265,18 @@ static func sim_drag(bs, w: Control, to_global: Vector2, steps: int = 8) -> void
 	press.global_position = start
 	press.position = start
 	bs._on_card_gui_input(w, press)
+	# 起手向上提出牌，随后可以斜向任意可选座位。直接横移用于浏览手牌。
+	var origin := start
+	if to_global.y < start.y - 60.0:
+		origin += Vector2(0, -36)
+		var lift := InputEventMouseMotion.new()
+		lift.global_position = origin
+		lift.position = origin
+		lift.button_mask = MOUSE_BUTTON_MASK_LEFT
+		bs._on_card_gui_input(w, lift)
 	for k in steps:
 		var mm := InputEventMouseMotion.new()
-		mm.global_position = start.lerp(to_global, float(k + 1) / float(steps))
+		mm.global_position = origin.lerp(to_global, float(k + 1) / float(steps))
 		mm.position = mm.global_position
 		mm.button_mask = MOUSE_BUTTON_MASK_LEFT
 		bs._on_card_gui_input(w, mm)
@@ -1199,9 +1353,11 @@ func _reg_ui_v25() -> void:
 	await get_tree().process_frame
 	await get_tree().process_frame
 	_ok(bs._hand_has(wpn) and is_same(bs.selected_card, wpn) and not bs.confirm_btn.disabled, "U6 (V0.27) 无目标牌拖出手牌区松手只「选中」，未装备，「确定」可点")
+	bs._pz_clear()
 	bs.confirm_btn.pressed.emit()
 	await _wait_interactive(bs)
 	_ok(not bs._hand_has(wpn) and bs.equip_name(me, "weapon") == "星光长剑", "U6 点「确定」后才装备上星光长剑")
+	_ok(bs.pz_live.size() == 1 and bs.play_callout_label.text == "你 装备「星光长剑」", "U6 真人装备在处理区只展示一张牌，且播报来源为自己")
 	# U9（V0.28 起「补给」出牌阶段只能对自己，不再选目标）：点「补给」只选中，「确定」后对自己回复
 	await _reach_my_play(bs)
 	me["hp"] = maxi(int(me["max_hp"]) - 1, 1)
@@ -1425,6 +1581,49 @@ static func _to_win(pos: Vector2) -> Vector2:
 	return IntroPop.inst.get_tree().root.get_final_transform() * pos
 
 
+func _reg_hand_browse() -> void:
+	var bs = _new_battle("identity", 21)
+	if not await _reach_my_play(bs):
+		_ok(false, "手牌浏览：未能进入真人出牌阶段")
+		await _close_battle(bs)
+		return
+	bs.set_auto_confirm(false, false)
+	var me: Dictionary = bs.players[0]
+	var cards := [_mk("灵感爆发", "红桃", 3), _mk("星光长剑", "黑桃", 6)]
+	for i in range(2, 25):
+		cards.append(_mk("闪避", "梅花", (i % 13) + 1))
+	for count in [4, 10, 25]:
+		me["hand"] = cards.slice(0, count)
+		bs.refresh()
+		await _frames(1)
+		var scrollable: bool = bs.hand_scroll_limit > 0.0
+		_ok(bs.hand_cards.size() == count and scrollable == (count > 4) and bs.hand_viewport.clip_contents, "手牌浏览：%d 张牌时正确启用裁剪与翻组" % count)
+		if scrollable:
+			bs._set_hand_scroll(bs.hand_scroll_limit)
+			var bounds: Rect2 = bs.hand_viewport.get_global_rect()
+			var tail: Control = bs._find_wrap(cards[count - 1])
+			_ok(bounds.encloses(tail.get_global_rect()) and bs.hand_next_btn.disabled, "手牌浏览：%d 张翻到底仍能看清最后一张牌" % count)
+	bs._set_hand_scroll(0.0)
+	var start: Vector2 = bs._find_wrap(cards[0]).get_global_rect().get_center()
+	_push_mouse(start, true)
+	_push_motion(start + Vector2(-112, -5), true)
+	_push_mouse(start + Vector2(-112, -5), false)
+	await _frames(1)
+	_ok(bs.hand_scroll_offset > 80.0 and bs.drag_wrap == null and bs.selected_card.is_empty() and me["hand"].size() == 25, "手牌浏览：横滑不选中、不拖出、不消耗手牌")
+	bs._set_hand_scroll(0.0)
+	bs._select_card(cards[0], false)
+	var other: Control = bs._find_wrap(cards[1])
+	var pos := other.get_global_rect().get_center()
+	_push_mouse(pos, true)
+	_push_motion(pos + Vector2(0, -160), true)
+	_ok(bs.drag_wrap == other and bs.drag_hint.visible, "手牌手势：向上拖动脱离裁剪区并显示松手提示")
+	bs.notification(NOTIFICATION_APPLICATION_FOCUS_OUT)
+	_push_mouse(pos + Vector2(0, -160), false)
+	await _frames(1)
+	_ok(bs.drag_wrap == null and other.get_parent() == bs.hand_row and is_same(bs.selected_card, cards[0]) and bs._hand_has(cards[1]), "手牌手势：切后台取消拖动并恢复前一次选择")
+	await _close_battle(bs)
+
+
 static func _push_mouse(pos0: Vector2, pressed: bool, btn: int = MOUSE_BUTTON_LEFT) -> void:
 	var pos := _to_win(pos0)
 	var ev := InputEventMouseButton.new()
@@ -1531,6 +1730,7 @@ func _reg_v26() -> void:
 	bs.refresh()
 	await get_tree().process_frame
 	var w: Control = bs._find_wrap(sha)
+	bs._ensure_hand_card_visible(w)
 	var cpos: Vector2 = w.get_global_rect().get_center() + Vector2(0, -30)
 	var r1 := await sim_longpress(cpos)
 	var sp1: Dictionary = r1["spec"]
@@ -1633,6 +1833,8 @@ func _reg_v26() -> void:
 	b10.free()
 	b11.free()
 	# L11 右键弹出（常驻），再点一下只关闭、不触发下面的按钮
+	bs._ensure_hand_card_visible(w)
+	cpos = w.get_global_rect().get_center() + Vector2(0, -30)
 	_push_mouse(cpos, true, MOUSE_BUTTON_RIGHT)
 	_push_mouse(cpos, false, MOUSE_BUTTON_RIGHT)
 	await get_tree().process_frame
@@ -1781,7 +1983,7 @@ func _reg_v27() -> void:
 	var hn3: int = (me["hand"] as Array).size()
 	_tap_card(bs, wz)
 	await _frames(2)
-	_ok(bs._hand_has(wz) and (me["hand"] as Array).size() == hn3 and is_same(bs.selected_card, wz) and not bs.confirm_btn.disabled and bs.prompt_label.text.find("确定") >= 0, "S3 点无目标牌「灵感爆发」只选中，未使用（提示：%s）" % bs.prompt_label.text)
+	_ok(bs._hand_has(wz) and (me["hand"] as Array).size() == hn3 and is_same(bs.selected_card, wz) and not bs.confirm_btn.disabled and bs.confirm_btn.text == "出牌", "S3 点无目标牌「灵感爆发」只选中，未使用（提示：%s）" % bs.prompt_label.text)
 	bs.confirm_btn.pressed.emit()
 	await _wait_interactive(bs)
 	_ok(not bs._hand_has(wz) and (me["hand"] as Array).size() == hn3 + 1, "S3 点「确定」后才使用（摸 2 张）")
@@ -1847,6 +2049,7 @@ func _reg_v27() -> void:
 	var runner := func() -> void:
 		box["r"] = await bs._eng_ask_respond(me, "闪避", "测试")
 	runner.call()
+	_ok(bs.ask_deadline_ms == 0 and bs.ask_confirm_btn != null and bs.ask_confirm_btn.text == "打出闪避" and bs.ask_confirm_btn.disabled and bs.prompt_context_label.text == "测试", "S6 响应动作和事件分开显示，选项展示后才启动倒计时")
 	await _frames(2)
 	_tap_card(bs, d1)
 	await _frames(1)
@@ -1884,7 +2087,7 @@ func _reg_v27() -> void:
 	await _frames(2)
 	var nob: Button = null
 	for x in bs.prompt_btns.get_children():
-		if x is Button and (x as Button).text == "不出":
+		if x is Button and (x as Button).text == "不响应":
 			nob = x
 	var found_nob := nob != null
 	_tap_card(bs, d1)
@@ -2079,7 +2282,8 @@ func _reg_v27() -> void:
 	_ok(on_now and not bs.auto_confirm and not BattleScreen.auto_confirm_saved(), "S12 面板开关即时生效并持久化")
 	BattleScreen.save_auto_confirm(keep)
 	bs.toggle_settings_panel()
-	_ok(not bs.settings_panel.visible and bs.phase_label.position.x >= BattleScreen.FEAT_END - 0.5 and bs.phase_label.position.x + bs.phase_label.size.x <= bs.vw - 520.0, "S12 阶段标题位于功能条与右侧胶囊之间，不再重叠")
+	var phase_rect: Rect2 = bs.phase_label.get_global_rect()
+	_ok(not bs.settings_panel.visible and phase_rect.position.x >= bs.tools_btn.get_global_rect().end.x and phase_rect.end.x <= bs.deck_label.get_global_rect().position.x, "S12 阶段标题位于工具入口与牌堆之间")
 	# S13 拖到合法目标松手仍直接出牌（唯一保留的直接结算）
 	await _reach_my_play(bs)
 	me["used_attack"] = false
@@ -2279,6 +2483,8 @@ static func player_won(eng, q: Dictionary) -> bool:
 				return idt == "地主"
 		"duel":
 			return w.begins_with(eng.pname(q))
+		"twovtwo", "boss":
+			return w == idt + "获胜！"
 	return false
 
 
@@ -2766,18 +2972,13 @@ func _reg_v36() -> void:
 	await e.use_active_skill(p0, "yuanhu")
 	_ok(int(p0.get("shield", 0)) == 1 and (p0["hand"] as Array).size() == 1, "V36-2 「援护」对已受伤角色赋予 1 点护甲并摸 1 张牌")
 
-	# V36-3 主公技「星樱号令」：首轮准备阶段获得1点护甲；队友对主公使用「补给」摸1张牌
+	# V36-3 主公技「星樱号令」：首轮准备阶段获得 1 点护甲
 	e = _clean_eng("identity", ["主公", "忠臣", "反贼", "反贼", "内奸"], 4)
 	var lord: Dictionary = e.players[0]
-	var loyal: Dictionary = e.players[1]
 	e.add_skill(lord, "xingying_lord")
 	e.round_no = 1
 	await e.fire("phaseZhunbeiStart", {"name": "phase", "player": lord, "target": lord})
 	_ok(int(lord.get("shield", 0)) == 1, "V36-3 主公技「星樱号令」首轮准备阶段获得 1 点护甲")
-	lord["hp"] = 2
-	var tao := _give(e, loyal, "补给", "红桃", 6)
-	e.use_supply(loyal, tao, lord)
-	_ok(int(lord["hp"]) == 3 and (loyal["hand"] as Array).size() == 1, "V36-3 主公技「星樱号令」：其他角色对主公使用「补给」后摸 1 张牌")
 
 	# V36-4 卡牌图鉴页与 15 名角色校验
 	main_ref.show_card_gallery()
@@ -3621,6 +3822,34 @@ func _reg_v43() -> void:
 	var mn := _give(e43, e43.players[0], "木牛流马")
 	await e43.play_card(e43.players[0], mn, {})
 	_ok(String((e43.players[0]["equip"]["treasure"] as Dictionary).get("name", "")) == "木牛流马", "V43-1b 宝物类手牌木牛流马通过 play_card 正常装备")
+	bs43.turn_seat = 0
+	bs43.in_play_phase = true
+	bs43.interactive = true
+	bs43.drag_end_ms = 0
+	bs43.set_auto_confirm(false, false)
+	var store_card := _give(e43, e43.players[0], "闪避")
+	bs43.refresh()
+	var store_btn: Button
+	for button in bs43.skill_btns.get_children():
+		if button.get_meta("key", "") == "muniu_s":
+			store_btn = button as Button
+			break
+	if store_btn == null:
+		_ok(false, "V43-1c 木牛流马装备后应出现存粮按钮")
+	else:
+		var card_btn := bs43._find_wrap(store_card).get_child(0) as Button
+		store_btn.pressed.emit()
+		card_btn.pressed.emit()
+		_ok(bs43._hand_has(store_card) and not bs43.confirm_btn.disabled, "V43-1c 先点存粮再选手牌，仍需点确定")
+		bs43.cancel_btn.pressed.emit()
+		card_btn.pressed.emit()
+		store_btn.pressed.emit()
+		_ok(bs43._hand_has(store_card) and not bs43.confirm_btn.disabled, "V43-1d 先选手牌再点存粮，仍需点确定")
+		bs43.confirm_btn.pressed.emit()
+		var stored: Array = e43.players[0]["equip"]["treasure"]["stored"]
+		_ok(not bs43._hand_has(store_card) and stored.size() == 1 and is_same(stored[0], store_card), "V43-1e 点确定将选中的实体牌存入木牛流马")
+	bs43.in_play_phase = false
+	bs43.interactive = false
 
 	# V43-2: 濒死时手牌「特饮」亮起可读 + 借力打力无目标提示 + 继往开来无目标不误亮
 	e43.players[0]["hand"].clear()
@@ -3675,20 +3904,74 @@ func _reg_v43() -> void:
 	await _frames(2)
 	var cg_scroll: ScrollContainer = null
 	var cg_btn: Button = null
+	var cg_tail: Button = null
 	for n in main_ref.screen_root.find_children("*", "ScrollContainer", true, false):
 		cg_scroll = n as ScrollContainer
 	for b in main_ref.screen_root.find_children("*", "Button", true, false):
 		if (b as Button).custom_minimum_size.y >= 200:
-			cg_btn = b as Button
-			break
+			if cg_btn == null:
+				cg_btn = b as Button
+			cg_tail = b as Button
 	if cg_btn != null and cg_scroll != null:
+		var first_preview := cg_btn.get_node_or_null("GalleryPreview")
+		var thumbnail := first_preview.get_child(0) as TextureRect if first_preview != null else null
+		_ok(thumbnail != null and thumbnail.texture != null and thumbnail.texture.resource_path.begins_with("res://assets/thumbnails/") and not cg_tail.has_node("GalleryPreview"), "V43-4 图鉴只加载首屏附近的缩略图")
 		var cg_drag := InputEventScreenDrag.new()
 		cg_drag.relative = Vector2(0, -150)
 		cg_btn.gui_input.emit(cg_drag)
 		await _frames(1)
 		_ok(cg_scroll.scroll_vertical > 0, "V43-4 卡牌图鉴按住卡面上下滑动顺畅滚动")
+		cg_scroll.scroll_vertical = int(cg_scroll.get_v_scroll_bar().max_value)
+		await _frames(2)
+		_ok(not cg_btn.has_node("GalleryPreview") and cg_tail.has_node("GalleryPreview"), "V43-4 滚到底部后加载可见卡面并释放离屏卡面")
 	main_ref.show_home()
 	await _frames(2)
+
+
+func _reg_battle_fx() -> void:
+	var e = _clean_eng("duel", ["先手", "后手"], 4)
+	e.difficulty = 1
+	var source: Dictionary = e.players[0]
+	var target: Dictionary = e.players[1]
+	var events: Array = []
+	e.set_ui({"fx": func(kind: String, data: Dictionary): events.append([kind, data])})
+	_give(e, target, "闪避", "方块", 3)
+	await e.use_attack(source, target, _give(e, source, "突击"))
+	_ok(events.map(func(event): return event[0]) == ["attack", "dodge"], "表现事件：闪避只触发进攻预告与闪避结果")
+	e.gain_shield(target, 1)
+	events.clear()
+	await e.use_attack(source, target, _give(e, source, "突击"), false)
+	_ok(events.map(func(event): return event[0]) == ["attack", "shield"], "表现事件：护甲完全抵消时不触发命中特效")
+	events.clear()
+	await e.use_attack(source, target, _give(e, source, "突击"), false)
+	_ok(events.size() == 2 and events[1][0] == "damage" and bool(events[1][1].get("attack_hit", false)), "表现事件：突击真实扣血时才触发命中")
+
+	var battle := BattleScreen.new()
+	battle.set_anchors_preset(Control.PRESET_FULL_RECT)
+	add_child(battle)
+	battle.build_table()
+	source["char"] = Characters.by_id("sena")
+	target["char"] = Characters.by_id("mafuyu")
+	battle.players = e.players
+	battle.set_reduced_motion(false, false)
+	battle._eng_fx("attack", {"src_seat": 0, "tgt_seat": 1, "nature": ""})
+	_ok(battle.fx_root.has_node("TargetTrace") and not battle.fx_root.has_node("AttackImpact"), "进攻轨迹不提前播放命中特效")
+	battle._eng_fx("damage", {"seat": 1, "num": 1, "attack_hit": true})
+	_ok(battle.fx_root.has_node("AttackImpact"), "命中事件播放实际受击表现")
+	var tap := InputEventMouseButton.new()
+	tap.button_index = MOUSE_BUTTON_LEFT
+	tap.pressed = true
+	battle._on_table_bg_input(tap)
+	_ok(not battle.fx_root.has_node("TargetTrace") and not battle.fx_root.has_node("AttackImpact"), "点击空白桌面可跳过本次动态效果")
+	battle._eng_fx("attack", {"src_seat": 0, "tgt_seat": 1, "nature": ""})
+	battle.set_reduced_motion(true, false)
+	battle._eng_fx("attack", {"src_seat": 0, "tgt_seat": 1, "nature": ""})
+	battle._eng_fx("damage", {"seat": 1, "num": 1, "attack_hit": true})
+	battle._eng_fx("dying", {"seat": 1})
+	_ok(not battle.fx_root.has_node("TargetTrace") and not battle.fx_root.has_node("AttackImpact") and battle.fx_root.has_node("DyingNotice"), "减少动态效果后停掉现有轨迹并保留濒死提示")
+	var notice := battle._pz_add(_mk("补给"), "救援", Vector2.ZERO)
+	_ok(notice != null and notice.visible and notice.position.is_equal_approx(battle._pz_slot(0, 1)), "减少动态效果后处理区牌直接到位，保留牌面信息")
+	await _close_battle(battle)
 
 
 func _reg_v44() -> void:
@@ -3739,6 +4022,30 @@ func _reg_v44() -> void:
 	# V44-3: 主页每日委托浮层与详情页伪Live2D呼吸组件正常构建
 	main_ref.show_home()
 	await _frames(2)
+	var home_lines := 0
+	var home_lines_visible := true
+	for node in main_ref.screen_root.find_children("*", "Button", true, false):
+		var button := node as Button
+		if not button.has_meta("_last_dis"):
+			continue
+		for child in button.find_children("*", "Label", true, false):
+			var label := child as Label
+			home_lines += 1
+			home_lines_visible = home_lines_visible and label.get_visible_line_count() == 1 and button.get_global_rect().grow(1.0).encloses(label.get_global_rect())
+	_ok(home_lines > 0 and home_lines_visible, "V44-3 主页按钮的标题和副标题均完整显示在按钮内")
+	var carousel: Control = main_ref.screen_root.find_child("LobbyArtCarousel", true, false)
+	if carousel != null:
+		var current := carousel.get_node("CurrentArt") as TextureRect
+		var incoming := carousel.get_node("IncomingArt") as TextureRect
+		var mask := current.material as ShaderMaterial
+		_ok(current.texture != null and current.stretch_mode == TextureRect.STRETCH_KEEP_ASPECT_COVERED and current.get_rect() == Rect2(Vector2.ZERO, carousel.size) and mask != null and mask.get_shader_parameter("frame_size") == carousel.size, "V44-3 大厅插画从圆角边缘铺满画框")
+		var next_dot := carousel.find_child("SlideDot2", true, false) as Button
+		if next_dot != null:
+			next_dot.pressed.emit()
+			await get_tree().create_timer(0.65).timeout
+		_ok(next_dot != null and current.texture != null and current.texture.resource_path.ends_with("library.webp") and incoming.texture == null, "V44-3 大厅圆点能切换插画，过渡结束后释放上一帧图层")
+	else:
+		_ok(false, "V44-3 大厅轮播已构建")
 	main_ref._open_daily_overlay()
 	await _frames(2)
 	_ok(main_ref._daily_overlay != null and is_instance_valid(main_ref._daily_overlay), "V44-3a 主页每日社团委托浮层可正常打开")
@@ -3775,12 +4082,15 @@ func _reg_v44() -> void:
 	bs45._update_action_bar()
 	await _frames(2)
 	# 1) 认输二次确认不重叠倍速
+	bs45.tools_btn.pressed.emit()
+	await _frames(2)
 	bs45._style_concede_btn(true)
 	await _frames(1)
 	var cr: Rect2 = bs45.concede_btn.get_global_rect()
 	var sr45: Rect2 = bs45.speed_btn.get_global_rect()
-	_ok(not cr.intersects(sr45), "V44.1-1a 认输二次确认不与倍速按钮重叠")
+	_ok(bs45.concede_btn.is_visible_in_tree() and bs45.speed_btn.is_visible_in_tree() and bs45.concede_btn.text == "确认认输" and not cr.intersects(sr45), "V44.1-1a 对局工具内可见的认输二次确认不与倍速按钮重叠")
 	bs45._style_concede_btn(false)
+	bs45._set_tools_open(false)
 	# 2) 木牛流马右侧技能不撞进战报栏
 	var log_x: float = bs45.log_panel.get_global_rect().position.x
 	var muniu_ok := true
@@ -3805,6 +4115,28 @@ func _reg_v44() -> void:
 	var gbtn_sz := (sp1.get_node("GuessBtn") as Control).size
 	var ebtn_sz := (sp1.get_node("EmoteBtn") as Control).size
 	_ok(gp_styled and gbtn_sz.y >= 46.0 and ebtn_sz.x >= 56.0 and ebtn_sz.y >= 46.0, "V44.1-1d 猜身份弹框全状态美化且座位按钮触控区>=46px")
+	_ok(not bs45.tools_layer.visible and not bs45.info_overlay.visible, "HUD 对局工具与座次表默认收起")
+	bs45.tools_btn.pressed.emit()
+	var seat_list_btn: Button
+	for option in bs45.tools_layer.find_children("*", "Button", true, false):
+		if option.text == "座次表":
+			seat_list_btn = option as Button
+			break
+	if seat_list_btn != null:
+		seat_list_btn.pressed.emit()
+	_ok(seat_list_btn != null and not bs45.tools_layer.visible and bs45.info_overlay.visible and bs45.info_text.text.contains("2号位"), "HUD 工具菜单能打开座次表，记录当前座位")
+	bs45.info_overlay.hide()
+	bs45.log_msg("本回合开始")
+	bs45.log_msg("最新事件")
+	_ok(bs45.log_label.text == "最新事件", "HUD 常驻战报仅更新最近一条事件")
+	bs45.targeting = true
+	bs45.target_candidates = [0, 1]
+	bs45.sel_target = 1
+	bs45.extra_target = 0
+	bs45.refresh()
+	var target_tag := sp1.get_node("TargetTag") as Label
+	var self_tag := bs45.me_panel_ref.get_node("TargetTag") as Label
+	_ok(target_tag.visible and target_tag.text == "① 已选" and self_tag.visible and self_tag.text == "② 已选", "HUD 用文字和序号区分两个已选目标")
 	await _close_battle(bs45)
 	Meta44.reset_for_test("/tmp/qmxs_v44_meta_test.json")
 	Meta44.path = old_p44

@@ -3,6 +3,7 @@ extends RefCounted
 # 所有卡图均为本项目原创生成（同名牌共用一张），不含任何第三方游戏素材。
 
 const CardDefsA = preload("res://data/cards.gd")
+const UiPalette = preload("res://scripts/ui_palette.gd")
 
 # ---- 调色板（樱花动漫风）----
 const BLOSSOM := Color(1.0, 0.48, 0.66)        # 主色：樱粉
@@ -116,6 +117,20 @@ static func back_tex() -> Texture2D:
 	return card_tex("__back__")
 
 
+static func card_thumbnail(nm: String) -> Texture2D:
+	var slug := String(SLUG.get(nm, ""))
+	return null if slug.is_empty() else _load_thumbnail("res://assets/cards/%s.webp" % slug)
+
+
+static func _load_thumbnail(original: String) -> Texture2D:
+	var path := original.replace("res://assets/", "res://assets/thumbnails/")
+	if ResourceLoader.exists(path, "Texture2D"):
+		return load(path) as Texture2D
+	if ResourceLoader.exists(original, "Texture2D"):
+		return load(original) as Texture2D
+	return null
+
+
 static func suit_sym(suit: String) -> String:
 	return String({"红桃": "♥", "方块": "♦", "梅花": "♣", "黑桃": "♠"}.get(suit, ""))
 
@@ -143,12 +158,18 @@ static func bold_font() -> Font:
 
 
 # 按目标框宽高比 aspect(w/h) 裁 CG：zoom=显示 CG 高度的比例（1=整张高），face_y=脸在框内的纵向位置
-static func cg_crop(ch: Dictionary, aspect: float, zoom: float = 1.0, face_y: float = 0.30) -> Texture2D:
+static func cg_crop(ch: Dictionary, aspect: float, zoom: float = 1.0, face_y: float = 0.30, thumbnail: bool = false) -> Texture2D:
 	var path := String(ch.get("portrait", ""))
+	if path.is_empty():
+		return null
 	var key := "%s@%.3f@%.2f@%.2f" % [path, aspect, zoom, face_y]
-	if _cg_cache.has(key):
+	if not thumbnail and _cg_cache.has(key):
 		return _cg_cache[key]
-	var base: Texture2D = load(path) if path != "" and ResourceLoader.exists(path) else null
+	var base: Texture2D
+	if thumbnail:
+		base = _load_thumbnail(path)
+	elif ResourceLoader.exists(path, "Texture2D"):
+		base = load(path) as Texture2D
 	if base == null:
 		return null
 	var sz := base.get_size()
@@ -163,7 +184,8 @@ static func cg_crop(ch: Dictionary, aspect: float, zoom: float = 1.0, face_y: fl
 	var at := AtlasTexture.new()
 	at.atlas = base
 	at.region = Rect2(x, y, w, h)
-	_cg_cache[key] = at
+	if not thumbnail:
+		_cg_cache[key] = at
 	return at
 
 
@@ -203,6 +225,7 @@ static func add_corners(parent: Control, sz: Vector2, cs: float, inset: float = 
 		t.flip_v = k >= 2
 		t.position = Vector2(inset if not t.flip_h else sz.x - cs - inset, inset if not t.flip_v else sz.y - cs - inset)
 		t.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		t.modulate.a = 0.68
 		parent.add_child(t)
 
 
@@ -218,8 +241,8 @@ static func name_plate(ch: Dictionary, fs: int, with_emblem: bool = true) -> Pan
 	pl.name = "Plate"
 	pl.size = Vector2(w, h)
 	pl.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	var sb := _sb(Color(0.20, 0.10, 0.22, 0.86), int(w * 0.5), rc, 2)
-	sb.shadow_color = Color(0, 0, 0, 0.35)
+	var sb := _sb(Color(UiPalette.MILK, 0.94), int(w * 0.5), rc.lerp(UiPalette.LILAC_EDGE, 0.36), 2)
+	sb.shadow_color = UiPalette.SHADOW
 	sb.shadow_size = 4
 	pl.add_theme_stylebox_override("panel", sb)
 	if with_emblem:
@@ -241,9 +264,7 @@ static func name_plate(ch: Dictionary, fs: int, with_emblem: bool = true) -> Pan
 	l.text = "\n".join(chars)
 	l.add_theme_font_override("font", bold_font())
 	l.add_theme_font_size_override("font_size", nfs)
-	l.add_theme_color_override("font_color", Color(1.0, 0.97, 0.92))
-	l.add_theme_color_override("font_outline_color", Color(0.35, 0.12, 0.25))
-	l.add_theme_constant_override("outline_size", maxi(3, fs / 6))
+	l.add_theme_color_override("font_color", UiPalette.INK)
 	l.add_theme_constant_override("line_spacing", int(-fs * 0.22))
 	l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	l.position = Vector2(0, em + 4.0)
@@ -255,7 +276,7 @@ static func name_plate(ch: Dictionary, fs: int, with_emblem: bool = true) -> Pan
 	r.text = rar
 	r.add_theme_font_override("font", bold_font())
 	r.add_theme_font_size_override("font_size", maxi(11, int(fs * 0.5)))
-	r.add_theme_color_override("font_color", rc.lightened(0.35))
+	r.add_theme_color_override("font_color", rc.darkened(0.48))
 	r.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	r.position = Vector2(0, h - fs * 0.9 - 6.0)
 	r.size = Vector2(w, fs * 0.8)
@@ -264,8 +285,8 @@ static func name_plate(ch: Dictionary, fs: int, with_emblem: bool = true) -> Pan
 	return pl
 
 
-# 完整 CG 卡面：CG + 华丽金框 + 四角饰 + 左侧竖排名牌（徽标/稀有度）+ 体力樱花 + 底部称号。
-# opt: zoom(默认 1) / face_y / name(默认 true) / hp(默认 true) / title(默认 size.y>=300) / fs(名字字号)
+# 完整 CG 卡面：立绘、稀有度色边框、竖排名牌、体力樱花和称号。
+# opt: zoom(默认 1) / face_y / name(默认 true) / hp(默认 true) / title(默认 size.y>=300) / fs(名字字号) / thumbnail(图鉴缩略图)
 static func cg_card(ch: Dictionary, size: Vector2, opt: Dictionary = {}) -> Control:
 	var root := Control.new()
 	root.name = "CgCard"
@@ -278,9 +299,9 @@ static func cg_card(ch: Dictionary, size: Vector2, opt: Dictionary = {}) -> Cont
 	back.name = "Back"
 	back.size = size
 	back.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	var bsb := _sb(Color(0.20, 0.10, 0.22), int(bw * 3), GOLD, int(bw))
-	bsb.shadow_color = Color(0.25, 0.08, 0.2, 0.45)
-	bsb.shadow_size = int(bw * 2.5)
+	var bsb := _sb(UiPalette.MILK, int(bw * 3), rarc.lerp(UiPalette.LILAC_EDGE, 0.46), int(bw))
+	bsb.shadow_color = UiPalette.SHADOW
+	bsb.shadow_size = int(bw * 1.5)
 	back.add_theme_stylebox_override("panel", bsb)
 	root.add_child(back)
 	var clip := Control.new()
@@ -292,7 +313,7 @@ static func cg_card(ch: Dictionary, size: Vector2, opt: Dictionary = {}) -> Cont
 	root.add_child(clip)
 	var tr := TextureRect.new()
 	tr.name = "CG"
-	tr.texture = cg_crop(ch, clip.size.x / maxf(clip.size.y, 1.0), float(opt.get("zoom", 1.0)), float(opt.get("face_y", 0.30)))
+	tr.texture = cg_crop(ch, clip.size.x / maxf(clip.size.y, 1.0), float(opt.get("zoom", 1.0)), float(opt.get("face_y", 0.30)), bool(opt.get("thumbnail", false)))
 	tr.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	tr.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
 	tr.size = clip.size
@@ -303,8 +324,8 @@ static func cg_card(ch: Dictionary, size: Vector2, opt: Dictionary = {}) -> Cont
 	shade.name = "Shade"
 	var gt := GradientTexture2D.new()
 	var gr := Gradient.new()
-	gr.set_color(0, Color(0.12, 0.05, 0.14, 0.0))
-	gr.set_color(1, Color(0.12, 0.05, 0.14, 0.78))
+	gr.set_color(0, Color(UiPalette.NIGHT_PANEL, 0.0))
+	gr.set_color(1, Color(UiPalette.NIGHT_PANEL, 0.74))
 	gt.gradient = gr
 	gt.fill_from = Vector2(0, 0)
 	gt.fill_to = Vector2(0, 1)
@@ -352,9 +373,9 @@ static func cg_card(ch: Dictionary, size: Vector2, opt: Dictionary = {}) -> Cont
 		tl.text = String(ch["title"])
 		tl.add_theme_font_override("font", bold_font())
 		tl.add_theme_font_size_override("font_size", maxi(13, int(fs * 0.62)))
-		tl.add_theme_color_override("font_color", Color(1.0, 0.92, 0.75))
-		tl.add_theme_color_override("font_outline_color", Color(0.25, 0.08, 0.2, 0.9))
-		tl.add_theme_constant_override("outline_size", 4)
+		tl.add_theme_color_override("font_color", UiPalette.NIGHT_INK)
+		tl.add_theme_color_override("font_outline_color", UiPalette.NIGHT_PANEL)
+		tl.add_theme_constant_override("outline_size", 3)
 		tl.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 		tl.position = Vector2(bw + fs * 1.6, size.y - bw - fs * 1.25)
 		tl.size = Vector2(size.x - bw * 2 - fs * 2.1, fs)
@@ -366,6 +387,6 @@ static func cg_card(ch: Dictionary, size: Vector2, opt: Dictionary = {}) -> Cont
 
 # 浮在背景图上的标题/说明文字：统一加奶油色描边（昼夜背景都能读清）
 static func halo(l: Label, px: int = 8) -> Label:
-	l.add_theme_color_override("font_outline_color", Color(1.0, 0.97, 0.94, 0.92))
+	l.add_theme_color_override("font_outline_color", Color(UiPalette.MILK, 0.94))
 	l.add_theme_constant_override("outline_size", px)
 	return l
