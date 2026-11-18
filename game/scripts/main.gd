@@ -623,8 +623,11 @@ func show_home() -> void:
 		wrap_b.set_meta("intro", IntroPop.char_spec(ch_d))
 		var idx_s := slot_i
 		wrap_b.pressed.connect(func() -> void:
-			AudioCfg.play_ui(self, "skill")
-			_on_home_showcase_clicked(idx_s))
+			Meta.add_affection(pid, 2)
+			_on_home_showcase_clicked(idx_s)
+			var new_pid := String(home_showcase_ids[idx_s]) if idx_s < home_showcase_ids.size() else pid
+			if not AudioCfg.play_cv(self, new_pid, "touch"):
+				AudioCfg.play_ui(self, "skill"))
 		strip.add_child(wrap_b)
 	vb.add_child(strip)
 
@@ -807,7 +810,9 @@ func make_char_card(c: Dictionary, scroll: ScrollContainer = null) -> Button:
 	var cst := Meta.char_stats_by_name(String(c["name"]))
 	var cg_n := int(cst.get("games", 0))
 	var cw_n := int(cst.get("wins", 0))
-	var stat_suf := " · 🚫已禁用" if banned_m else (" · %d胜/%d局" % [cw_n, cg_n] if cg_n > 0 else "")
+	var blv_m := Meta.bond_level(cid_m)
+	var bond_tag := (" · 💍誓约" if blv_m >= 5 else (" · ♥Lv%d" % blv_m if Meta.affection(cid_m) > 0 else ""))
+	var stat_suf := " · 🚫已禁用" if banned_m else (bond_tag + (" · %d胜" % cw_n if cw_n > 0 else ""))
 	var skl := lbl(" ".join(PackedStringArray(sk_names)) + stat_suf, 21, C_PINK_DEEP if banned_m else C_INK_SOFT, banned_m, HORIZONTAL_ALIGNMENT_CENTER)
 	skl.mouse_filter = MOUSE_FILTER_IGNORE
 	vb.add_child(skl)
@@ -851,11 +856,14 @@ func show_detail(c: Dictionary) -> void:
 	row.add_theme_constant_override("separation", 36)
 	vb.add_child(row)
 
+	var cid_touch := String(c["id"])
+	var is_vow_c := Meta.is_vowed(cid_touch)
 	var left := PanelContainer.new()
 	left.custom_minimum_size = Vector2(560, 0)
-	left.add_theme_stylebox_override("panel", style(Color(1, 1, 1, 0.75), 28, C_GOLD, 3, true))
+	left.add_theme_stylebox_override("panel", style(Color(1, 0.95, 0.98, 0.90) if is_vow_c else Color(1, 1, 1, 0.75), 28, C_PINK_DEEP if is_vow_c else C_GOLD, 4 if is_vow_c else 3, true))
 	var lcc := CenterContainer.new()
-	lcc.add_child(Art.cg_card(c, Vector2(520, 693), {"fs": 44}))
+	var cg_wrap := Art.cg_card(c, Vector2(520, 693), {"fs": 44})
+	lcc.add_child(cg_wrap)
 	left.add_child(lcc)
 	row.add_child(left)
 
@@ -899,52 +907,85 @@ func show_detail(c: Dictionary) -> void:
 	var cxp := int(cstat.get("xp", 0))
 	var lv_d := Meta.level_of(cxp)
 	var rate_s := (" · 胜率 %.0f%%" % (100.0 * float(cw) / float(cg))) if cg > 0 else ""
-	var stat_lbl := lbl("战绩：Lv.%d · %d 胜 / %d 局%s" % [lv_d, cw, cg, rate_s], 25, C_INK_SOFT, true)
+	var stat_lbl := lbl("战绩：Lv.%d · %d 胜 / %d 局%s  |  羁绊：%s  |  🪙欢斗豆：%d" % [lv_d, cw, cg, rate_s, Meta.bond_title(cid_d), Meta.beans()], 23, C_INK_SOFT, true)
+	stat_lbl.autowrap_mode = TextServer.AUTOWRAP_OFF
 	rv.add_child(stat_lbl)
 	var act_hb := HBoxContainer.new()
-	act_hb.add_theme_constant_override("separation", 16)
+	act_hb.add_theme_constant_override("separation", 12)
 	rv.add_child(act_hb)
 	var sc_list := Meta.get_showcase(Characters.LIST)
 	var is_pin := (not sc_list.is_empty() and String(sc_list[0]) == cid_d)
-	var mk_det_btn := func(txt: String, bg: Color) -> Button:
+	var mk_det_btn := func(txt: String, bg: Color, w_min: float = 216.0) -> Button:
 		var b := Button.new()
 		b.text = txt
-		b.custom_minimum_size = Vector2(280, 58)
+		b.custom_minimum_size = Vector2(w_min, 54)
 		b.focus_mode = Control.FOCUS_NONE
 		b.add_theme_font_override("font", font_bold)
-		b.add_theme_font_size_override("font_size", 24)
+		b.add_theme_font_size_override("font_size", 22)
 		b.add_theme_color_override("font_color", C_WHITE)
 		b.add_theme_stylebox_override("normal", style(bg, 16, C_GOLD, 2, true))
 		b.add_theme_stylebox_override("hover", style(bg.lightened(0.08), 16, C_GOLD, 2, true))
 		return b
-	var pin_b: Button = mk_det_btn.call("★ 当前首页主看板" if is_pin else "☆ 设为首页看板", C_GOLD if is_pin else C_PLATE)
+	var pin_b: Button = mk_det_btn.call("★ 当前看板" if is_pin else "☆ 设为看板", C_GOLD if is_pin else C_PLATE, 196.0)
 	pin_b.pressed.connect(func() -> void:
+		AudioCfg.play_ui(self, "click")
 		home_showcase_ids = Meta.pin_showcase_char(cid_d)
 		show_detail(c))
 	act_hb.add_child(pin_b)
 	var is_ban := Meta.is_char_banned(cid_d)
-	var ban_b: Button = mk_det_btn.call("✓ 已禁用（点击恢复）" if is_ban else "🚫 禁用点将池", Color(0.55, 0.36, 0.42) if is_ban else Color(0.45, 0.45, 0.56))
-	var ban_msg := lbl("", 22, C_PINK_DEEP, true)
+	var ban_b: Button = mk_det_btn.call("✓ 已禁用(恢复)" if is_ban else "🚫 禁用点将", Color(0.55, 0.36, 0.42) if is_ban else Color(0.45, 0.45, 0.56), 196.0)
+	var ban_msg := lbl("", 21, C_PINK_DEEP, true)
+	ban_msg.autowrap_mode = TextServer.AUTOWRAP_OFF
 	ban_b.pressed.connect(func() -> void:
+		AudioCfg.play_ui(self, "click")
 		if Meta.toggle_ban_char(cid_d, Characters.LIST.size()):
 			show_detail(c)
 		else:
 			ban_msg.text = "至少需保留 8 名启用武将，无法继续禁用！")
 	act_hb.add_child(ban_b)
-	var v_cats := ["skill", "attack", "heal", "hurt", "dying"]
-	var v_names := ["必杀台词", "出击台词", "回复台词", "受创台词", "绝境台词"]
+	var v_cats := ["touch", "skill", "attack", "hurt", "dying", "vow"]
+	var v_names := ["摸头互动", "必杀语音", "出击语音", "受创语音", "绝境语音", "💍誓约告白"]
 	var v_idx := [0]
-	var v_lbl := lbl("🎙 必杀台词：「%s」" % BattleScreen.line_for(cid_d, "skill"), 23, C_PINK_DEEP, true)
+	var v_lbl := lbl("🎙 点击左侧立绘触摸部位（头/脸/心口）或点按钮试听：「%s」" % BattleScreen.line_for(cid_d, "head"), 22, C_PINK_DEEP, true)
 	v_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	var voice_b: Button = mk_det_btn.call("🎙 台词鉴赏", Color(0.62, 0.36, 0.78))
-	voice_b.custom_minimum_size = Vector2(220, 58)
+	var voice_b: Button = mk_det_btn.call("🎙 语音鉴赏", Color(0.62, 0.36, 0.78), 186.0)
 	voice_b.pressed.connect(func() -> void:
-		AudioCfg.play_ui(self, "skill")
 		v_idx[0] = (int(v_idx[0]) + 1) % v_cats.size()
 		var cat_k := String(v_cats[int(v_idx[0])])
 		var cat_n := String(v_names[int(v_idx[0])])
-		v_lbl.text = "🎙 %s：「%s」" % [cat_n, BattleScreen.line_for(cid_d, cat_k)])
+		if cat_k == "vow" and not Meta.is_vowed(cid_d):
+			AudioCfg.play_ui(self, "click")
+			v_lbl.text = "🔒 💍誓约告白需好感度达到 Lv.5（500♥）解锁！当前：%s" % Meta.bond_title(cid_d)
+			return
+		if not AudioCfg.play_cv(self, cid_d, cat_k):
+			AudioCfg.play_ui(self, "skill")
+		v_lbl.text = "🎙 %s：「%s」" % [cat_n, BattleScreen.line_for(cid_d, "head" if cat_k == "touch" else cat_k)])
 	act_hb.add_child(voice_b)
+	var gift_b: Button = mk_det_btn.call("🎁 赠礼(100🪙+35♥)", Color(0.92, 0.42, 0.58), 236.0)
+	gift_b.pressed.connect(func() -> void:
+		var gr := Meta.gift_char(cid_d, 100, 35)
+		if not bool(gr.get("ok", false)):
+			AudioCfg.play_ui(self, "click")
+			ban_msg.text = String(gr.get("msg", "欢斗豆不足"))
+			return
+		if not AudioCfg.play_cv(self, cid_d, "touch"):
+			AudioCfg.play_ui(self, "heal")
+		stat_lbl.text = "战绩：Lv.%d · %d 胜 / %d 局%s  |  羁绊：%s  |  🪙欢斗豆：%d" % [lv_d, cw, cg, rate_s, Meta.bond_title(cid_d), Meta.beans()]
+		var g_line := BattleScreen.line_for(cid_d, "vow" if bool(gr.get("vowed", false)) else "head")
+		v_lbl.text = ("💍 【达成永恒誓约！】「%s」" % g_line) if bool(gr.get("vowed", false)) else ("🎁 【收到礼物 · 好感+35♥】「%s」" % g_line))
+	act_hb.add_child(gift_b)
+	left.gui_input.connect(func(ev: InputEvent) -> void:
+		if ev is InputEventMouseButton and (ev as InputEventMouseButton).pressed and (ev as InputEventMouseButton).button_index == MOUSE_BUTTON_LEFT:
+			var mb := ev as InputEventMouseButton
+			var ry := clampf(mb.position.y / maxf(left.size.y, 1.0), 0.0, 1.0)
+			var zone_cat := "head" if ry < 0.30 else ("face" if ry < 0.52 else ("body" if ry < 0.76 else "attack"))
+			var zone_nm := "🌸摸头杀(+2♥)" if zone_cat == "head" else ("💕轻触脸颊(+2♥)" if zone_cat == "face" else ("💓心口互动(+2♥)" if zone_cat == "body" else "✨并肩互动(+2♥)"))
+			var cv_cat := "touch" if (zone_cat == "head" or zone_cat == "face") else ("hurt" if zone_cat == "body" else "attack")
+			Meta.add_affection(cid_d, 2)
+			if not AudioCfg.play_cv(self, cid_d, cv_cat):
+				AudioCfg.play_ui(self, "heal")
+			stat_lbl.text = "战绩：Lv.%d · %d 胜 / %d 局%s  |  羁绊：%s  |  🪙欢斗豆：%d" % [lv_d, cw, cg, rate_s, Meta.bond_title(cid_d), Meta.beans()]
+			v_lbl.text = "%s：「%s」" % [zone_nm, BattleScreen.line_for(cid_d, zone_cat)])
 	rv.add_child(v_lbl)
 	rv.add_child(ban_msg)
 	row.add_child(right)

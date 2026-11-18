@@ -370,6 +370,7 @@ func _run_reg_test() -> void:
 	await _reg_v39()
 	await _reg_v40()
 	await _reg_v41()
+	await _reg_v42()
 	_reg_lines.append("REGTEST_DONE tests=%d fails=%d" % [_reg_n, _reg_fails])
 	_write("/tmp/ask_regtest.txt", _reg_lines)
 	print(_reg_lines[_reg_lines.size() - 1])
@@ -3532,5 +3533,60 @@ func _reg_v41() -> void:
 	await _close_battle(bs41)
 	main_ref.show_detail(Characters.by_id("mafuyu"))
 	await _frames(2)
+	main_ref.show_home()
+	await _frames(2)
+
+
+func _reg_v42() -> void:
+	const Audio42 = preload("res://scripts/audio.gd")
+	const Meta42 = preload("res://scripts/meta.gd")
+	const BS42 = preload("res://scripts/battle.gd")
+
+	# V42-1: 全部 19 名角色 × 5 类 = 95 条二次元少女 CV 语音文件可加载
+	var cv_miss: Array = []
+	for c in Characters.LIST:
+		var cid := String(c["id"])
+		for cat in ["skill", "attack", "hurt", "dying", "touch"]:
+			if Audio42.cv_stream(cid, cat) == null:
+				cv_miss.append(cid + ":" + cat)
+	_ok(cv_miss.is_empty(), "V42-1 全 %d 名角色 95 条二次元 CV 语音（.ogg）齐全可加载" % Characters.LIST.size())
+
+	# V42-2: 全部 19 名角色多部位触摸互动与誓约台词（head/face/body/vow）齐全
+	var touch_miss: Array = []
+	for c in Characters.LIST:
+		var cid := String(c["id"])
+		for tcat in ["head", "face", "body", "vow"]:
+			if BS42.line_for(cid, tcat) == "":
+				touch_miss.append(cid + ":" + tcat)
+	_ok(touch_miss.is_empty(), "V42-2 全 %d 名角色多部位触摸互动与誓约告白台词 100%% 覆盖" % Characters.LIST.size())
+
+	# V42-3: 好感度/羁绊等级（Lv1~Lv5）、欢斗豆送礼与永恒誓约解锁
+	var old_p42: String = Meta42.path
+	Meta42.reset_for_test("/tmp/qmxs_v42_meta_test.json")
+	_ok(Meta42.bond_level("mafuyu") == 1 and not Meta42.is_vowed("mafuyu"), "V42-3a 初始羁绊等级为 Lv.1 初识")
+	var gr1: Dictionary = Meta42.gift_char("mafuyu", 100, 60)
+	_ok(bool(gr1.get("ok", false)) and Meta42.beans() == 900 and Meta42.bond_level("mafuyu") == 2, "V42-3b 消耗欢斗豆赠礼提升好感度并升至 Lv.2 熟稔")
+	Meta42.add_affection("mafuyu", 450)
+	_ok(Meta42.bond_level("mafuyu") == 5 and Meta42.is_vowed("mafuyu") and Meta42.bond_title("mafuyu").find("誓约") >= 0, "V42-3c 满 500 好感度达成 Lv.5 永恒誓约")
+
+	# V42-4: 牌桌鲜花/应援互动投掷与必杀 Cut-in
+	main_ref.clear_screen()
+	var bs42 = BS42.new()
+	bs42.set_anchors_preset(Control.PRESET_FULL_RECT)
+	bs42.go_home = Callable(main_ref, "show_home")
+	main_ref.screen_root.add_child(bs42)
+	bs42.build_table()
+	bs42.players = [
+		{"seat": 0, "char": Characters.by_id("hina"), "alive": true},
+		{"seat": 1, "char": Characters.by_id("mafuyu"), "alive": true},
+	]
+	await _frames(2)
+	var aff_before := Meta42.affection(String(bs42.players[1]["char"]["id"]))
+	bs42._throw_seat_emote(1)
+	var aff_after := Meta42.affection(String(bs42.players[1]["char"]["id"]))
+	_ok(aff_after == aff_before + 2, "V42-4 牌桌向角色投掷鲜花互动增加 2 点好感度")
+	await _close_battle(bs42)
+	Meta42.reset_for_test("/tmp/qmxs_v42_meta_test.json")
+	Meta42.path = old_p42
 	main_ref.show_home()
 	await _frames(2)

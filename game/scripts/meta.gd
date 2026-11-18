@@ -41,7 +41,7 @@ const ACHIEVEMENTS := [
 
 
 static func _blank() -> Dictionary:
-	return {"version": 2, "records": [], "totals": {}, "chars": {}, "ach": {}, "puzzles": {}, "beans": 1000, "win_streak": 0, "best_streak": 0, "tutorial_done": false, "banned_chars": [], "showcase": ["sena", "hina", "reo"]}
+	return {"version": 2, "records": [], "totals": {}, "chars": {}, "ach": {}, "puzzles": {}, "beans": 1000, "win_streak": 0, "best_streak": 0, "tutorial_done": false, "banned_chars": [], "showcase": ["sena", "hina", "reo"], "affection": {}}
 
 
 static func load_data() -> Dictionary:
@@ -159,6 +159,10 @@ static func record(rec: Dictionary) -> Dictionary:
 	cs["wins"] = int(cs["wins"]) + (1 if won else 0)
 	cs["xp"] = int(cs["xp"]) + xp
 	d["chars"][cn] = cs
+	var aff_d: Dictionary = d.get("affection", {})
+	var cur_aff := int(aff_d.get(cn, 0))
+	aff_d[cn] = clampi(cur_aff + (15 if won else 5), 0, 999)
+	d["affection"] = aff_d
 	var binfo := {}
 	if rec.has("beans_delta"):
 		binfo = _apply_beans(d, int(rec["beans_delta"]))
@@ -386,3 +390,82 @@ static func char_stats_by_name(cname: String) -> Dictionary:
 
 static func best_streak() -> int:
 	return int(load_data().get("best_streak", 0))
+
+
+# ---------------- V0.42 二次元好感度/羁绊养成与欢斗豆送礼誓约系统 ----------------
+const BOND_TITLES := ["初识", "熟稔", "倾心", "宠爱", "💍誓约"]
+const BOND_THRESH := [0, 50, 150, 300, 500]
+
+
+static func _aff_key(cid_or_name: String) -> String:
+	var CharsM = load("res://data/characters.gd")
+	for c in CharsM.LIST:
+		if String(c["id"]) == cid_or_name or String(c["name"]) == cid_or_name:
+			return String(c["id"])
+	return cid_or_name
+
+
+static func affection(cid_or_name: String) -> int:
+	var d := load_data()
+	var aff_d: Dictionary = d.get("affection", {})
+	var k := _aff_key(cid_or_name)
+	if aff_d.has(k):
+		return int(aff_d[k])
+	var CharsM = load("res://data/characters.gd")
+	var ch: Dictionary = CharsM.by_id(k)
+	if not ch.is_empty() and aff_d.has(String(ch["name"])):
+		return int(aff_d[String(ch["name"])])
+	return 0
+
+
+static func add_affection(cid_or_name: String, delta: int) -> int:
+	var d := load_data()
+	var aff_d: Dictionary = d.get("affection", {})
+	var k := _aff_key(cid_or_name)
+	var cur := affection(k)
+	var nv := clampi(cur + delta, 0, 999)
+	aff_d[k] = nv
+	d["affection"] = aff_d
+	save()
+	return nv
+
+
+static func bond_level(cid_or_name: String) -> int:
+	var a := affection(cid_or_name)
+	if a >= 500:
+		return 5
+	if a >= 300:
+		return 4
+	if a >= 150:
+		return 3
+	if a >= 50:
+		return 2
+	return 1
+
+
+static func is_vowed(cid_or_name: String) -> bool:
+	return bond_level(cid_or_name) >= 5
+
+
+static func bond_title(cid_or_name: String) -> String:
+	var lv := bond_level(cid_or_name)
+	var a := affection(cid_or_name)
+	var nxt := 500 if lv >= 4 else int(BOND_THRESH[lv])
+	return "♥Lv.%d %s（%d/%d）" % [lv, String(BOND_TITLES[lv - 1]), a, nxt]
+
+
+static func gift_char(cid_or_name: String, cost_beans: int = 100, gain_aff: int = 35) -> Dictionary:
+	var d := load_data()
+	var cur_b := int(d.get("beans", 1000))
+	if cur_b < cost_beans:
+		return {"ok": false, "msg": "欢斗豆不足（需 %d 🪙，当前 %d 🪙）" % [cost_beans, cur_b]}
+	d["beans"] = cur_b - cost_beans
+	var aff_d: Dictionary = d.get("affection", {})
+	var k := _aff_key(cid_or_name)
+	var old_lv := bond_level(k)
+	var nv := clampi(affection(k) + gain_aff, 0, 999)
+	aff_d[k] = nv
+	d["affection"] = aff_d
+	save()
+	var new_lv := bond_level(k)
+	return {"ok": true, "beans": int(d["beans"]), "affection": nv, "level": new_lv, "level_up": new_lv > old_lv, "vowed": new_lv >= 5}

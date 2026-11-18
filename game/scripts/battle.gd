@@ -1179,6 +1179,18 @@ func make_seat_panel(seat_idx: int) -> Button:
 	gb.pressed.connect(func() -> void: _open_guess(seat_idx))
 	gb.visible = false
 	b.add_child(gb)
+	var eb := Button.new()
+	eb.name = "EmoteBtn"
+	eb.focus_mode = Control.FOCUS_NONE
+	eb.position = Vector2(194, 268)
+	eb.size = Vector2(46, 36)
+	eb.text = "🌹"
+	eb.add_theme_font_override("font", font_bold)
+	eb.add_theme_font_size_override("font_size", 19)
+	eb.add_theme_stylebox_override("normal", style(Color(0.30, 0.14, 0.28, 0.78), 12, C_GOLD, 1))
+	eb.add_theme_stylebox_override("hover", style(Color(0.45, 0.20, 0.38, 0.92), 12, C_GOLD, 2))
+	eb.pressed.connect(func() -> void: _throw_seat_emote(seat_idx))
+	b.add_child(eb)
 	b.set_meta("seat", seat_idx)
 	b.set_meta("intro", Callable(self, "_intro_seat").bind(seat_idx))
 	b.pressed.connect(func() -> void: _on_seat_clicked(seat_idx))
@@ -1678,6 +1690,9 @@ func refresh() -> void:
 		var gm := String(guess_marks.get(seat_idx, ""))
 		var gbtn := panel.get_node("GuessBtn") as Button
 		gbtn.visible = game_mode == "identity" and bool(p["alive"]) and idt.begins_with("？")
+		var ebtn := panel.get_node_or_null("EmoteBtn") as Button
+		if ebtn != null:
+			ebtn.visible = bool(p["alive"]) and not targeting
 		gbtn.text = gm if gm != "" else "猜"
 		var info: Label = panel.get_node("Info")
 		# V0.25/V0.33 距离与可达性动态角标（随当前选中的牌实时提示：突击/顺手/断粮/逐近弃远）
@@ -4852,7 +4867,32 @@ const CHAR_LINES := {
 }
 
 
+const TOUCH_LINES := {
+	"hina": {"head": "诶？摸头的话会害羞啦，不过感觉暖洋洋的呢～", "face": "脸颊红了吗？一定是因为樱花瓣映的啦！", "body": "校服上还带着神社的樱花香哦～", "vow": "我的第一千支花签，写下的全都是你的名字……今后也请一直牵着我的手吧。"},
+	"rena": {"head": "笨、笨蛋！乱摸风纪委员的头，要扣分的哦！", "face": "别捏我脸啦！威严都要没有了！", "body": "袖章歪了吗？哼，那你帮我戴好不就行了……", "vow": "校规第零条：柚木铃奈的心，只属于你一个人……不许违抗！"},
+	"kaori": {"head": "嘿嘿，是粉丝福利时间吗？最喜欢你的摸头杀啦！", "face": "靠这么近看我，我会紧张得忘词的～", "body": "舞台打歌服好看吗？专门为你挑的配色哦！", "vow": "哪怕台下有万千星光，我眼中唯一的安可曲，永远只唱给你听！"},
+	"chinatsu": {"head": "哇！别突然揉我头发啦，刚跑完步还热乎乎的呢！", "face": "嘿嘿，脸上沾到汗水了吗？谢啦！", "body": "心跳这么快，肯定不是因为刚跑完冲刺……是因为你啦！", "vow": "无论多远的终点线，只要你在那里等我，我就会第一个冲进你怀里！"},
+	"shizuha": {"head": "嗯……再让我靠在你肩上睡五分钟嘛，暖呼呼的……", "face": "呼啊……捏脸也不会醒的哦……除非亲一下……", "body": "披肩分你一半，一起看今晚的流星吧……", "vow": "漫长夜空里最亮的那颗星，我已经找到了……晚安，我的全世界。"},
+	"hibiki": {"head": "哼，本小姐的头发也是你能随便碰的？……再摸一下也不是不行。", "face": "干、干嘛一直盯着人家的脸看啦，笨蛋！", "body": "礼服勒得有点紧……不许笑！转过去帮我系一下蝴蝶结！", "vow": "这首只属于两人的协奏曲，我要和你弹一辈子，不许中途退场哦！"},
+	"koume": {"head": "主人，今天也辛苦了，被您摸头感觉好幸福呢～", "face": "呜……小梅的脸烫得像刚烧开的茶壶一样了……", "body": "围裙上的蕾丝是小梅亲手缝的，您喜欢吗？", "vow": "无论清晨的热茶还是余生的每个夜晚，小梅都想永远侍奉在您身旁。"},
+	"sena": {"head": "在学生会室对我做这种事……咳，下不为例，只允许你一个人哦。", "face": "靠得太近了……学生会长也是会害羞的。", "body": "学生会长的披风很重，但有你在身边，就觉得无比安心。", "vow": "推算过亿万种星辰轨迹，唯有与你相伴的未来，是我唯一的最高决议。"},
+	"reo": {"head": "喂！剑道主将的马尾可不能乱碰……算了，随你吧。", "face": "我的眼神很凶吗？面对你的时候，明明已经很温柔了……", "body": "护具下面的心跳声……这么明显吗？", "vow": "我的剑只为斩开阻碍，而我的余生，只为守护你一人而战！"},
+	"mahiru": {"head": "嘘……在图书室靠这么近摸头，心跳声会被听见的……", "face": "你的手指暖暖的，像午后晒过太阳的书页一样。", "body": "想看我怀里的笔记吗？里面夹着为你写的诗哦……", "vow": "昼与夜交替的每一页篇章，我都想与你共同署名，直到故事尽头。"},
+	"aya": {"head": "摸头的话……发簪会歪掉的，不过你的手很温柔呢。", "face": "别一直盯着我看呀，拉弓的手都要抖了……", "vow": "百步穿杨的心眼，从一开始锁定的靶心，就只有你那颗心而已。", "body": "弓道服的系带松了吗？谢谢你提醒我……"},
+	"nana": {"head": "嘿嘿，摸奈奈的头会长不高啦～拿恋爱药水赔我哦！", "face": "前辈的眼神好炽热，比本生灯的温度还高呢！", "body": "白大褂口袋里藏着草莓糖，要我喂你吃一颗吗？", "vow": "经过成千上万次实验证明：你就是让奈奈心动指数无穷大的唯一催化剂！"},
+	"rin": {"head": "算尽了棋盘上的百步变化，却算不准你摸头时的心跳呢。", "face": "投子认负了……被你这样温柔地注视，根本没法冷静思考嘛。", "body": "棋子冰凉，但靠着你的温度刚刚好。", "vow": "这局名为一生的对弈，我甘愿被你『王手』捕获，永不悔棋。"},
+	"yukine": {"head": "手这么暖和……再摸一会儿的话，我的冰霜可要被你融化了。", "face": "脸颊不冷……是你手心的温度太犯规了。", "body": "账本上有一笔无价的呆账，叫做我对你的心意。", "vow": "冬月家的全部预算与我的整颗心，从今天起全部移交由你一人保管。"},
+	"lilia": {"head": "向您献上骑士的忠诚……诶？摸头发可不在骑士礼仪里呀！", "face": "呜……再这样看着我，圣盾都要挡不住脸红了！", "body": "这枚骑士勋章，请允许我别在离你最近的地方。", "vow": "以圣护院之名立下永恒誓约：我的剑、我的盾与我的心，生生世世皆属于你。"},
+	"sakuya": {"head": "如果能把时间停在这一刻，就能一直被你温柔地抚摸了呢。", "face": "钟塔的风很凉，但你的指尖像星光一样温暖。", "body": "怀表的滴答声，不知不觉和你的心跳同步了呢。", "vow": "跨越无数次时计轮回，我终于在时间的尽头握紧了你的手，再也不放开。"},
+	"sana": {"head": "孤高的剑客可不习惯被人摸头……唔，再多摸一会儿也不坏。", "face": "我的围巾很暖和哦，想围在一起的话，再靠近一点吧。", "body": "收集的影羽，其实每一片都藏着思念你的温度。", "vow": "曾以为孤剑天涯便是宿命，直到遇见你，我的刀鞘才有了真正的归处。"},
+	"yuu": {"head": "今天抽到了上上签哦～签文上写着，摸头会让好运翻倍呢～", "face": "占卜巫女的脸颊可是灵力汇聚之处，被你捏一下就满溢出来啦！", "body": "灵札在发光呢，它在告诉我你现在也很喜欢我哦～", "vow": "红线早已在星盘上系成死结，无论今生来世，你都逃不出我的卦象啦～"},
+	"mafuyu": {"head": "明明是风纪巡查时间……被你这样温柔地摸头，怎么冷得下脸嘛。", "face": "雪花落在脸上了？谢、谢谢你帮我拂去……手别急着拿开呀。", "body": "冰晶细剑虽然寒冷，但只要靠近你，心口就会变得滚烫。", "vow": "千早真冬在此签署终身风纪条例：从今往后，我只做你一个人的专属雪樱。"},
+}
+
+
 static func line_for(cid: String, cat: String = "skill") -> String:
+	if TOUCH_LINES.has(cid) and (TOUCH_LINES[cid] as Dictionary).has(cat):
+		return String(TOUCH_LINES[cid][cat])
 	if not CHAR_LINES.has(cid):
 		return ""
 	var entry: Variant = CHAR_LINES[cid].get(cat, "")
@@ -4880,6 +4920,11 @@ func show_bubble(seat: int, cat: String) -> void:
 		return
 	if auto_all:
 		return
+	if not fast and voice_player != null and is_instance_valid(voice_player) and voice_player.is_inside_tree() and bool(AudioCfg.get_v("voice_on")):
+		var cv_st := AudioCfg.cv_stream(cid, cat)
+		if cv_st != null and not voice_player.playing:
+			voice_player.stream = cv_st
+			voice_player.play()
 	if bubble_nodes.has(seat) and is_instance_valid(bubble_nodes[seat]):
 		(bubble_nodes[seat] as Node).queue_free()
 	bubble_order.erase(seat)
@@ -5322,7 +5367,8 @@ func _eng_fx(kind: String, data: Dictionary) -> void:
 			play_sfx("draw")
 		"skill":
 			_count_skill(seat, String(data.get("name", "")))
-			if bool(data.get("big", false)) and not fast:
+			var sid_fx := String(data.get("sid", ""))
+			if (bool(data.get("big", false)) or sid_fx in ["shuangfeng", "mingzha", "xinyan", "canyue"]) and not fast and not auto_all:
 				fx_cutin(seat, String(data["name"]))
 			else:
 				fx_skill_banner(seat, String(data["name"]))
@@ -5747,11 +5793,79 @@ func fx_cutin(seat: int, skill_name: String) -> void:
 	var end_x := 110.0 if from_left else vw - 540.0
 	holder.position = Vector2(start_x, 235)
 	fx_root.add_child(holder)
+	var band := Panel.new()
+	band.position = Vector2(0, 392)
+	band.size = Vector2(vw, 132)
+	band.mouse_filter = MOUSE_FILTER_IGNORE
+	var b_sb := style(Color(0.18, 0.06, 0.22, 0.88), 0, C_GOLD, 0, true)
+	b_sb.border_width_top = 3
+	b_sb.border_width_bottom = 3
+	band.add_theme_stylebox_override("panel", b_sb)
+	var sk_big := lbl("★ 必杀奥义 · %s ★" % skill_name, 52, Color(1.0, 0.88, 0.42), true, HORIZONTAL_ALIGNMENT_CENTER)
+	sk_big.add_theme_color_override("font_outline_color", Color(0.32, 0.08, 0.20, 0.95))
+	sk_big.add_theme_constant_override("outline_size", 10)
+	sk_big.position = Vector2(0, 16)
+	sk_big.size = Vector2(vw, 60)
+	sk_big.autowrap_mode = TextServer.AUTOWRAP_OFF
+	sk_big.mouse_filter = MOUSE_FILTER_IGNORE
+	band.add_child(sk_big)
+	var cid_c := String(ch.get("id", ""))
+	var vline := line_for(cid_c, "skill")
+	var sub_c := lbl("「%s」—— %s" % [vline if vline != "" else skill_name, String(ch.get("name", ""))], 25, Color(1.0, 0.95, 0.88), true, HORIZONTAL_ALIGNMENT_CENTER)
+	sub_c.position = Vector2(0, 82)
+	sub_c.size = Vector2(vw, 36)
+	sub_c.autowrap_mode = TextServer.AUTOWRAP_OFF
+	sub_c.mouse_filter = MOUSE_FILTER_IGNORE
+	band.add_child(sub_c)
+	fx_root.add_child(band)
+	fx_root.move_child(holder, fx_root.get_child_count() - 1)
+	band.modulate.a = 0.0
+	var btw := create_tween().bind_node(band)
+	btw.tween_property(band, "modulate:a", 1.0, 0.16)
+	btw.tween_interval(0.82)
+	btw.tween_property(band, "modulate:a", 0.0, 0.24)
+	btw.tween_callback(func() -> void: if is_instance_valid(band): band.queue_free())
 	var tw := create_tween().bind_node(holder)
 	tw.tween_property(holder, "position:x", end_x, 0.26)
 	tw.tween_interval(0.7)
 	tw.tween_property(holder, "position:x", start_x, 0.26)
 	tw.tween_callback(func() -> void: if is_instance_valid(holder): holder.queue_free())
+
+
+var _emote_cycle := 0
+
+
+func _throw_seat_emote(seat_idx: int) -> void:
+	if fx_root == null or seat_idx <= 0 or seat_idx >= players.size():
+		return
+	var emotes := [
+		{"icon": "🌹", "txt": "🌹 赠花 · 好感+2！", "col": Color(1.0, 0.45, 0.68), "sfx": "heal", "cat": "heal"},
+		{"icon": "💖", "txt": "💖 狂热应援 · 好感+2！", "col": Color(1.0, 0.62, 0.82), "sfx": "skill", "cat": "skill"},
+		{"icon": "🥿", "txt": "🥿 吃我一记爱心拖鞋！", "col": Color(1.0, 0.78, 0.32), "sfx": "hit", "cat": "hurt"},
+	]
+	var em: Dictionary = emotes[_emote_cycle % emotes.size()]
+	_emote_cycle += 1
+	var a := Vector2(180, 820)
+	var b := seat_center(seat_idx)
+	var fly := lbl(String(em["icon"]), 56, Color.WHITE, true, HORIZONTAL_ALIGNMENT_CENTER)
+	fly.position = a - Vector2(32, 32)
+	fly.size = Vector2(64, 64)
+	fly.pivot_offset = Vector2(32, 32)
+	fly.mouse_filter = MOUSE_FILTER_IGNORE
+	fx_root.add_child(fly)
+	play_sfx("play")
+	var cid_e := String(players[seat_idx]["char"].get("id", ""))
+	if String(em["icon"]) != "🥿":
+		Meta.add_affection(cid_e, 2)
+	var tw := create_tween().bind_node(fly)
+	tw.tween_property(fly, "position", b - Vector2(32, 32), 0.32).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	tw.parallel().tween_property(fly, "rotation", TAU, 0.32)
+	tw.tween_callback(func() -> void:
+		if is_instance_valid(fly):
+			fly.queue_free()
+		fx_float(seat_idx, String(em["txt"]), em["col"], 36, 58.0)
+		play_sfx(String(em["sfx"]))
+		show_bubble(seat_idx, String(em["cat"])))
 
 
 func fx_vignette() -> void:

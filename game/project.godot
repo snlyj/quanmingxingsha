@@ -9,7 +9,7 @@ config/name="全明星杀"
 run/main_scene="res://Main.tscn"
 config/features=PackedStringArray("4.3", "Mobile")
 config/icon="res://icon.png"
-config/version="0.41.0"
+config/version="0.42.0"
 
 [display]
 

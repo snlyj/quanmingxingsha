@@ -92,7 +92,7 @@ static func sfx_stream(key: String) -> AudioStream:
 	return st
 
 
-# 语音：没有打包对应文件时返回 null（当前版本均为 null）
+# 通用事件语音（保持未打包单名 key 返回 null，兼容 V30-C9 断言）
 static func voice_stream(key: String) -> AudioStream:
 	if _voice_cache.has(key):
 		return _voice_cache[key]
@@ -100,6 +100,43 @@ static func voice_stream(key: String) -> AudioStream:
 	var st: AudioStream = load(path) if ResourceLoader.exists(path) else null
 	_voice_cache[key] = st
 	return st
+
+
+# V0.42 角色专属神经网络二次元少女 CV 语音（assets/voice/cv_<cid>_<cat>.ogg，共 19×5=95 条）
+static func cv_stream(cid: String, cat: String) -> AudioStream:
+	var map_cat := cat
+	if map_cat == "heal" or map_cat == "gift" or map_cat == "vow":
+		map_cat = "touch"
+	elif map_cat == "death":
+		map_cat = "dying"
+	var k := "cv_%s_%s" % [cid, map_cat]
+	if _voice_cache.has(k):
+		return _voice_cache[k]
+	var path := "res://assets/voice/%s.ogg" % k
+	var st: AudioStream = load(path) if ResourceLoader.exists(path) else null
+	_voice_cache[k] = st
+	return st
+
+
+static func play_cv(host: Node, cid: String, cat: String = "touch") -> bool:
+	if DisplayServer.get_name() == "headless" or host == null or not host.is_inside_tree():
+		return false
+	ensure()
+	if not bool(_cfg.get("voice_on", true)) or float(_cfg.get("master", 0.8)) <= 0.001 or float(_cfg.get("voice_vol", 0.8)) <= 0.001:
+		return false
+	var st := cv_stream(cid, cat)
+	if st == null:
+		return false
+	var rt := host.get_tree().root
+	var pl := rt.get_node_or_null("_UiCvPlayer") as AudioStreamPlayer
+	if pl == null:
+		pl = AudioStreamPlayer.new()
+		pl.name = "_UiCvPlayer"
+		pl.bus = "Voice"
+		rt.add_child(pl)
+	pl.stream = st
+	pl.play()
+	return true
 
 
 # 大厅/局外 UI 通用音效触发（无头测试不解码，避免退出泄漏）
