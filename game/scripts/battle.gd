@@ -30,7 +30,11 @@ const C_PLATE := Color(1.0, 0.36, 0.54)
 const C_INDIGO := Color(0.35, 0.32, 0.55)
 const C_TABLE_ACTION := Palette.ROSE_PRIMARY
 const C_TARGET_AVAILABLE := Color("#73ab9d")
+const C_ACTIVE_SEAT := Color("#72a7d8")
+const C_DESIGNATED_SEAT := Color("#efb56b")
+const DESIGNATED_TARGET_MS := 2200
 const TABLE_ACTION_H := 102.0
+const TABLE_ACTION_GAP := 12.0
 
 var _night_ui := false
 var _table_surface := Color(Palette.MILK, 0.96)
@@ -48,20 +52,26 @@ var players: Array = []
 var eng = null # 新引擎实例（engine.gd）
 var me_panel_ref: Control = null
 var fx_root: Control = null
+var target_traces: Node2D = null
+var target_trace_fades: Node2D = null
 var turn_banner_panel: PanelContainer = null
 var turn_banner: Label = null
 var turn_banner_tween: Tween = null
 var play_callout_panel: PanelContainer = null
 var play_callout_label: Label = null
+var play_result_label: Label = null
 var play_callout_tween: Tween = null
+var skill_notice_panel: PanelContainer = null
+var skill_notice_actor: Label = null
+var skill_notice_title: Label = null
+var skill_notice_tween: Tween = null
 var last_turn_seat := -1
 var sfx_players: Array = []
 var sfx_streams: Dictionary = {}
-var voice_player: AudioStreamPlayer = null
+var _sfx_last_ms: Dictionary = {}
 var cv_played_count := 0
-var _cv_last_prio := 0
-var _cv_last_ms := 0
 var _cv_seat_ms := {}
+var _result_music_scene := ""
 var sfx_count := 0  # 播放请求计数（测试用）
 const AudioCfg = preload("res://scripts/audio.gd")
 const Meta = preload("res://scripts/meta.gd")
@@ -105,11 +115,12 @@ var info_text: RichTextLabel
 var me_hp_label: Label
 var me_chips: HBoxContainer
 var seat_panels: Array = []
-var log_label: Label
 var prompt_label: Label
 var prompt_context_label: Label
 var prompt_header: HBoxContainer
 var prompt_btns: HBoxContainer
+var _prompt_surface_style: StyleBoxFlat
+var _prompt_surface_tween: Tween
 var prompt_action_width := 892.0
 var hand_row: Control
 var player_info: Label
@@ -122,6 +133,7 @@ var _seat_frame_styles: Dictionary = {}
 var _own_frame_styles: Dictionary = {}
 var _phase_active_style: StyleBoxFlat
 var _phase_idle_style: StyleBoxFlat
+var _last_phase_text := ""
 
 const SUITS := ["红桃", "方块", "梅花", "黑桃"]
 const RED_SUITS := ["红桃", "方块"]
@@ -149,6 +161,7 @@ func _ready() -> void:
 # V0.24 修复：对局中途「退出」回主页时，引擎协程还挂在「等待作答/结束出牌」上，整个引擎实例（牌堆、日志、技能表）
 # 永远不会被释放（每退出一局泄漏一份）。离开场景树时令其判负收尾并放行所有等待，协程随之结束、引擎得以回收
 func _exit_tree() -> void:
+	_clear_press_feedback()
 	if speed_idx != 0:
 		Engine.time_scale = 1.0  # 倍速只作用于本局，离开对局恢复
 		speed_idx = 0
@@ -202,17 +215,84 @@ func _wire_btn_bounce(b: Button) -> void:
 	b.ready.connect(func() -> void: b.pivot_offset = b.size * 0.5)
 	b.resized.connect(func() -> void: b.pivot_offset = b.size * 0.5)
 	b.button_down.connect(func() -> void:
-		if not _motion_enabled() or b.disabled or float(b.get_meta("drag_px", 0.0)) > 10.0:
+		if b.has_node("PressFeedback") or not _motion_enabled() or b.disabled or float(b.get_meta("drag_px", 0.0)) > 10.0:
 			return
 		b.pivot_offset = b.size * 0.5
-		var tw := create_tween().bind_node(b)
-		tw.tween_property(b, "scale", Vector2(0.96, 0.96), 0.06))
+		_ease_button_scale(b, Vector2(0.976, 0.976), 0.075))
 	b.button_up.connect(func() -> void:
+		if b.has_node("PressFeedback"):
+			return
 		if not _motion_enabled():
+			var down: Variant = b.get_meta("_press_scale") if b.has_meta("_press_scale") else null
+			if down is Tween and down.is_valid():
+				down.kill()
 			b.scale = Vector2.ONE
 			return
-		var tw2 := create_tween().bind_node(b)
-		tw2.tween_property(b, "scale", Vector2.ONE, 0.14).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT))
+		_ease_button_scale(b, Vector2.ONE, 0.15))
+
+
+func _ease_button_scale(button: Button, target: Vector2, duration: float) -> void:
+	var old: Variant = button.get_meta("_press_scale") if button.has_meta("_press_scale") else null
+	if old is Tween and old.is_valid():
+		old.kill()
+	var movement := button.create_tween()
+	movement.tween_property(button, "scale", target, duration).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
+	button.set_meta("_press_scale", movement)
+
+
+func _make_press_feedback(parent: Control, corner: int) -> Panel:
+	var cue := Panel.new()
+	cue.name = "PressFeedback"
+	cue.mouse_filter = MOUSE_FILTER_IGNORE
+	if not _press_cue_styles.has(corner):
+		_press_cue_styles[corner] = style(Color(Palette.ROSE_SOFT, 0.16), corner, Palette.ROSE_EDGE, 4)
+	cue.add_theme_stylebox_override("panel", _press_cue_styles[corner])
+	cue.hide()
+	parent.add_child(cue)
+	cue.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	return cue
+
+
+func _show_press_feedback(cue: Panel, button: Button) -> void:
+	_clear_press_feedback()
+	if not is_instance_valid(cue) or button.disabled or _lp_swallowing():
+		return
+	_press_cue = cue
+	_press_button = button
+	cue.show()
+
+
+func _clear_press_feedback(only: Panel = null) -> void:
+	if only != null and only != _press_cue:
+		return
+	if is_instance_valid(_press_cue):
+		_press_cue.hide()
+	_press_cue = null
+	_press_button = null
+
+
+func _interrupt_press_feedback() -> void:
+	if is_instance_valid(_press_button):
+		_press_button.set_meta("press_interrupted", true)
+	_clear_press_feedback()
+
+
+func _bind_press_feedback(button: Button, action: Callable, corner: int) -> void:
+	var cue := _make_press_feedback(button, corner)
+	button.button_down.connect(func() -> void:
+		button.set_meta("press_interrupted", false)
+		_show_press_feedback(cue, button))
+	button.button_up.connect(_clear_press_feedback.bind(cue))
+	button.mouse_exited.connect(cue.hide)
+	button.mouse_entered.connect(func() -> void:
+		if _press_cue == cue and not button.disabled:
+			cue.show())
+	button.visibility_changed.connect(func() -> void:
+		if _press_cue == cue and not button.is_visible_in_tree():
+			_interrupt_press_feedback())
+	button.pressed.connect(func() -> void:
+		if not bool(button.get_meta("press_interrupted", false)) and not _lp_swallowing():
+			action.call())
 
 
 func _set_btn_theme(b: Button, bg: Color, border: Color, fg: Color, radius: int = 18, bw: int = 2, shadow: bool = false, pad: Vector2i = Vector2i(-1, -1), hover_border: Color = Color(-1, 0, 0, 0)) -> void:
@@ -308,8 +388,6 @@ func log_msg(msg: String) -> void:
 	log_lines.append(msg)
 	while log_lines.size() > 5:
 		log_lines.pop_front()
-	if log_label:
-		log_label.text = msg.replace("\n", " ")
 
 
 # ---------------- 界面骨架 ----------------
@@ -429,13 +507,18 @@ func show_setup() -> void:
 # 新增 UI 成员（V0.3 桌面布局）
 var phase_label: Label
 var phase_pills: Array = []
+var _table_phase_plate: Panel
+var _table_phase_rect := Rect2()
 var prompt_panel: PanelContainer
 var draft_layer: HBoxContainer
-var log_panel: PanelContainer
+var draft_refresh_btn: Button
+var _draft_candidates: Array = []
+var _draft_refresh_used := false
+var _draft_confirming := false
+var history_btn: Button
 var in_play_phase: bool = false
 var selected_card: Dictionary = {}
 var sel_anim_card: Dictionary = {}
-var breath_t := 0.0
 var vw := 1920.0
 var safe_insets := Vector4.ZERO
 var table_hud_height := 104.0
@@ -466,6 +549,8 @@ var settlement_layer: Control = null
 var target_candidates: Array = []
 var draft_banner: Label
 var glow_frames: Dictionary = {}
+var _designated_targets: Array[int] = []
+var _designated_until_ms := 0
 var showcase_panel: Panel
 var showcase_band: Panel
 var showcase_glyph: Label
@@ -483,6 +568,12 @@ const HAND_H := 296.0
 const LIFT := 36.0
 const DRAG_START_PX := 28.0
 const SNAP_PX := 64.0
+const SNAP_RELEASE_PX := 88.0
+const DRAG_SNAP_TIME := 0.16
+const DRAG_DETACH_TIME := 0.105
+const HAND_SETTLE_TIME := 0.18
+const HAND_DRAW_TIME := 0.24
+const HAND_RETURN_TIME := 0.245
 const HAND_CARD_GAP := 10.0
 const HAND_BROWSE_BUTTON_W := 86.0
 var hand_x0 := 352.0
@@ -493,7 +584,7 @@ var hand_prev_btn: Button
 var hand_next_btn: Button
 var hand_scroll_offset := 0.0
 var hand_scroll_limit := 0.0
-var action_bar: HBoxContainer
+var action_bar: Control
 var confirm_btn: Button
 var cancel_btn: Button
 var me_click_btn: Button
@@ -501,6 +592,7 @@ var ask_secs_label: Label
 var asking := false
 var ask_seq := 0
 var ask_timeout := 15.0
+const OPENING_LUCK_SECONDS := 20.0
 var ask_default: Variant = null
 var ask_default_caption := ""
 var sel_target := -1
@@ -518,31 +610,41 @@ var drag_previous := {}
 var drag_hover_seat := -1
 var drag_line: Line2D
 var drag_hint: Label
+var drag_pose := Vector3.ZERO
+var drag_pose_offset := Vector3.ZERO
+var drag_pose_tween: Tween
 var hand_cancel_release := false
 var drag_end_ms := 0
+var _press_cue: Panel = null
+var _press_button: Button = null
+var _press_cue_styles: Dictionary = {}
 
 
-func show_played_card(card: Dictionary, owner: String, from_seat: int = -1) -> void:
-	# V0.25：牌飞入桌面中央处理区（自己的牌从手牌实际位置起飞，AI 从座位起飞），按顺序堆叠，结算后飞向弃牌堆
+func show_played_card(card: Dictionary, from_seat: int, hand_wrap: Control) -> Control:
 	if card.is_empty():
-		return
+		return null
 	var from := _pz_center() + Vector2(0, -260)
+	var hand_launch := {}
 	if from_seat == 0:
-		var w := _find_wrap(card)
-		if w != null:
-			from = w.global_position - global_position + Vector2(CARD_W, CARD_H) * 0.5
-		elif not fly_from_hand.is_empty():
-			from = Vector2(fly_from_hand["pos"])
-		else:
-			from = _hand_point(120)
+		hand_launch = fly_from_hand if is_same(fly_from_hand.get("card"), card) else _hand_flight_origin(hand_wrap)
+		from = Vector2(hand_launch.get("pos", _hand_point(120)))
 	elif from_seat > 0:
 		from = seat_center(from_seat)
-	_pz_add(card, owner, from)
+	return _pz_add(card, "", from, hand_launch, true)
+
+
+func _hand_flight_origin(w: Control) -> Dictionary:
+	if not is_instance_valid(w):
+		return {}
+	var xf := get_global_transform().affine_inverse() * w.get_global_transform()
+	return {"pos": xf * (w.size * 0.5), "scale": xf.get_scale(), "rotation": xf.get_rotation()}
 
 
 func set_phase(text: String) -> void:
-	if phase_label:
-		phase_label.text = text
+	if phase_label == null or text == _last_phase_text:
+		return
+	_last_phase_text = text
+	phase_label.text = text
 	for i in mini(PHASE_NAMES.size(), phase_pills.size()):
 		var pn := phase_pills[i] as Panel
 		if pn == null or not is_instance_valid(pn):
@@ -560,6 +662,8 @@ func set_phase(text: String) -> void:
 func show_hint(text: String, context: String = "") -> void:
 	if prompt_panel == null or prompt_label == null:
 		return
+	if asking and ask_mode == "opening_luck" and context != ask_context:
+		return
 	prompt_panel.visible = true
 	prompt_label.text = text
 	prompt_label.tooltip_text = text
@@ -571,7 +675,9 @@ func show_hint(text: String, context: String = "") -> void:
 func hide_prompt() -> void:
 	if prompt_panel == null or prompt_label == null:
 		return
+	_reset_prompt_surface()
 	ask_deadline_ms = 0
+	_countdown_seconds = -1
 	if ask_bar_bg_ref != null:
 		ask_bar_bg_ref.visible = false
 	if ask_secs_label != null:
@@ -582,6 +688,28 @@ func hide_prompt() -> void:
 		prompt_btns.remove_child(ch)
 		ch.queue_free()
 	prompt_panel.visible = false
+
+
+func _emphasize_new_prompt() -> void:
+	if not _motion_enabled():
+		return
+	var tint := Palette.NIGHT_BORDER if _night_ui else Palette.ROSE_SOFT
+	var amount := 0.20 if _night_ui else 0.72
+	_prompt_surface_style.bg_color = Color(_table_surface.lerp(tint, amount), _table_surface.a)
+	_prompt_surface_style.border_color = Palette.ROSE_EDGE
+	_prompt_surface_tween = prompt_panel.create_tween().set_parallel(true).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
+	_prompt_surface_tween.tween_property(_prompt_surface_style, "bg_color", _table_surface, 0.24)
+	_prompt_surface_tween.tween_property(_prompt_surface_style, "border_color", _table_edge, 0.24)
+
+
+func _reset_prompt_surface() -> void:
+	if _prompt_surface_tween == null:
+		return
+	if _prompt_surface_tween.is_valid():
+		_prompt_surface_tween.kill()
+	_prompt_surface_tween = null
+	_prompt_surface_style.bg_color = _table_surface
+	_prompt_surface_style.border_color = _table_edge
 
 
 func _table_safe_insets() -> Vector4:
@@ -602,32 +730,26 @@ func _build_table_hud() -> void:
 	var left := safe_insets.x + 26.0
 	var right := vw - safe_insets.z - 26.0
 	var top := safe_insets.y
-	var top_hud_bg := Panel.new()
-	top_hud_bg.name = "TableTopBar"
-	top_hud_bg.size = Vector2(vw, top + table_hud_height)
-	top_hud_bg.mouse_filter = MOUSE_FILTER_IGNORE
-	var hud_style := style(_table_surface, 0)
-	hud_style.border_color = _table_edge
-	hud_style.border_width_bottom = 1
-	top_hud_bg.add_theme_stylebox_override("panel", hud_style)
-	add_child(top_hud_bg)
 	tools_btn = plain_btn("托管中 ▾" if auto_mode else "工具 ▾", _table_inset, _table_text, 28)
-	tools_btn.position = Vector2(left, top + 8.0)
-	tools_btn.custom_minimum_size = Vector2(176, table_hud_height - 16.0)
+	var tool_height := table_hud_height - 16.0 if table_hud_height > 104.0 else 72.0
+	tools_btn.position = Vector2(left, top + (table_hud_height - tool_height) * 0.5)
+	tools_btn.custom_minimum_size = Vector2(176, tool_height)
 	tools_btn.size = tools_btn.custom_minimum_size
 	tools_btn.pressed.connect(func() -> void: _set_tools_open(true))
 	add_child(tools_btn)
 
-	var count_width := 148.0
-	var count_gap := 12.0
-	var counter_left := right - (count_width * 3.0 + count_gap * 2.0)
+	var count_width := 128.0
+	var round_width := 148.0
+	var count_gap := 8.0
+	var counter_left := right - (count_width * 2.0 + round_width + count_gap * 2.0)
 	var pill_lbls: Array[Label] = []
 	for initial in ["牌堆 —", "弃牌 0", "选将中"]:
 		var counter := lbl(initial, 24, _table_text, true, HORIZONTAL_ALIGNMENT_CENTER)
-		counter.position = Vector2(counter_left + pill_lbls.size() * (count_width + count_gap), top + (table_hud_height - 58.0) * 0.5)
-		counter.size = Vector2(count_width, 58)
+		counter.position = Vector2(counter_left + pill_lbls.size() * (count_width + count_gap), top + (table_hud_height - 54.0) * 0.5)
+		counter.size = Vector2(round_width if pill_lbls.size() == 2 else count_width, 54)
 		counter.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 		counter.autowrap_mode = TextServer.AUTOWRAP_OFF
+		counter.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 		counter.mouse_filter = MOUSE_FILTER_IGNORE
 		var count_surface := Palette.SKY_SOFT if not _night_ui and pill_lbls.is_empty() else _table_inset
 		var count_edge := Palette.SKY_EDGE if not _night_ui and pill_lbls.is_empty() else _table_edge
@@ -638,22 +760,32 @@ func _build_table_hud() -> void:
 	disc_label = pill_lbls[1]
 	round_label = pill_lbls[2]
 
-	var phase_x := left + 198.0
-	var phase_width := counter_left - phase_x - 24.0
-	var phase_y := top + (table_hud_height - 80.0) * 0.5
+	var phase_left := left + tools_btn.size.x + 16.0
+	var phase_right := counter_left - 16.0
+	var phase_width := minf(584.0, phase_right - phase_left)
+	var phase_x := clampf((vw - phase_width) * 0.5, phase_left, phase_right - phase_width)
+	var phase_y := top + (table_hud_height - 84.0) * 0.5
+	_table_phase_rect = Rect2(phase_x, phase_y, phase_width, 84)
+	_table_phase_plate = Panel.new()
+	_table_phase_plate.name = "TablePhasePlate"
+	_table_phase_plate.position = _table_phase_rect.position
+	_table_phase_plate.size = _table_phase_rect.size
+	_table_phase_plate.mouse_filter = MOUSE_FILTER_IGNORE
+	_table_phase_plate.add_theme_stylebox_override("panel", style(Color(_table_surface, 0.90), 18, _table_edge, 1, true))
+	add_child(_table_phase_plate)
 	phase_label = lbl("选将准备", 31, _table_text, true, HORIZONTAL_ALIGNMENT_CENTER)
-	phase_label.position = Vector2(phase_x, phase_y)
-	phase_label.size = Vector2(phase_width, 42)
+	phase_label.position = Vector2(phase_x + 8.0, phase_y + 2.0)
+	phase_label.size = Vector2(phase_width - 16.0, 42)
 	phase_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	phase_label.clip_text = true
+	phase_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	phase_label.autowrap_mode = TextServer.AUTOWRAP_OFF
 	phase_label.mouse_filter = MOUSE_FILTER_IGNORE
 	add_child(phase_label)
 	if _phase_active_style == null:
 		_phase_active_style = style(C_TABLE_ACTION, 10, Palette.ROSE_EDGE, 1)
 		_phase_idle_style = style(_table_inset, 10, Color(_table_edge, 0.72), 1)
-	var gap := 8.0
-	var width := 76.0
+	var gap := 7.0
+	var width := minf(72.0, (phase_width - 20.0 - gap * (PHASE_NAMES.size() - 1)) / PHASE_NAMES.size())
 	var phases_width := (width + gap) * PHASE_NAMES.size() - gap
 	var start_x := phase_x + (phase_width - phases_width) * 0.5
 	for i in PHASE_NAMES.size():
@@ -676,12 +808,32 @@ func _build_table_hud() -> void:
 	add_child(turn_label)
 
 
+func _set_draft_hud(drafting: bool) -> void:
+	for counter in [deck_label, disc_label, round_label]:
+		counter.visible = not drafting
+	for pill in phase_pills:
+		pill.visible = not drafting
+	var rect := _table_phase_rect
+	if drafting:
+		var draft_size := Vector2(minf(rect.size.x, 300.0), 54.0)
+		rect = Rect2(rect.get_center() - draft_size * 0.5, draft_size)
+		set_phase("选将准备")
+	_table_phase_plate.position = rect.position
+	_table_phase_plate.size = rect.size
+	phase_label.position = rect.position + Vector2(8.0, 6.0 if drafting else 2.0)
+	phase_label.size.x = rect.size.x - 16.0
+
+
 func _set_tools_open(open: bool) -> void:
 	if tools_layer == null or not is_instance_valid(tools_layer):
 		return
 	tools_layer.visible = open
 	if open:
 		move_child(tools_layer, get_child_count() - 1)
+
+
+func _open_battle_history() -> void:
+	open_info_overlay("战况记录", "\n".join(eng.log_lines) if eng != null else "\n".join(log_lines))
 
 
 func _open_seat_list() -> void:
@@ -730,7 +882,7 @@ func _build_table_tools() -> void:
 		grid.add_child(button)
 		match title:
 			"战况记录":
-				button.pressed.connect(func() -> void: open_info_overlay("战况记录", "\n".join(eng.log_lines) if eng != null else "\n".join(log_lines)))
+				button.pressed.connect(_open_battle_history)
 			"座次表":
 				button.pressed.connect(_open_seat_list)
 			"记牌器":
@@ -770,6 +922,17 @@ func build_table() -> void:
 	vw = get_viewport_rect().size.x
 	safe_insets = _table_safe_insets()
 	table_hud_height = 144.0 if OS.has_feature("android") or OS.has_feature("ios") else 104.0
+	_interrupt_press_feedback()
+	_reset_prompt_surface()
+	_hide_turn_banner()
+	_designated_targets.clear()
+	_designated_until_ms = 0
+	if is_instance_valid(target_traces):
+		remove_child(target_traces)
+		target_traces.queue_free()
+	if is_instance_valid(target_trace_fades):
+		remove_child(target_trace_fades)
+		target_trace_fades.queue_free()
 	for ch in get_children():
 		ch.queue_free()
 	table_nodes.clear()
@@ -777,6 +940,7 @@ func build_table() -> void:
 	diff_btns.clear()
 	glow_frames.clear()
 	phase_pills.clear()
+	_last_phase_text = ""
 	sort_btn = null
 	puzzle_panel = null
 	puzzle_hint_btn = null
@@ -797,6 +961,18 @@ func build_table() -> void:
 	var vertical_pad := maxf((get_viewport_rect().size.y - 1080.0) * 0.5, 0.0)
 	table_tint.offset_top = -vertical_pad
 	table_tint.offset_bottom = vertical_pad
+	# 指示线贴着牌桌绘制，角色牌、处理区和响应按钮盖在上层。
+	target_trace_fades = Node2D.new()
+	target_trace_fades.name = "TargetTraceFades"
+	add_child(target_trace_fades)
+	target_traces = Node2D.new()
+	target_traces.name = "TargetTraces"
+	add_child(target_traces)
+	pz_flight_layer = Control.new()
+	pz_flight_layer.name = "HandFlight"
+	pz_flight_layer.mouse_filter = MOUSE_FILTER_IGNORE
+	pz_flight_layer.child_entered_tree.connect(_fx_click_through)
+	add_child(pz_flight_layer)
 	_build_table_hud()
 	# 信息浮层（记牌器/战况记录共用）
 	info_overlay = Panel.new()
@@ -837,21 +1013,31 @@ func build_table() -> void:
 	close_btn.pressed.connect(func() -> void: info_overlay.visible = false)
 	info_overlay.add_child(close_btn)
 	_extend_cover(info_overlay, Color(Palette.NIGHT_PANEL, 0.70))
-	# 四个 AI 座位（环绕桌面）
+	# 座位在两侧留出同一块中央处理区。单挑对手与左下的自己斜向相对。
 	var seat_pos: Dictionary
 	var upper_y := safe_insets.y + table_hud_height + 24.0
 	var side_y := minf(maxf(upper_y + 104.0, 280.0), 286.0 - safe_insets.w)
-	var inner_x := safe_insets.x + 374.0
-	var left_x := safe_insets.x + 42.0
-	var right_x := vw - safe_insets.z - 292.0
+	var prompt_top := 530.0 - safe_insets.w
+	_build_play_notice()
+	var notice_height := play_callout_panel.get_combined_minimum_size().y
+	play_area = _table_play_area(prompt_top, notice_height)
+	play_callout_panel.position = Vector2(play_area.position.x, play_area.end.y + 8.0)
+	play_callout_panel.custom_minimum_size = Vector2(play_area.size.x, notice_height)
+	play_callout_panel.size = play_callout_panel.custom_minimum_size
+	_build_skill_notice(side_y)
+	var rail_margin := clampf(play_area.position.x - safe_insets.x - 532.0, 12.0, 42.0)
+	var left_x := safe_insets.x + rail_margin
+	var right_x := vw - safe_insets.z - rail_margin - 250.0
+	var inner_left := play_area.position.x - 264.0
+	var inner_right := play_area.end.x + 14.0
 	if match_players == 3:
-		seat_pos = {1: Vector2(inner_x, upper_y), 2: Vector2(vw - inner_x - 250.0, upper_y)}
+		seat_pos = {1: Vector2(inner_left, upper_y), 2: Vector2(inner_right, upper_y)}
 	elif match_players == 2:
-		seat_pos = {1: Vector2((vw - 250.0) / 2.0, upper_y)}
+		seat_pos = {1: Vector2(lerpf(inner_right, right_x, 0.65), upper_y)}
 	elif match_players == 4:
-		seat_pos = {1: Vector2(left_x, side_y), 2: Vector2((vw - 250.0) / 2.0, upper_y), 3: Vector2(right_x, side_y)}
+		seat_pos = {1: Vector2(left_x, side_y), 2: Vector2(inner_right, upper_y), 3: Vector2(right_x, side_y)}
 	else:
-		seat_pos = {1: Vector2(left_x, side_y), 2: Vector2(inner_x, upper_y), 3: Vector2(vw - inner_x - 250.0, upper_y), 4: Vector2(right_x, side_y)}
+		seat_pos = {1: Vector2(left_x, side_y), 2: Vector2(inner_left, upper_y), 3: Vector2(inner_right, upper_y), 4: Vector2(right_x, side_y)}
 	for i in match_players - 1:
 		var seat_idx := i + 1
 		var panel := make_seat_panel(seat_idx)
@@ -864,25 +1050,10 @@ func build_table() -> void:
 		glow.position = seat_pos[seat_idx] - Vector2(7, 7)
 		glow.size = Vector2(264, 386)
 		glow.mouse_filter = MOUSE_FILTER_IGNORE
-		glow.add_theme_stylebox_override("panel", style(Color(Palette.ROSE_SOFT, 0.05), 26, Palette.ROSE_EDGE, 3, true))
+		glow.add_theme_stylebox_override("panel", style(Color(C_ACTIVE_SEAT, 0.08), 26, C_ACTIVE_SEAT, 3, true))
 		glow.visible = false
 		add_child(glow)
 		glow_frames[seat_idx] = glow
-	# 实时出牌播报条（谁对谁使用了什么牌）
-	play_callout_panel = PanelContainer.new()
-	play_callout_panel.position = Vector2(vw * 0.5 - 390, 526 - safe_insets.w)
-	play_callout_panel.custom_minimum_size = Vector2(780, 46)
-	play_callout_panel.size = Vector2(780, 46)
-	play_callout_panel.mouse_filter = MOUSE_FILTER_IGNORE
-	play_callout_panel.add_theme_stylebox_override("panel", _tight(style(_table_surface, 16, _table_edge, 1), 18, 6))
-	play_callout_panel.visible = false
-	play_callout_label = lbl("", 22, _table_text, true, HORIZONTAL_ALIGNMENT_CENTER)
-	play_callout_label.autowrap_mode = TextServer.AUTOWRAP_OFF
-	play_callout_label.clip_text = true
-	play_callout_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-	play_callout_label.mouse_filter = MOUSE_FILTER_IGNORE
-	play_callout_panel.add_child(play_callout_label)
-	add_child(play_callout_panel)
 	# 提示条（提问/选目标时出现）
 	# V0.25 手杀式提示条：文字可智能换行 + 倒计时进度条（位于处理区下方）；作答按钮统一放在手牌上方的操作栏位置
 	hand_x0 = 352.0 + safe_insets.x
@@ -890,11 +1061,12 @@ func build_table() -> void:
 	var bar_cx := (hand_x0 + hand_x1) * 0.5
 	prompt_action_width = clampf(hand_x1 - hand_x0, 420.0, 892.0)
 	prompt_panel = PanelContainer.new()
-	prompt_panel.position = Vector2(bar_cx - prompt_action_width * 0.5, 530 - safe_insets.w)
+	prompt_panel.position = Vector2(bar_cx - prompt_action_width * 0.5, prompt_top)
 	prompt_panel.custom_minimum_size = Vector2(prompt_action_width, 74)
 	prompt_panel.size = prompt_panel.custom_minimum_size
 	prompt_panel.mouse_filter = MOUSE_FILTER_IGNORE
-	prompt_panel.add_theme_stylebox_override("panel", _tight(style(_table_surface, 16, _table_edge, 1, true), 16, 7))
+	_prompt_surface_style = _tight(style(_table_surface, 16, _table_edge, 1, true), 16, 7)
+	prompt_panel.add_theme_stylebox_override("panel", _prompt_surface_style)
 	var pv := VBoxContainer.new()
 	pv.mouse_filter = MOUSE_FILTER_IGNORE
 	pv.alignment = BoxContainer.ALIGNMENT_CENTER
@@ -905,7 +1077,8 @@ func build_table() -> void:
 	prompt_header.mouse_filter = MOUSE_FILTER_IGNORE
 	prompt_header.visible = false
 	pv.add_child(prompt_header)
-	prompt_context_label = lbl("", 18, _table_note)
+	prompt_context_label = lbl("", 26, _table_text, true)
+	prompt_context_label.add_theme_font_override("font", Art.compact_bold_font(26))
 	prompt_context_label.autowrap_mode = TextServer.AUTOWRAP_OFF
 	prompt_context_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	prompt_context_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -916,7 +1089,7 @@ func build_table() -> void:
 	ask_secs_label.mouse_filter = MOUSE_FILTER_IGNORE
 	ask_secs_label.visible = false
 	prompt_header.add_child(ask_secs_label)
-	prompt_label = lbl("", 23, _table_text, true, HORIZONTAL_ALIGNMENT_LEFT)
+	prompt_label = lbl("", 25, _table_text, true, HORIZONTAL_ALIGNMENT_LEFT)
 	prompt_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	prompt_label.custom_minimum_size.y = 64.0
 	prompt_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
@@ -940,34 +1113,29 @@ func build_table() -> void:
 	add_child(prompt_panel)
 	prompt_btns = HBoxContainer.new()
 	prompt_btns.alignment = BoxContainer.ALIGNMENT_BEGIN
-	prompt_btns.add_theme_constant_override("separation", 12)
+	prompt_btns.add_theme_constant_override("separation", int(TABLE_ACTION_GAP))
 	prompt_btns.position = Vector2(bar_cx - prompt_action_width * 0.5, 649 - safe_insets.w)
 	prompt_btns.size = Vector2(prompt_action_width, TABLE_ACTION_H)
+	prompt_btns.mouse_filter = MOUSE_FILTER_IGNORE
 	add_child(prompt_btns)
-	# 操作栏（手杀：确定 / 取消 / 结束 位于手牌正上方）
-	action_bar = HBoxContainer.new()
-	action_bar.alignment = BoxContainer.ALIGNMENT_BEGIN
-	action_bar.add_theme_constant_override("separation", 14)
+	# 固定操作位置，隐藏空位后也不会移动其他按钮。
+	action_bar = Control.new()
 	action_bar.position = prompt_btns.position
 	action_bar.size = prompt_btns.size
+	action_bar.mouse_filter = MOUSE_FILTER_IGNORE
 	action_bar.visible = false
 	add_child(action_bar)
 	confirm_btn = _make_action_btn("出牌", C_TABLE_ACTION, C_WHITE)
-	confirm_btn.pressed.connect(_on_confirm_pressed)
-	action_bar.add_child(confirm_btn)
+	_bind_press_feedback(confirm_btn, _on_confirm_pressed, 18)
+	_place_table_action(confirm_btn, 0)
 	cancel_btn = _make_action_btn("取消", _table_button, _table_text)
 	cancel_btn.pressed.connect(_on_cancel_pressed)
-	action_bar.add_child(cancel_btn)
+	_place_table_action(cancel_btn, 1)
 	# V0.28：重铸（无名杀 recastable）——选中可重铸的牌后出现，点击即重铸（弃置并摸一张）
 	recast_btn = _make_action_btn("重铸", _table_inset if _night_ui else Palette.SKY_SOFT, _table_text)
 	recast_btn.pressed.connect(_on_recast_pressed)
 	recast_btn.visible = false
-	action_bar.add_child(recast_btn)
-	# V0.33：手气卡（对标手杀开局换牌，首轮未出牌前最多换 2 次）
-	luck_btn = _make_action_btn("手气卡×2", _table_button, _table_text)
-	luck_btn.pressed.connect(_on_luck_pressed)
-	luck_btn.visible = false
-	action_bar.add_child(luck_btn)
+	_place_table_action(recast_btn, 2)
 	# 选将层
 	draft_layer = HBoxContainer.new()
 	draft_layer.position = Vector2(vw * 0.5 - 624, 262)
@@ -980,8 +1148,8 @@ func build_table() -> void:
 	diff_layer = Control.new()
 	diff_layer.visible = false
 	add_child(diff_layer)
-	diff_layer.position = Vector2(vw * 0.5 - 460, 756)
-	diff_layer.size = Vector2(920, 56)
+	diff_layer.position = Vector2(vw * 0.5 - 368, 756)
+	diff_layer.size = Vector2(736, 56)
 	var dl := lbl("AI 难度", 24, C_PINK_DEEP, true)
 	dl.autowrap_mode = TextServer.AUTOWRAP_OFF
 	dl.position = Vector2(0, 8)
@@ -1000,17 +1168,11 @@ func build_table() -> void:
 		db.pressed.connect(func() -> void: _on_difficulty(dv))
 		diff_btns.append(db)
 	refresh_diff_buttons()
-	# V0.33：选将支持「换一批」与「自由点将」（对标手杀换将卡/无名杀自由点将）
-	var rbtn := plain_btn("🔄 换一批", _table_inset, _table_text, 23)
-	rbtn.position = Vector2(500, 0)
-	rbtn.size = Vector2(170, 52)
-	rbtn.pressed.connect(_on_reshuffle_draft)
-	diff_layer.add_child(rbtn)
-	var fpbtn := plain_btn("★ 自由点将", _table_inset if _night_ui else Palette.SKY_SOFT, _table_text, 23)
-	fpbtn.position = Vector2(686, 0)
-	fpbtn.size = Vector2(190, 52)
-	fpbtn.pressed.connect(_open_free_pick)
-	diff_layer.add_child(fpbtn)
+	draft_refresh_btn = plain_btn("换一批（剩 1 次）", _table_inset, _table_text, 23)
+	draft_refresh_btn.position = Vector2(500, 0)
+	draft_refresh_btn.size = Vector2(236, 52)
+	draft_refresh_btn.pressed.connect(_on_reshuffle_draft)
+	diff_layer.add_child(draft_refresh_btn)
 	# 左下：自己的角色牌
 	var me_panel := Panel.new()
 	me_panel_ref = me_panel
@@ -1026,7 +1188,7 @@ func build_table() -> void:
 	me_glow.position = me_panel.position - Vector2(7, 7)
 	me_glow.size = Vector2(306, 386)
 	me_glow.mouse_filter = MOUSE_FILTER_IGNORE
-	me_glow.add_theme_stylebox_override("panel", style(Color(Palette.ROSE_SOFT, 0.05), 26, Palette.ROSE_EDGE, 3, true))
+	me_glow.add_theme_stylebox_override("panel", style(Color(C_ACTIVE_SEAT, 0.08), 26, C_ACTIVE_SEAT, 3, true))
 	me_glow.visible = false
 	add_child(me_glow)
 	glow_frames[0] = me_glow
@@ -1038,10 +1200,9 @@ func build_table() -> void:
 	add_child(fx_root)
 	turn_banner_panel = PanelContainer.new()
 	turn_banner_panel.position = Vector2(26.0 + safe_insets.x, safe_insets.y + table_hud_height + 14.0)
-	turn_banner_panel.custom_minimum_size = Vector2(302, 46)
+	turn_banner_panel.custom_minimum_size = Vector2(214, 46)
 	turn_banner_panel.size = turn_banner_panel.custom_minimum_size
-	turn_banner_panel.pivot_offset = turn_banner_panel.size * 0.5
-	turn_banner_panel.modulate = Color(1, 1, 1, 0)
+	turn_banner_panel.hide()
 	turn_banner_panel.mouse_filter = MOUSE_FILTER_IGNORE
 	turn_banner_panel.add_theme_stylebox_override("panel", _tight(style(_table_surface, 15, _table_edge, 1, true), 12, 6))
 	fx_root.add_child(turn_banner_panel)
@@ -1115,17 +1276,19 @@ func build_table() -> void:
 	me_click_btn.size = Vector2(292, 372)
 	for st in ["normal", "hover", "pressed", "disabled", "focus"]:
 		me_click_btn.add_theme_stylebox_override(st, StyleBoxEmpty.new())
-	me_click_btn.pressed.connect(func() -> void: _on_seat_clicked(0))
+	_bind_press_feedback(me_click_btn, _on_seat_clicked.bind(0), 22)
 	me_click_btn.set_meta("intro", Callable(self, "_intro_seat").bind(0))
 	add_child(me_click_btn)
 	table_nodes.append(me_click_btn)
 	# 选将身份横幅（仅选将时显示）
-	draft_banner = lbl("", 46, C_PINK_DEEP, true, HORIZONTAL_ALIGNMENT_CENTER)
-	draft_banner.add_theme_constant_override("outline_size", 8)
+	draft_banner = lbl("", 34, C_PINK_DEEP, true, HORIZONTAL_ALIGNMENT_CENTER)
+	draft_banner.add_theme_font_override("font", Art.compact_bold_font(34))
+	draft_banner.add_theme_constant_override("outline_size", 6)
+	draft_banner.add_theme_constant_override("line_spacing", 5)
 	draft_banner.add_theme_color_override("font_outline_color", Color(1, 1, 1, 0.9))
 	draft_banner.position = Vector2(safe_insets.x, safe_insets.y + table_hud_height + 12.0)
 	draft_banner.size = Vector2(vw - safe_insets.x - safe_insets.z, 90)
-	draft_banner.autowrap_mode = TextServer.AUTOWRAP_OFF
+	draft_banner.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	draft_banner.visible = false
 	add_child(draft_banner)
 	# 出牌展示（桌面中央）
@@ -1189,53 +1352,37 @@ func build_table() -> void:
 	showcase_owner.add_theme_color_override("font_outline_color", Color(1, 1, 1, 0.85))
 	showcase_panel.add_child(showcase_owner)
 	add_child(showcase_panel)
-	# V0.25 处理区层（节点池复用）与看破链面板
+	# 处理区层（节点池复用）
+	pz_clip = Control.new()
+	pz_clip.name = "PlayArea"
+	pz_clip.position = play_area.position
+	pz_clip.size = play_area.size
+	pz_clip.clip_contents = true
+	pz_clip.mouse_filter = MOUSE_FILTER_IGNORE
+	add_child(pz_clip)
 	pz_layer = Control.new()
-	pz_layer.set_anchors_preset(Control.PRESET_FULL_RECT)
+	# 处理区沿用牌桌坐标，外层限制牌面与飞行轨迹的可见范围。
+	pz_layer.position = -play_area.position
 	pz_layer.mouse_filter = MOUSE_FILTER_IGNORE
 	pz_layer.child_entered_tree.connect(_fx_click_through)
-	add_child(pz_layer)
+	pz_clip.add_child(pz_layer)
 	pz_pool.clear()
 	pz_live.clear()
-	nullify_panel = PanelContainer.new()
-	nullify_panel.position = Vector2(vw * 0.5 - 640, 486)
-	nullify_panel.size = Vector2(330, 100)
-	nullify_panel.mouse_filter = MOUSE_FILTER_IGNORE
-	nullify_panel.add_theme_stylebox_override("panel", style(_table_surface, 14, _table_edge, 1, true))
-	nullify_label = lbl("", 17, _table_text, true)
-	nullify_label.mouse_filter = MOUSE_FILTER_IGNORE
-	nullify_panel.add_child(nullify_label)
-	nullify_panel.visible = false
-	nullify_panel.set_meta("intro", Callable(self, "_intro_card").bind({"name": "看破"}))
-	add_child(nullify_panel)
-	# 结束出牌保留在行动条，桌面只显示最近一条战况。
-	end_play_btn = _make_action_btn("结束出牌", _table_button, _table_text)
+	nullify_count = 0
+	# 结束出牌保留在行动条。
+	end_play_btn = _make_action_btn("结束出牌", _table_inset, _table_text)
 	end_play_btn.disabled = true
 	end_play_btn.pressed.connect(_on_end_play_btn)
-	action_bar.add_child(end_play_btn)
-	log_panel = PanelContainer.new()
-	log_panel.position = Vector2(vw - 414.0 - safe_insets.z, 742.0 - safe_insets.w)
-	log_panel.size = Vector2(374, 54)
-	log_panel.mouse_filter = MOUSE_FILTER_IGNORE
-	log_panel.add_theme_stylebox_override("panel", _tight(style(_table_surface, 14, _table_edge, 1), 14, 6))
-	var log_row := HBoxContainer.new()
-	log_row.add_theme_constant_override("separation", 12)
-	log_row.mouse_filter = MOUSE_FILTER_IGNORE
-	log_panel.add_child(log_row)
-	var log_head := lbl("战报", 22, Palette.ROSE_SOFT if _night_ui else C_TABLE_ACTION, true)
-	log_head.autowrap_mode = TextServer.AUTOWRAP_OFF
-	log_head.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	log_head.mouse_filter = MOUSE_FILTER_IGNORE
-	log_row.add_child(log_head)
-	log_label = lbl("等候开局", 22, _table_text)
-	log_label.autowrap_mode = TextServer.AUTOWRAP_OFF
-	log_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-	log_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	log_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	log_label.mouse_filter = MOUSE_FILTER_IGNORE
-	log_row.add_child(log_label)
-	add_child(log_panel)
-	table_nodes.append(log_panel)
+	_place_table_action(end_play_btn, 3)
+	history_btn = plain_btn("战报", _table_inset, _table_text, 25)
+	history_btn.name = "BattleHistory"
+	history_btn.custom_minimum_size = Vector2(152, 72)
+	history_btn.size = history_btn.custom_minimum_size
+	history_btn.position = Vector2(vw - safe_insets.z - 40.0 - history_btn.size.x, 742.0 - safe_insets.w)
+	history_btn.tooltip_text = "查看本局战况记录"
+	history_btn.pressed.connect(_open_battle_history)
+	add_child(history_btn)
+	table_nodes.append(history_btn)
 	_build_table_tools()
 
 
@@ -1348,13 +1495,13 @@ func make_seat_panel(seat_idx: int) -> Button:
 	b.add_child(eb)
 	b.set_meta("seat", seat_idx)
 	b.set_meta("intro", Callable(self, "_intro_seat").bind(seat_idx))
-	b.pressed.connect(func() -> void: _on_seat_clicked(seat_idx))
+	_bind_press_feedback(b, _on_seat_clicked.bind(seat_idx), 18)
 	return b
 
 
 # ---------------- V0.25 座位组件：装备栏 / 判定区图标 / 连环 / 濒死 / 阵亡 / 阶段标签 / 体力槽动画 ----------------
 # 对照无名杀 layout：装备在头像左侧竖排、判定区小圆标在头像上沿、横置（连环）有锁链带、阵亡置灰并亮身份。
-# 所有子节点建桌时一次建好，refresh 只改 visible/text，避免每次刷新分配节点（安卓 30fps）。
+# 所有子节点建桌时一次建好，refresh 只改有变化的内容。
 
 const SLOT_TAGS := {"weapon": "武", "armor": "防", "minus": "-1", "plus": "+1", "treasure": "宝"}
 const JUDGE_SHORT := {
@@ -1371,6 +1518,7 @@ var gray_mat: ShaderMaterial = null
 var guess_popup: PanelContainer = null
 var guess_popup_seat := -1
 var float_stack := {}  # seat -> [上次飘字毫秒, 叠层序号]：同一座位连续飘字向上错开，不重叠
+var _impact_width: Curve
 
 
 func _ensure_seat_res() -> void:
@@ -1475,26 +1623,22 @@ func _add_seat_overlays(pn: Control, sz: Vector2, is_me: bool) -> void:
 	dl.add_theme_color_override("font_outline_color", Color(0.55, 0.08, 0.14, 0.95))
 	dl.visible = false
 	pn.add_child(dl)
-	# 当前阶段标签
-	var ph := Label.new()
-	ph.name = "PhaseTag"
-	ph.add_theme_font_override("font", font_bold)
-	ph.add_theme_font_size_override("font_size", 20)
-	ph.add_theme_color_override("font_color", C_WHITE)
-	ph.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	ph.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	ph.add_theme_stylebox_override("normal", _tight(style(C_TABLE_ACTION, 16, Palette.ROSE_EDGE, 1, true), 8, 2))
-	ph.size = Vector2(140, 34)
-	ph.position = Vector2(sz.x * 0.5 - 70, -20) if not is_me else Vector2(sz.x - 148, 10)
-	ph.mouse_filter = MOUSE_FILTER_IGNORE
-	ph.visible = false
-	pn.add_child(ph)
+	var badge_top := 56.0 if is_me else 14.0
+	var actor_badge := _make_seat_badge("回合", Color("#305986"), C_ACTIVE_SEAT)
+	actor_badge.name = "TurnBadge"
+	actor_badge.position = Vector2(14 if is_me else 67, badge_top)
+	pn.add_child(actor_badge)
+	var assigned_badge := _make_seat_badge("目标", Color("#774814"), C_DESIGNATED_SEAT)
+	assigned_badge.name = "DesignatedTargetBadge"
+	assigned_badge.position = Vector2(210 if is_me else 140, badge_top)
+	pn.add_child(assigned_badge)
 	var target_tag := lbl("", 20, _table_text, true, HORIZONTAL_ALIGNMENT_CENTER)
 	target_tag.name = "TargetTag"
 	target_tag.position = Vector2(67, 14) if not is_me else Vector2(sz.x - 184.0, 56)
 	target_tag.size = Vector2(141, 42) if not is_me else Vector2(159, 40)
 	target_tag.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	target_tag.autowrap_mode = TextServer.AUTOWRAP_OFF
+	target_tag.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	target_tag.mouse_filter = MOUSE_FILTER_IGNORE
 	target_tag.add_theme_stylebox_override("normal", _tight(style(_table_surface, 10, _table_edge, 1), 6, 3))
 	target_tag.visible = false
@@ -1512,27 +1656,104 @@ func _add_seat_overlays(pn: Control, sz: Vector2, is_me: bool) -> void:
 		status.visible = false
 		pn.add_child(status)
 	pn.move_child(ch, eqv.get_index())  # 锁链带画在装备栏下面，不遮装备
-	for n in [eqv, jh, ch, dy, dl, ph]:
+	for n in [eqv, jh, ch, dy, dl]:
 		for sub in (n as Node).find_children("*", "Control", true, false):
 			(sub as Control).mouse_filter = MOUSE_FILTER_IGNORE
 
 
-func _sync_target_tag(panel: Control, seat: int, alive: bool) -> void:
+func _make_seat_badge(text: String, bg: Color, edge: Color) -> Label:
+	var badge := lbl(text, 28, C_WHITE, true, HORIZONTAL_ALIGNMENT_CENTER)
+	badge.size = Vector2(68, 42)
+	badge.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	badge.autowrap_mode = TextServer.AUTOWRAP_OFF
+	badge.mouse_filter = MOUSE_FILTER_IGNORE
+	badge.add_theme_stylebox_override("normal", _tight(style(bg, 10, edge, 2), 5, 0))
+	badge.hide()
+	return badge
+
+
+func _sync_seat_badges(panel: Control, seat: int, alive: bool) -> void:
+	var actor_badge := panel.get_node("TurnBadge") as Label
+	actor_badge.visible = alive and not game_over and seat == turn_seat
 	var tag := panel.get_node("TargetTag") as Label
-	tag.visible = alive and targeting and target_candidates.has(seat)
+	tag.visible = alive and not game_over and targeting and target_candidates.has(seat)
+	var assigned_badge := panel.get_node("DesignatedTargetBadge") as Label
+	assigned_badge.visible = alive and not game_over and not tag.visible and _designated_targets.has(seat)
 	if not tag.visible:
 		return
+	var compact := seat > 0 and actor_badge.visible
+	if seat > 0:
+		tag.position.x = 140.0 if compact else 67.0
+		tag.size.x = 68.0 if compact else 141.0
 	if seat == drag_hover_seat:
-		tag.text = "松手出牌"
+		tag.text = "松手" if compact else "松手出牌"
 		return
 	if seat == sel_target:
-		tag.text = "① 已选"
+		tag.text = "已选" if compact else "① 已选"
 	elif seat == extra_target:
-		tag.text = "② 已选"
+		tag.text = "已选" if compact else "② 已选"
 	else:
-		tag.text = "✓ 可选"
-	if seat > 0 and _target_uses_distance(String(selected_card.get("name", ""))):
+		tag.text = "可选" if compact else "✓ 可选"
+	if seat > 0 and not compact and _target_uses_distance(String(selected_card.get("name", ""))):
 		tag.text += " · 距%d" % eff_dist(players[0], players[seat])
+
+
+func _replace_designated_targets(seats: Array) -> void:
+	_clear_designated_targets()
+	for seat in seats:
+		_add_designated_target(int(seat))
+
+
+func _add_designated_target(seat: int) -> void:
+	if auto_all or game_over or seat < 0 or seat >= players.size() or not players[seat]["alive"]:
+		return
+	_designated_until_ms = Time.get_ticks_msec() + DESIGNATED_TARGET_MS
+	if not _designated_targets.has(seat):
+		_designated_targets.append(seat)
+		_queue_refresh()
+
+
+func _clear_designated_targets() -> void:
+	if is_instance_valid(target_traces):
+		for trace in target_traces.get_children():
+			if _motion_enabled() and not game_over and trace.progress > 0.0:
+				trace.reparent(target_trace_fades, false)
+				trace.fade_out()
+			else:
+				target_traces.remove_child(trace)
+				trace.queue_free()
+	if _designated_targets.is_empty():
+		return
+	_designated_targets.clear()
+	_designated_until_ms = 0
+	_queue_refresh()
+
+
+func _seat_frame_color(seat: int, alive: bool) -> Color:
+	if not alive or game_over:
+		return _table_edge
+	if targeting and target_candidates.has(seat):
+		return C_TABLE_ACTION if seat == sel_target or seat == extra_target else C_TARGET_AVAILABLE
+	if _designated_targets.has(seat):
+		return C_DESIGNATED_SEAT
+	return C_ACTIVE_SEAT if seat == turn_seat else _table_edge
+
+
+func _sync_seat_frame(panel: Control, seat: int, alive: bool) -> void:
+	_sync_seat_badges(panel, seat, alive)
+	var frame := _seat_frame_color(seat, alive)
+	if panel.get_meta("frame_color", Color.TRANSPARENT) == frame:
+		return
+	var styles := _own_frame_styles if seat == 0 else _seat_frame_styles
+	if not styles.has(frame):
+		styles[frame] = style(_table_surface, 22 if seat == 0 else 18, frame, 2 if frame == _table_edge else 4, true)
+	if seat == 0:
+		panel.add_theme_stylebox_override("panel", styles[frame])
+	else:
+		panel.add_theme_stylebox_override("normal", styles[frame])
+		panel.add_theme_stylebox_override("disabled", styles[frame])
+		panel.add_theme_stylebox_override("hover", styles[frame])
+	panel.set_meta("frame_color", frame)
 
 
 func _target_uses_distance(card_name: String) -> bool:
@@ -1584,9 +1805,26 @@ func _equip_short(p: Dictionary, slot: String) -> String:
 
 func _update_seat_overlays(pn: Control, p: Dictionary, portrait: CanvasItem) -> void:
 	var alive := bool(p["alive"])
+	var chained := alive and bool(p.get("chained", false))
+	var dying := alive and int(p["hp"]) <= 0
+	var js: Array = p["judge"] if alive else []
+	# 只比较面板会用到的值。手牌或回合变化时无需重复更新装备和状态节点。
+	var state: Array = [alive, chained, dying]
+	if alive:
+		var equipment: Dictionary = p["equip"]
+		for slot in SLOT_TAGS:
+			state.append((equipment[slot] as Dictionary).get("name", ""))
+		var treasure: Dictionary = equipment["treasure"]
+		if treasure.get("name", "") == "木牛流马":
+			state.append((treasure.get("stored", []) as Array).size())
+		for card in js:
+			state.append(card["name"])
+	if pn.get_meta("overlay_state", []) == state:
+		return
 	var eqv := pn.get_node_or_null("Equips")
 	if eqv == null:
 		return
+	pn.set_meta("overlay_state", state)
 	for row in eqv.get_children():
 		var slot := String(row.name)
 		var txt := _equip_short(p, slot) if alive else ""
@@ -1594,7 +1832,6 @@ func _update_seat_overlays(pn: Control, p: Dictionary, portrait: CanvasItem) -> 
 		if txt != "":
 			var nl: Label = (row.get_child(0) as Node).get_node("Name")
 			nl.text = txt
-	var js: Array = p["judge"] if alive else []
 	var jh := pn.get_node("Judges")
 	for i in jh.get_child_count():
 		var jl := jh.get_child(i) as Label
@@ -1605,9 +1842,9 @@ func _update_seat_overlays(pn: Control, p: Dictionary, portrait: CanvasItem) -> 
 			jl.visible = true
 		else:
 			jl.visible = false
-	(pn.get_node("Chain") as Control).visible = alive and bool(p.get("chained", false))
+	(pn.get_node("Chain") as Control).visible = chained
 	var dy := pn.get_node("Dying") as Control
-	dy.visible = alive and int(p["hp"]) <= 0
+	dy.visible = dying
 	var dead_lbl := pn.get_node("Dead") as Label
 	if not alive and not dead_lbl.visible:
 		dead_lbl.visible = true
@@ -1621,11 +1858,6 @@ func _update_seat_overlays(pn: Control, p: Dictionary, portrait: CanvasItem) -> 
 		dead_lbl.visible = false
 	if portrait != null:
 		portrait.material = null if alive else gray_mat
-	var ph := pn.get_node("PhaseTag") as Label
-	var show_ph := alive and int(p["seat"]) == turn_seat and eng != null and String(eng.phase_text) != "" and not game_over
-	ph.visible = show_ph
-	if show_ph:
-		ph.text = "▶ " + String(eng.phase_text)
 
 
 func _sync_pips(pips: VBoxContainer, p: Dictionary) -> void:
@@ -1867,7 +2099,10 @@ func refresh() -> void:
 	if eng != null:
 		deck_label.text = "牌堆 %d" % eng.deck.size()
 		disc_label.text = "弃牌 %d" % eng.discard_pile.size()
-		round_label.text = ("第 %d 轮 · ×%d" % [round_no, int(eng.ddz_stake())]) if game_mode == "doudizhu" else ("第 %d 轮" % round_no)
+		if int(eng.round_no) == 0:
+			round_label.text = "开局"
+		else:
+			round_label.text = ("第 %d 轮 · ×%d" % [round_no, int(eng.ddz_stake())]) if game_mode == "doudizhu" else ("第 %d 轮" % round_no)
 	if turn_seat >= 0 and turn_seat < players.size():
 		var tp: Dictionary = players[turn_seat]
 		var ph_s := String(eng.phase_text) if eng != null and String(eng.phase_text) != "" else "准备阶段"
@@ -1904,23 +2139,9 @@ func refresh() -> void:
 		var info := panel.get_node("Info") as Label
 		info.text = _seat_status_text(seat_idx, p)
 		info.visible = info.text != ""
-		_sync_target_tag(panel, seat_idx, bool(p["alive"]))
+		_sync_seat_frame(panel, seat_idx, bool(p["alive"]))
 		_sync_pips(panel.get_node("Pips") as VBoxContainer, p)
 		_update_seat_overlays(panel, p, tr)
-		# 边框与明暗：行动中高亮、可选中高亮、不可选中变暗、阵亡变灰
-		var frame := _table_edge
-		if seat_idx == turn_seat and p["alive"]:
-			frame = Palette.ROSE_EDGE
-		if targeting and target_candidates.has(seat_idx):
-			frame = C_TARGET_AVAILABLE
-			if seat_idx == sel_target or seat_idx == extra_target:
-				frame = C_TABLE_ACTION
-		if panel.get_meta("frame_color", Color.TRANSPARENT) != frame:
-			if not _seat_frame_styles.has(frame):
-				_seat_frame_styles[frame] = style(_table_surface, 18, frame, 2 if frame == _table_edge else 4, true)
-			panel.add_theme_stylebox_override("normal", _seat_frame_styles[frame])
-			panel.add_theme_stylebox_override("disabled", _seat_frame_styles[frame])
-			panel.set_meta("frame_color", frame)
 		if not p["alive"]:
 			panel.modulate = Color(0.62, 0.62, 0.68, 0.85)
 		elif targeting and not target_candidates.has(seat_idx):
@@ -1932,18 +2153,9 @@ func refresh() -> void:
 		guess_popup.visible = false
 	for seat_key in glow_frames:
 		var seat := int(seat_key)
-		(glow_frames[seat_key] as Control).visible = seat == turn_seat and players[seat]["alive"]
+		(glow_frames[seat_key] as Control).visible = not game_over and seat == turn_seat and players[seat]["alive"]
 	# 自己
 	var me: Dictionary = players[0]
-	if me_panel_ref != null:
-		var me_frame := Palette.ROSE_EDGE if turn_seat == 0 and bool(me["alive"]) else _table_edge
-		if targeting and target_candidates.has(0):
-			me_frame = C_TABLE_ACTION if sel_target == 0 or extra_target == 0 else C_TARGET_AVAILABLE
-		if me_panel_ref.get_meta("frame_color", Color.TRANSPARENT) != me_frame:
-			if not _own_frame_styles.has(me_frame):
-				_own_frame_styles[me_frame] = style(_table_surface, 22, me_frame, 2 if me_frame == _table_edge else 4, true)
-			me_panel_ref.add_theme_stylebox_override("panel", _own_frame_styles[me_frame])
-			me_panel_ref.set_meta("frame_color", me_frame)
 	if me_click_btn != null:
 		me_click_btn.disabled = not (targeting and target_candidates.has(0) and bool(me["alive"]))
 		me_click_btn.mouse_filter = MOUSE_FILTER_STOP if not me_click_btn.disabled else MOUSE_FILTER_IGNORE
@@ -1967,11 +2179,18 @@ func refresh() -> void:
 			state += (" · " if state != "" else "") + "超出上限 %d 张" % (h_cnt - h_lim)
 		self_status.text = state
 		self_status.visible = state != ""
-		_sync_target_tag(me_panel_ref, 0, bool(me["alive"]))
+		_sync_seat_frame(me_panel_ref, 0, bool(me["alive"]))
 		_update_seat_overlays(me_panel_ref, me, player_portrait)
 	_sync_hand()
 	_update_action_bar()
 	refresh_skill_buttons()
+	if is_instance_valid(_press_button):
+		if _press_button.disabled or not _press_button.is_visible_in_tree():
+			_interrupt_press_feedback()
+		elif _press_button.get_parent() == drag_press.get("wrap") and not _hand_accepts_press():
+			_interrupt_press_feedback()
+			drag_press.clear()
+			hand_cancel_release = true
 
 
 func _build_hand_controls() -> void:
@@ -2011,8 +2230,10 @@ func _build_hand_controls() -> void:
 
 	hand_prev_btn = _build_hand_page_button("‹", "浏览上一组手牌", Vector2(hand_x0, top + 68.0), -1)
 	hand_next_btn = _build_hand_page_button("›", "浏览下一组手牌", Vector2(hand_x1 - HAND_BROWSE_BUTTON_W, top + 68.0), 1)
+	# 离手牌在底板上方经过，座位始终绘制在飞牌前。
+	move_child(hand_dock, pz_flight_layer.get_index())
 	# 手牌的裁剪区域含上浮空间，重叠处的点击优先交给出牌/响应按钮。
-	for control in [hand_dock, hand_viewport, hand_prev_btn, hand_next_btn]:
+	for control in [hand_viewport, hand_prev_btn, hand_next_btn]:
 		move_child(control, prompt_panel.get_index())
 	drag_line = Line2D.new()
 	drag_line.width = 4.0
@@ -2076,6 +2297,7 @@ func make_hand_card(c: Dictionary) -> Control:
 	cb.pressed.connect(func() -> void: _on_hand_card_clicked(cref))
 	wrap.add_child(cb)
 	wrap.move_child(cb, 0)
+	_make_press_feedback(wrap, 14)
 	wrap.set_meta("card", c)
 	wrap.set_meta("intro", Callable(self, "_intro_card").bind(c))
 	wrap.set_meta("state", "")
@@ -2191,6 +2413,19 @@ func _make_action_btn(text: String, bg: Color, fg: Color) -> Button:
 	return b
 
 
+func _size_table_action(button: Button) -> void:
+	var width := floorf((prompt_action_width - TABLE_ACTION_GAP * 3.0) / 4.0)
+	button.custom_minimum_size = Vector2(width, TABLE_ACTION_H)
+	button.add_theme_font_size_override("font_size", clampi(floori((width - 24.0) / 4.6), 16, 27))
+
+
+func _place_table_action(button: Button, slot: int) -> void:
+	_size_table_action(button)
+	button.position.x = (button.custom_minimum_size.x + TABLE_ACTION_GAP) * slot
+	button.size = button.custom_minimum_size
+	action_bar.add_child(button)
+
+
 func _hand_has(c: Dictionary) -> bool:
 	if players.is_empty():
 		return false
@@ -2260,11 +2495,12 @@ func _reconcile_hand(hand: Array) -> void:
 			if w == drag_wrap:
 				_drag_reset()
 			if drag_press.get("wrap") == w:
+				_clear_press_feedback()
 				drag_press.clear()
 				hand_cancel_release = true
 				if IntroPop.inst != null:
 					IntroPop.inst.cancel_longpress()
-			hand_row.remove_child(w)
+			w.get_parent().remove_child(w)
 			w.queue_free()  # V0.24 闪退修复：不得立即 free
 	hand_cards = keep
 	var ordered: Array = []
@@ -2279,9 +2515,13 @@ func _reconcile_hand(hand: Array) -> void:
 			w.set_meta("fresh", true)
 		ordered.append(w)
 	hand_cards = ordered
-	for i in ordered.size():
-		if (ordered[i] as Node).get_index() != i:
-			hand_row.move_child(ordered[i], i)
+	var child_index := 0
+	for w: Control in ordered:
+		if w.get_parent() != hand_row:
+			continue
+		if w.get_index() != child_index:
+			hand_row.move_child(w, child_index)
+		child_index += 1
 
 
 func _is_lifted(w: Control) -> bool:
@@ -2390,32 +2630,66 @@ func _on_hand_viewport_gui_input(event: InputEvent) -> void:
 func _tween_card(w: Control, pos: Vector2, rot: float, animate: bool) -> void:
 	var key := "%d,%d,%d" % [int(pos.x), int(pos.y), int(rad_to_deg(rot) * 10.0)]
 	var fresh := bool(w.get_meta("fresh", false))
-	if String(w.get_meta("lay", "")) == key and not fresh:
+	var returning := w.has_meta("returning")
+	if animate and String(w.get_meta("lay", "")) == key and not fresh:
 		return
 	w.set_meta("lay", key)
 	var old: Variant = (w.get_meta("tw") if w.has_meta("tw") else null)
 	if old is Tween and (old as Tween).is_valid():
 		(old as Tween).kill()
+	var spring := bool(w.get_meta("spring", false))
+	w.set_meta("spring", false)
 	if not animate or fast or auto_all or reduced_motion or not is_inside_tree():
+		if returning:
+			_finish_hand_return(w, pos)
 		w.position = pos
 		w.rotation = rot
 		w.scale = Vector2.ONE
 		w.modulate.a = 1.0
 		w.set_meta("fresh", false)
 		return
-	var spring := bool(w.get_meta("spring", false))
-	w.set_meta("spring", false)
-	var tw := w.create_tween()
-	tw.set_parallel(true)
-	var dur := 0.17 if spring else (0.20 if fresh else 0.095)
-	var trans := Tween.TRANS_QUAD if spring else Tween.TRANS_CUBIC
-	tw.tween_property(w, "position", pos, dur).set_trans(trans).set_ease(Tween.EASE_OUT)
+	var tw := w.create_tween().set_parallel(true).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
+	var dur := HAND_RETURN_TIME if spring or returning else (HAND_DRAW_TIME if fresh else HAND_SETTLE_TIME)
+	if returning:
+		# 回落期间借用桌面层，目的地始终跟随手牌行的滚动。
+		var start := hand_row.get_global_transform().affine_inverse() * (get_global_transform() * w.position)
+		var move_card := func(p: Vector2) -> void:
+			w.position = get_global_transform().affine_inverse() * (hand_row.get_global_transform() * p)
+		tw.tween_method(move_card, start, pos, dur).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	else:
+		tw.tween_property(w, "position", pos, dur)
 	tw.tween_property(w, "rotation", rot, dur)
 	tw.tween_property(w, "scale", Vector2.ONE, dur)
 	w.set_meta("fresh", false)
 	if w.modulate.a < 1.0:
-		tw.tween_property(w, "modulate:a", 1.0, 0.2)
+		tw.tween_property(w, "modulate:a", 1.0, dur)
+	if returning:
+		tw.chain().tween_callback(_finish_hand_return.bind(w, pos))
 	w.set_meta("tw", tw)
+
+
+func _dock_hand_card(w: Control) -> void:
+	if not is_instance_valid(hand_row) or w.get_parent() == hand_row:
+		return
+	w.reparent(hand_row, true)
+	var child_index := 0
+	for card: Control in hand_cards:
+		if card == w:
+			break
+		if card.get_parent() == hand_row:
+			child_index += 1
+	hand_row.move_child(w, child_index)
+
+
+func _finish_hand_return(w: Control, pos: Vector2) -> void:
+	if not hand_cards.has(w):
+		return
+	_dock_hand_card(w)
+	w.position = pos
+	w.z_index = 0
+	w.remove_meta("returning")
+	(w.get_child(0) as Control).mouse_filter = MOUSE_FILTER_STOP
+	w.set_meta("intro", Callable(self, "_intro_card").bind(w.get_meta("card")))
 
 
 func _respond_card_ok(c: Dictionary) -> bool:
@@ -2526,6 +2800,7 @@ func _input(event: InputEvent) -> void:
 	if event is InputEventMouseButton and (event as InputEventMouseButton).button_index == MOUSE_BUTTON_LEFT:
 		var mb := event as InputEventMouseButton
 		if not mb.pressed:
+			_clear_press_feedback()
 			_release_hand_press(mb.position)
 		elif hand_cancel_release:
 			hand_cancel_release = false
@@ -2536,6 +2811,7 @@ func _input(event: InputEvent) -> void:
 func _notification(what: int) -> void:
 	if what != NOTIFICATION_APPLICATION_FOCUS_OUT and what != NOTIFICATION_APPLICATION_PAUSED:
 		return
+	_interrupt_press_feedback()
 	if drag_press.is_empty():
 		return
 	hand_cancel_release = true
@@ -2543,7 +2819,11 @@ func _notification(what: int) -> void:
 	if IntroPop.inst != null:
 		IntroPop.inst.cancel_longpress()
 	if drag_wrap != null:
-		_restore_drag_selection()
+		_restore_drag_selection(false)
+
+
+func _hand_accepts_press() -> bool:
+	return not game_over and (asking or discard_mode or (interactive and in_play_phase and turn_seat == 0))
 
 
 func _begin_hand_press(w: Control, gp: Vector2) -> void:
@@ -2558,6 +2838,8 @@ func _begin_hand_press(w: Control, gp: Vector2) -> void:
 		"wrap": w, "pos": gp, "offset": grip, "latest": gp,
 		"scroll": hand_scroll_offset, "gesture": "pending",
 	}
+	if is_instance_valid(w) and _hand_accepts_press():
+		_show_press_feedback(w.get_node("PressFeedback") as Panel, w.get_child(0) as Button)
 
 
 func _move_hand_press(gp: Vector2) -> void:
@@ -2566,6 +2848,7 @@ func _move_hand_press(gp: Vector2) -> void:
 	drag_press["latest"] = gp
 	var movement := gp - Vector2(drag_press["pos"])
 	if drag_press["gesture"] == "pending" and movement.length() >= DRAG_START_PX:
+		_clear_press_feedback()
 		if IntroPop.inst != null:
 			IntroPop.inst.cancel_longpress()
 		var pressed_card: Variant = drag_press["wrap"]
@@ -2589,6 +2872,7 @@ func _release_hand_press(gp: Vector2) -> void:
 		drag_end_ms = Time.get_ticks_msec()
 	if drag_press.is_empty():
 		return
+	_clear_press_feedback()
 	if drag_press["gesture"] != "pending" or _lp_swallowing():
 		drag_end_ms = Time.get_ticks_msec()
 	if is_instance_valid(drag_wrap):
@@ -2613,7 +2897,8 @@ func _drag_begin(w: Control) -> void:
 	# 真正拖出的牌退出裁剪区域，横览始终留在原手牌层。
 	w.reparent(self, true)
 	w.rotation = 0.0
-	w.scale = Vector2(1.06, 1.06)
+	w.scale = Vector2(1.035, 1.035)
+	w.modulate.a = 1.0
 	w.z_index = 20
 	drag_hover_seat = -1
 	if drag_line != null:
@@ -2624,21 +2909,29 @@ func _drag_begin(w: Control) -> void:
 
 
 func _drag_target_at(gp: Vector2) -> int:
+	var point := get_global_transform_with_canvas().affine_inverse() * gp
+	var retained := -1
 	var closest := -1
 	var best_distance := INF
 	for i in players.size():
 		var panel := seat_panel_of(i)
-		if panel == null:
+		if panel == null or not panel.is_visible_in_tree():
 			continue
-		var rect := panel.get_global_rect()
-		if rect.has_point(gp):
-			return i if target_candidates.has(i) else -1
-		if target_candidates.has(i) and rect.grow(SNAP_PX).has_point(gp):
-			var distance := rect.get_center().distance_squared_to(gp)
+		# 以原始座位边界为准，预览时的放大不会改变吸附范围。
+		var rect := Rect2(panel.position, panel.size)
+		var legal := target_candidates.has(i) and bool(players[i]["alive"])
+		if rect.has_point(point):
+			return i if legal else -1
+		if not legal:
+			continue
+		if i == drag_hover_seat and rect.grow(SNAP_RELEASE_PX).has_point(point):
+			retained = i
+		if rect.grow(SNAP_PX).has_point(point):
+			var distance := rect.get_center().distance_squared_to(point)
 			if distance < best_distance:
 				closest = i
 				best_distance = distance
-	return closest
+	return retained if retained >= 0 else closest
 
 
 func _drag_move(gp: Vector2) -> void:
@@ -2646,25 +2939,34 @@ func _drag_move(gp: Vector2) -> void:
 	if w == null or not is_instance_valid(w):
 		return
 	var c: Dictionary = w.get_meta("card")
-	var card_pos: Vector2 = gp - Vector2(drag_press.get("offset", Vector2(CARD_W * 0.5, CARD_H * 0.5)))
+	var table_xf := get_global_transform_with_canvas()
+	var table_inv := table_xf.affine_inverse()
+	var pos := table_inv * (gp - Vector2(drag_press.get("offset", w.size * 0.5)))
+	var scale_factor := 1.035
 	var needs_target := card_needs_target(c)
 	var hover := _drag_target_at(gp) if needs_target else -1
 	if hover >= 0:
-		# 吸附：牌向目标头像中心靠拢
-		var pn2 := seat_panel_of(hover)
-		var sc := pn2.global_position + pn2.size * 0.5 - Vector2(CARD_W, CARD_H) * 0.5
-		card_pos = card_pos.lerp(sc, 0.38)
+		# 吸附预览停在靠近目标的桌内一侧，留出肖像、血量及目标提示。
+		var pad := minf(16.0, minf(play_area.size.x, play_area.size.y) * 0.25)
+		var preview_area := play_area.grow(-pad)
+		scale_factor = minf(0.70, minf(preview_area.size.x / w.size.x, preview_area.size.y / w.size.y))
+		var preview_size := w.size * scale_factor
+		pos = (seat_center(hover) - preview_size * 0.5).clamp(preview_area.position, preview_area.end - preview_size)
+	drag_pose = Vector3(pos.x, pos.y, scale_factor)
 	if hover != drag_hover_seat:
 		drag_hover_seat = hover
 		sel_target = hover if hover >= 0 else (target_candidates[0] if target_candidates.size() == 1 else -1)
+		_transition_drag_pose(hover >= 0)
 		_apply_seat_frames()
 		_update_action_bar()
-	w.global_position = card_pos
+	_draw_drag_pose(drag_pose_offset)
 	if drag_line != null:
 		var a := _hand_point(40)
-		var b := card_pos - global_position + Vector2(CARD_W * 0.5, CARD_H * 0.35)
+		var b := pos + w.size * Vector2(0.5, 0.35) * scale_factor
 		if hover >= 0:
-			b = seat_center(hover)
+			var panel := seat_panel_of(hover)
+			var bounds := Rect2(panel.position, panel.size).grow(12)
+			b = b.clamp(bounds.position, bounds.end)
 		drag_line.points = PackedVector2Array([a, b])
 		var release_ok := hover >= 0 or (not needs_target and gp.y < hand_row.global_position.y - 30.0)
 		drag_line.default_color = Color(0.45, 1.0, 0.55, 0.95) if release_ok else Color(1.0, 0.85, 0.45, 0.8)
@@ -2675,6 +2977,35 @@ func _drag_move(gp: Vector2) -> void:
 		drag_hint.text = "松手选中【%s】，随后出牌" % card_name if gp.y < hand_row.global_position.y - 30.0 else "向上拖出后松手选中"
 	else:
 		drag_hint.text = "拖到可选角色出牌，松手可取消"
+
+
+func _transition_drag_pose(snapping: bool) -> void:
+	_stop_drag_pose()
+	if not _motion_enabled():
+		return
+	var scale_factor := drag_wrap.scale.x
+	var drawn := drag_wrap.position + drag_wrap.pivot_offset * (1.0 - scale_factor)
+	# 松开吸附后，位置继续跟随手指，余量在短时间内消失。
+	drag_pose_offset = Vector3(drawn.x, drawn.y, scale_factor) - drag_pose
+	var duration := DRAG_SNAP_TIME if snapping else DRAG_DETACH_TIME
+	drag_pose_tween = drag_wrap.create_tween().set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
+	drag_pose_tween.tween_method(_draw_drag_pose, drag_pose_offset, Vector3.ZERO, duration)
+
+
+func _draw_drag_pose(offset: Vector3) -> void:
+	if not is_instance_valid(drag_wrap):
+		return
+	drag_pose_offset = offset
+	var pose := drag_pose + offset
+	drag_wrap.scale = Vector2.ONE * pose.z
+	drag_wrap.position = Vector2(pose.x, pose.y) - drag_wrap.pivot_offset * (1.0 - pose.z)
+
+
+func _stop_drag_pose() -> void:
+	if drag_pose_tween != null and drag_pose_tween.is_valid():
+		drag_pose_tween.kill()
+	drag_pose_tween = null
+	drag_pose_offset = Vector3.ZERO
 
 
 func _drag_finish(gp: Vector2) -> void:
@@ -2688,9 +3019,10 @@ func _drag_finish(gp: Vector2) -> void:
 	if card_needs_target(c):
 		var hover := _drag_target_at(gp)
 		if hover >= 0:
+			var origin := _hand_flight_origin(w)
 			_drag_reset()
 			# 等 GUI 松手完成再消耗牌，避免手牌节点在触摸释放分发中离树。
-			_play_selected.call_deferred(c, hover, -2)
+			_play_selected.call_deferred(c, hover, -2, origin)
 			return
 	elif gp.y < hand_row.global_position.y - 30.0:
 		# 无目标牌进入普通确认流程。
@@ -2702,9 +3034,9 @@ func _drag_finish(gp: Vector2) -> void:
 	_restore_drag_selection()
 
 
-func _restore_drag_selection() -> void:
+func _restore_drag_selection(animate_return: bool = true) -> void:
 	var previous := drag_previous
-	_drag_reset()
+	_drag_reset(animate_return)
 	if not interactive or game_over or asking:
 		_layout_hand(true)
 		return
@@ -2721,12 +3053,17 @@ func _restore_drag_selection() -> void:
 	refresh()
 
 
-func _drag_reset() -> void:
+func _drag_reset(animate_return: bool = false) -> void:
+	_stop_drag_pose()
 	if is_instance_valid(drag_wrap):
-		if is_instance_valid(hand_row) and drag_wrap.get_parent() != hand_row:
-			drag_wrap.reparent(hand_row, true)
-			hand_row.move_child(drag_wrap, hand_cards.find(drag_wrap))
-		drag_wrap.z_index = 0
+		if animate_return and not fast and not auto_all and not reduced_motion:
+			drag_wrap.set_meta("returning", true)
+			drag_wrap.remove_meta("intro")
+			(drag_wrap.get_child(0) as Control).mouse_filter = MOUSE_FILTER_IGNORE
+			drag_wrap.z_index = 19
+		else:
+			_dock_hand_card(drag_wrap)
+			drag_wrap.z_index = 0
 		drag_wrap.set_meta("lay", "")
 		drag_wrap.set_meta("spring", true)
 	drag_wrap = null
@@ -2763,13 +3100,13 @@ func _select_card(card: Dictionary, allow_auto: bool = true) -> void:
 			# 唯一合法目标：预先选好，但仍要点「确定」
 			sel_target = int(target_candidates[0])
 	_show_sel_hint()
-	play_sfx("draw")
+	play_sfx("select")
 	_queue_refresh()
 	if allow_auto:
 		_maybe_auto_confirm()
 
 
-func _play_selected(card: Dictionary, tgt_seat: int, extra: int = -1) -> void:
+func _play_selected(card: Dictionary, tgt_seat: int, extra: int = -1, drag_origin: Dictionary = {}) -> void:
 	if not interactive or turn_seat != 0 or game_over or players.is_empty() or asking:
 		return
 	var me: Dictionary = players[0]
@@ -2784,9 +3121,9 @@ func _play_selected(card: Dictionary, tgt_seat: int, extra: int = -1) -> void:
 				ok = true
 		if not ok:
 			return
-	var w := _find_wrap(card)
-	if w != null:
-		fly_from_hand = {"card": card, "pos": w.global_position - global_position + Vector2(CARD_W, CARD_H) * 0.5}
+	fly_from_hand = drag_origin if not drag_origin.is_empty() else _hand_flight_origin(_find_wrap(card))
+	if not fly_from_hand.is_empty():
+		fly_from_hand["card"] = card
 	targeting = false
 	selected_card = {}
 	target_candidates = []
@@ -2794,13 +3131,15 @@ func _play_selected(card: Dictionary, tgt_seat: int, extra: int = -1) -> void:
 	extra_target = -1
 	hide_prompt()
 	interactive = false
+	_apply_seat_frames()
 	_update_action_bar()
+	_queue_refresh()
 	# 羁绊锁链：已在出牌前点选了第二个目标（或确认只连一人）时，引擎随后的「第二个目标」询问直接用这个选择
 	pre_answers = []
 	if String(card["name"]) == "羁绊锁链" and extra != -2:
 		pre_answers.append({"kind": "chain2", "value": players[extra] if extra >= 0 and extra < players.size() else {}})
 	if card_kind(card) in ["武器", "防具", "饰品", "宝物"]:
-		eng.play_equip(me, card)
+		await eng.play_equip(me, card)
 	elif needs:
 		await execute_targeted_card(me, card, players[tgt_seat])
 	else:
@@ -2857,36 +3196,22 @@ func _on_end_play_btn() -> void:
 func _update_action_bar() -> void:
 	if action_bar == null or confirm_btn == null:
 		return
-	var show_bar := in_play_phase and turn_seat == 0 and not asking and not game_over and not discard_mode
+	var show_bar := interactive and in_play_phase and turn_seat == 0 and not asking and not game_over and not discard_mode
+	var selecting := show_bar and (not selected_card.is_empty() or targeting or skill_mode != "" or spear_targeting or muniu_targeting or muniu_storing)
 	action_bar.visible = show_bar
+	confirm_btn.visible = selecting
+	cancel_btn.visible = selecting
+	cancel_btn.disabled = not selecting
+	end_play_btn.disabled = not show_bar
+	confirm_btn.disabled = not selecting or not _can_confirm()
+	if selecting:
+		confirm_btn.text = _primary_action_label()
+		confirm_btn.tooltip_text = _confirm_disabled_hint() if confirm_btn.disabled else ""
 	if not show_bar:
+		recast_btn.hide()
 		return
-	confirm_btn.text = _primary_action_label()
-	confirm_btn.disabled = not _can_confirm()
-	confirm_btn.tooltip_text = _confirm_disabled_hint() if confirm_btn.disabled else ""
-	if recast_btn != null:
-		var rc_ok: bool = skill_mode == "" and not spear_targeting and not muniu_targeting and not muniu_storing and not selected_card.is_empty() and eng != null and eng.can_recast(selected_card) and _hand_has(selected_card)
-		recast_btn.visible = rc_ok
-		recast_btn.disabled = not (rc_ok and interactive)
-	if luck_btn != null:
-		var lk_ok: bool = not tutorial and game_mode != "puzzle" and round_no <= 1 and luck_left > 0 and not players.is_empty() and not (players[0]["hand"] as Array).is_empty() and int(players[0].get("attack_count", 0)) == 0 and (players[0]["turn_used"] as Dictionary).is_empty()
-		luck_btn.visible = lk_ok
-		luck_btn.disabled = not (lk_ok and interactive)
-		luck_btn.text = "手气卡×%d" % luck_left
-	var count := 3 + int(recast_btn != null and recast_btn.visible) + int(luck_btn != null and luck_btn.visible)
-	if int(action_bar.get_meta("button_count", 0)) != count:
-		action_bar.set_meta("button_count", count)
-		const GAP := 12
-		action_bar.add_theme_constant_override("separation", GAP)
-		var bw_act := floorf(minf(188.0, (prompt_action_width - GAP * (count - 1)) / count))
-		var fs_act := 24 if bw_act < 175.0 else 27
-		for ab in [confirm_btn, cancel_btn, recast_btn, luck_btn, end_play_btn]:
-			if ab != null:
-				ab.custom_minimum_size = Vector2(bw_act, TABLE_ACTION_H)
-				ab.add_theme_font_size_override("font_size", fs_act)
-		action_bar.size.x = prompt_action_width
-	cancel_btn.disabled = not interactive or (selected_card.is_empty() and not targeting and skill_mode == "" and not spear_targeting and not muniu_targeting and not muniu_storing)
-	end_play_btn.disabled = not interactive
+	var can_recast: bool = selecting and skill_mode == "" and not spear_targeting and not muniu_targeting and not muniu_storing and not selected_card.is_empty() and eng != null and eng.can_recast(selected_card) and _hand_has(selected_card)
+	recast_btn.visible = can_recast
 
 
 func _primary_action_label() -> String:
@@ -2913,19 +3238,13 @@ func _confirm_disabled_hint() -> String:
 
 
 func _apply_seat_frames() -> void:
-	# 拖拽悬停的目标头像放大一点（吸附反馈）
+	# 拖拽悬停只刷新描边和提示，头像位置及大小保持固定。
 	for panel in seat_panels:
 		var s := int(panel.get_meta("seat"))
-		var want := Vector2(1.06, 1.06) if s == drag_hover_seat else Vector2.ONE
-		(panel as Control).pivot_offset = (panel as Control).size * 0.5
-		(panel as Control).scale = want
 		if s < players.size():
-			_sync_target_tag(panel, s, bool(players[s]["alive"]))
-	if me_panel_ref != null:
-		me_panel_ref.pivot_offset = me_panel_ref.size * 0.5
-		me_panel_ref.scale = Vector2(1.04, 1.04) if drag_hover_seat == 0 else Vector2.ONE
-		if not players.is_empty():
-			_sync_target_tag(me_panel_ref, 0, bool(players[0]["alive"]))
+			_sync_seat_frame(panel, s, bool(players[s]["alive"]))
+	if me_panel_ref != null and not players.is_empty():
+		_sync_seat_frame(me_panel_ref, 0, bool(players[0]["alive"]))
 
 
 # ---------- 弃牌多选 ----------
@@ -2943,7 +3262,7 @@ func _toggle_discard(card: Dictionary) -> void:
 		# 已选满：替换最早选的那张（手杀同款，省一次取消）
 		discard_sel.remove_at(0)
 		discard_sel.append(card)
-	play_sfx("draw")
+	play_sfx("select")
 	_update_discard_ui()
 	_queue_refresh()
 
@@ -2964,7 +3283,7 @@ func _auto_select_discard_cards() -> void:
 		chosen.append(c)
 		sim_hand.erase(c)
 	discard_sel = chosen
-	play_sfx("draw")
+	play_sfx("select")
 	_update_discard_ui()
 	_queue_refresh()
 
@@ -2981,6 +3300,8 @@ var discard_prompt := ""
 var pick_cards: Array = []
 var discard_auto_left := 0
 var fly_from_hand: Dictionary = {}
+var _countdown_seconds := -1
+var _countdown_warning := false
 
 
 func _default_answer(options: Array) -> Variant:
@@ -3018,40 +3339,133 @@ func _countdown_tick(v: float) -> void:
 	if ask_bar_fill == null:
 		return
 	ask_bar_fill.scale.x = clampf(v / maxf(ask_timeout, 0.01), 0.0, 1.0)
-	ask_bar_fill.color = C_TABLE_ACTION if v < 5.0 else Color("#739fca")
-	if ask_secs_label != null:
-		var countdown := "剩余 %d 秒" % ceili(v)
-		if ask_default_caption != "" and ask_default_caption.length() <= 8:
-			countdown += " · 超时%s" % ask_default_caption
-		if ask_secs_label.text != countdown:
-			ask_secs_label.text = countdown
+	var warning := v < 5.0
+	if _countdown_seconds < 0 or warning != _countdown_warning:
+		_countdown_warning = warning
+		ask_bar_fill.color = C_TABLE_ACTION if warning else Color("#739fca")
+	var seconds := ceili(v)
+	if ask_secs_label == null or seconds == _countdown_seconds:
+		return
+	_countdown_seconds = seconds
+	var countdown := "剩余 %d 秒" % seconds
+	if ask_default_caption != "" and ask_default_caption.length() <= 8:
+		countdown += " · 超时%s" % ask_default_caption
+	ask_secs_label.text = countdown
 
 
 # ================= V0.25 处理区与结算动画 =================
 # 对照无名杀 player.$throw（牌飞入处理区）、$draw（牌堆飞入）、$judge / $phaseJudge（判定牌）、$equip、$addVirtualJudge。
 # 处理区节点池复用（最多 PZ_MAX 张同时显示），空闲 PZ_IDLE 秒后整体淡出飞向弃牌堆。
 const FX_CAP := 36
-const CARD_FLY_TIME := 0.18
+const CARD_FLY_TIME := 0.23
+const PLAYED_CARD_SLIDE := 0.46
+const PLAYED_CARD_HOLD := 0.20
 const PZ_W := 140.0
-const PZ_H := 204.0  # V0.43：微调留出底部播报条空间，保持手牌比例
+const PZ_H := CARD_H * PZ_W / CARD_W
+const PZ_CAP_EXTENT := 42.0
+const PZ_CAP_MARGIN := 6.0
+const PZ_SPACING := 18.0
+const PZ_EDGE_PAD := 12.0
 const PZ_MAX := 4
 const PZ_IDLE := 2.5
+var play_area := Rect2(610, 120, 700, 350)
+var pz_clip: Control = null
+var pz_flight_layer: Control = null
 var pz_pool: Array = []      # 复用的处理区牌节点
 var pz_live: Array = []      # 当前显示中的（按时间顺序）
 var pz_clear_tw: Tween = null
 var pz_layer: Control = null
-var nullify_chain: Array = []
-var nullify_panel: PanelContainer = null
-var nullify_label: Label = null
+var nullify_count := 0
+
+
+func _build_play_notice() -> void:
+	play_callout_panel = PanelContainer.new()
+	play_callout_panel.name = "BattleActionNotice"
+	play_callout_panel.custom_minimum_size.y = 86.0
+	play_callout_panel.mouse_filter = MOUSE_FILTER_IGNORE
+	play_callout_panel.add_theme_stylebox_override("panel", _tight(style(Color("#322338"), 17, Color("#98778f"), 2), 16, 4))
+	var lines := VBoxContainer.new()
+	lines.mouse_filter = MOUSE_FILTER_IGNORE
+	lines.alignment = BoxContainer.ALIGNMENT_CENTER
+	lines.add_theme_constant_override("separation", 1)
+	play_callout_panel.add_child(lines)
+	play_callout_label = lbl("", 32, Color("#fff9fb"), true, HORIZONTAL_ALIGNMENT_CENTER)
+	play_callout_label.name = "ActionSource"
+	play_result_label = lbl("", 28, Color("#ffe5ab"), true, HORIZONTAL_ALIGNMENT_CENTER)
+	play_result_label.name = "ActionResult"
+	for line in [play_callout_label, play_result_label]:
+		line.autowrap_mode = TextServer.AUTOWRAP_OFF
+		line.clip_text = true
+		line.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+		line.mouse_filter = MOUSE_FILTER_IGNORE
+		lines.add_child(line)
+	play_callout_panel.hide()
+	add_child(play_callout_panel)
+
+
+func _build_skill_notice(side_y: float) -> void:
+	# 使用头像与工具之间的空白，技能不会盖住中央的牌或响应窗口。
+	var left := safe_insets.x + 26.0
+	var width := clampf(play_area.position.x - left - 276.0, 148.0, 406.0)
+	var height := 88.0
+	skill_notice_panel = PanelContainer.new()
+	skill_notice_panel.name = "BattleSkillNotice"
+	skill_notice_panel.mouse_filter = MOUSE_FILTER_IGNORE
+	skill_notice_panel.custom_minimum_size = Vector2(width, height)
+	skill_notice_panel.size = skill_notice_panel.custom_minimum_size
+	skill_notice_panel.position = Vector2(left, minf(safe_insets.y + table_hud_height + 12.0, side_y - height - 6.0))
+	skill_notice_panel.add_theme_stylebox_override("panel", _tight(style(Color("#2d243d"), 17, Color("#b498c9"), 2), 14, 4))
+	var lines := VBoxContainer.new()
+	lines.mouse_filter = MOUSE_FILTER_IGNORE
+	lines.alignment = BoxContainer.ALIGNMENT_CENTER
+	lines.add_theme_constant_override("separation", 1)
+	skill_notice_panel.add_child(lines)
+	skill_notice_actor = lbl("", 24, Color("#f4e9ff"), true, HORIZONTAL_ALIGNMENT_CENTER)
+	skill_notice_actor.name = "SkillActor"
+	skill_notice_title = lbl("", 30, Color("#ffdda3"), true, HORIZONTAL_ALIGNMENT_CENTER)
+	skill_notice_title.name = "SkillTitle"
+	for line in [skill_notice_actor, skill_notice_title]:
+		line.mouse_filter = MOUSE_FILTER_IGNORE
+		line.autowrap_mode = TextServer.AUTOWRAP_OFF
+		line.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+		line.clip_text = true
+		lines.add_child(line)
+	skill_notice_panel.hide()
+	add_child(skill_notice_panel)
+
+
+func _table_play_area(prompt_top: float, notice_height: float) -> Rect2:
+	var safe_width := vw - safe_insets.x - safe_insets.z
+	# 两侧为座位留出两列肖像、边距和间隔，上下避开阶段栏、出牌播报和操作提问。
+	var width := clampf(safe_width - 1120.0, 1.0, 700.0)
+	var top := safe_insets.y + table_hud_height + 16.0
+	var bottom := prompt_top - notice_height - 18.0
+	return Rect2(safe_insets.x + (safe_width - width) * 0.5, top, width, maxf(bottom - top, 1.0))
+
+
+func _pz_fit_scale() -> float:
+	var full_width := float(PZ_MAX) * PZ_W + float(PZ_MAX - 1) * PZ_SPACING + PZ_CAP_MARGIN * 2.0
+	var width_fit := maxf(play_area.size.x - PZ_EDGE_PAD * 2.0, 1.0) / full_width
+	var height_fit := maxf(play_area.size.y - PZ_EDGE_PAD * 2.0, 1.0) / (PZ_H + PZ_CAP_EXTENT)
+	return minf(1.0, minf(width_fit, height_fit))
 
 
 func _pz_center() -> Vector2:
-	return Vector2(vw * 0.5, 276.0 + PZ_H * 0.5)
+	# 视觉中心包括牌下的来源标签，卡面中心略向上。
+	return play_area.get_center() - Vector2(0.0, PZ_CAP_EXTENT * 0.5 * _pz_fit_scale())
+
+
+func _pz_launch_point(from_pos: Vector2, launch_scale: float) -> Vector2:
+	var half_width := (PZ_W * 0.5 + PZ_CAP_MARGIN) * launch_scale + PZ_EDGE_PAD
+	var half_height := PZ_H * 0.5 * launch_scale + PZ_EDGE_PAD
+	var start := play_area.position + Vector2(half_width, half_height)
+	var end := play_area.end - Vector2(half_width, half_height + PZ_CAP_EXTENT * launch_scale)
+	return from_pos.clamp(start, end.max(start))
 
 
 func _pz_make() -> Control:
 	var root := Control.new()
-	root.size = Vector2(PZ_W, PZ_H + 40)
+	root.size = Vector2(PZ_W, PZ_H + PZ_CAP_EXTENT)
 	root.pivot_offset = Vector2(PZ_W * 0.5, PZ_H * 0.5)
 	root.mouse_filter = MOUSE_FILTER_IGNORE
 	var face := Panel.new()
@@ -3095,17 +3509,18 @@ func _pz_make() -> Control:
 	# 说明条（谁 → 谁）
 	var cap_bg := Panel.new()
 	cap_bg.name = "CapBg"
-	cap_bg.position = Vector2(-34, PZ_H + 6)
-	cap_bg.size = Vector2(PZ_W + 68, 36)
+	cap_bg.position = Vector2(-PZ_CAP_MARGIN, PZ_H + 6)
+	cap_bg.size = Vector2(PZ_W + PZ_CAP_MARGIN * 2.0, 36)
 	cap_bg.mouse_filter = MOUSE_FILTER_IGNORE
 	cap_bg.add_theme_stylebox_override("panel", style(_table_surface, 16, _table_edge, 1, true))
 	root.add_child(cap_bg)
 	var cap := lbl("", 19, _table_text, true, HORIZONTAL_ALIGNMENT_CENTER)
 	cap.name = "Cap"
-	cap.position = Vector2(-28, PZ_H + 10)
-	cap.size = Vector2(PZ_W + 56, 28)
+	cap.position = Vector2(2, PZ_H + 10)
+	cap.size = Vector2(PZ_W - 4, 28)
 	cap.autowrap_mode = TextServer.AUTOWRAP_OFF
 	cap.clip_text = true
+	cap.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	cap.mouse_filter = MOUSE_FILTER_IGNORE
 	root.add_child(cap)
 	return root
@@ -3134,7 +3549,9 @@ func _pz_fill(n: Control, card: Dictionary, caption: String) -> void:
 	var fsb := style(Color(1, 1, 1, 0.98), 12, C_GOLD, 3, true)
 	face.add_theme_stylebox_override("panel", fsb)
 	_build_card_face(face, card, Vector2(PZ_W, PZ_H), fsb)
-	(n.get_node("Cap") as Label).text = caption
+	var cap := n.get_node("Cap") as Label
+	cap.text = caption
+	cap.visible = caption != ""
 	(n.get_node("CapBg") as Control).visible = caption != ""
 	(n.get_node("Back") as Control).visible = false
 	(n.get_node("Face") as Control).visible = true
@@ -3145,10 +3562,9 @@ func _pz_fill(n: Control, card: Dictionary, caption: String) -> void:
 
 
 func _pz_slot(i: int, cnt: int) -> Vector2:
-	var step := minf(PZ_W + 14.0, 470.0 / maxf(float(cnt), 1.0))
-	var total := PZ_W + step * float(cnt - 1)
-	var c := _pz_center()
-	return Vector2(c.x - total * 0.5 + step * float(i), c.y - PZ_H * 0.5)
+	var step := (PZ_W + PZ_SPACING) * _pz_fit_scale()
+	var center := _pz_center() + Vector2((float(i) - float(cnt - 1) * 0.5) * step, 0.0)
+	return center - Vector2(PZ_W, PZ_H) * 0.5
 
 
 func _pz_relayout() -> void:
@@ -3165,7 +3581,7 @@ func _pz_relayout() -> void:
 			n.position = dst
 			continue
 		var tw := n.create_tween()
-		tw.tween_property(n, "position", dst, CARD_FLY_TIME).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+		tw.tween_property(n, "position", dst, 0.21).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
 		n.set_meta("tw", tw)
 
 
@@ -3177,19 +3593,25 @@ func _pz_stop_tween(n: Control, key: String) -> void:
 		n.remove_meta(key)
 
 
+func _pz_clip_card(n: Control) -> void:
+	if n.get_parent() != pz_layer:
+		n.reparent(pz_layer, false)
+
+
 func _pz_finish_motion() -> void:
 	for n: Control in pz_pool:
 		if not is_instance_valid(n):
 			continue
 		_pz_stop_tween(n, "tw")
 		_pz_stop_tween(n, "reveal_tw")
+		_pz_clip_card(n)
 		n.set_meta("flying", false)
 		var index := pz_live.find(n)
 		if index < 0:
 			n.hide()
 			continue
 		n.position = _pz_slot(index, pz_live.size())
-		n.scale = Vector2.ONE
+		n.scale = Vector2.ONE * _pz_fit_scale()
 		n.rotation = 0.0
 		var back := n.get_node("Back") as Control
 		if back.visible:
@@ -3201,12 +3623,16 @@ func _pz_finish_motion() -> void:
 		stamp.visible = stamp.text != ""
 
 
-func _pz_arm_clear() -> void:
+func _pz_arm_clear(landing_time: float = 0.0) -> void:
 	if pz_clear_tw and pz_clear_tw.is_valid():
 		pz_clear_tw.kill()
 	pz_clear_tw = create_tween()
-	pz_clear_tw.tween_interval(0.05 if fast else PZ_IDLE)
-	pz_clear_tw.tween_callback(_pz_clear)
+	pz_clear_tw.tween_interval(0.05 if fast else landing_time + PZ_IDLE)
+	pz_clear_tw.tween_callback(func() -> void:
+		if asking and not fast:
+			_pz_arm_clear()
+		else:
+			_pz_clear())
 
 
 func _pz_clear() -> void:
@@ -3217,12 +3643,13 @@ func _pz_clear() -> void:
 			continue
 		_pz_stop_tween(n, "tw")
 		_pz_stop_tween(n, "reveal_tw")
+		_pz_clip_card(n)
 		n.set_meta("flying", false)
 		if not _motion_enabled():
 			n.visible = false
 			continue
 		var tw: Tween = n.create_tween().set_parallel(true)
-		tw.tween_property(n, "position", dst - Vector2(PZ_W, PZ_H) * 0.25, CARD_FLY_TIME).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
+		tw.tween_property(n, "position", dst - Vector2(PZ_W, PZ_H) * 0.25, CARD_FLY_TIME).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
 		tw.tween_property(n, "scale", Vector2(0.25, 0.25), CARD_FLY_TIME)
 		tw.tween_property(n, "modulate:a", 0.0, CARD_FLY_TIME)
 		tw.chain().tween_callback(func() -> void: if is_instance_valid(n): n.visible = false)
@@ -3231,7 +3658,7 @@ func _pz_clear() -> void:
 	_nullify_reset()
 
 
-func _pz_add(card: Dictionary, caption: String, from_pos: Vector2) -> Control:
+func _pz_add(card: Dictionary, caption: String, from_pos: Vector2, hand_launch: Dictionary = {}, played: bool = false) -> Control:
 	if pz_layer == null or card.is_empty() or auto_all:
 		return null
 	var n := _pz_take()
@@ -3242,34 +3669,66 @@ func _pz_add(card: Dictionary, caption: String, from_pos: Vector2) -> Control:
 		_pz_stop_tween(old, "tw")
 		_pz_stop_tween(old, "reveal_tw")
 		old.visible = false
+		_pz_clip_card(old)
 	_pz_stop_tween(n, "tw")
 	_pz_stop_tween(n, "reveal_tw")
+	_pz_clip_card(n)
 	n.set_meta("flying", false)
 	_pz_fill(n, card, caption)
 	n.visible = true
 	pz_layer.move_child(n, pz_layer.get_child_count() - 1)
 	var cnt := pz_live.size()
 	var dst := _pz_slot(cnt - 1, cnt)
+	var settled_scale := Vector2.ONE * _pz_fit_scale()
+	var fly_from_wrap := not hand_launch.is_empty()
+	var travel_time := PLAYED_CARD_SLIDE if played else CARD_FLY_TIME
 	if not _motion_enabled():
 		n.position = dst
-		n.scale = Vector2.ONE
+		n.scale = settled_scale
 		n.rotation = 0.0
+		if played:
+			play_sfx("card")
 	else:
-		n.position = from_pos - Vector2(PZ_W, PZ_H) * 0.5
-		n.scale = Vector2(0.6, 0.6)
-		n.rotation = rng.randf_range(-0.12, 0.12)
+		var origin := from_pos
+		if played:
+			play_sfx("card_slide")
+			n.reparent(pz_flight_layer, false)
+		if fly_from_wrap:
+			n.scale = Vector2(hand_launch["scale"]) * Vector2(CARD_W / PZ_W, CARD_H / PZ_H)
+			n.rotation = float(hand_launch["rotation"])
+		elif played:
+			n.scale = settled_scale * 0.82
+			n.rotation = 0.0
+		else:
+			var launch_scale := settled_scale.x * 0.6
+			origin = _pz_launch_point(from_pos, launch_scale)
+			n.scale = Vector2.ONE * launch_scale
+			n.rotation = rng.randf_range(-0.12, 0.12)
+		n.position = origin - n.pivot_offset
 		n.set_meta("flying", true)
 		var tw: Tween = n.create_tween().set_parallel(true)
-		tw.tween_property(n, "position", dst, CARD_FLY_TIME).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
-		tw.tween_property(n, "scale", Vector2.ONE, CARD_FLY_TIME).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
-		tw.tween_property(n, "rotation", 0.0, CARD_FLY_TIME)
+		var easing := Tween.EASE_IN_OUT if played else Tween.EASE_OUT
+		if played:
+			# 从实际手牌或座位出发，滑入处理区后停稳。
+			var start := n.position
+			var lift := minf(28.0, start.distance_to(dst) * 0.06)
+			tw.tween_method(func(t: float) -> void:
+				n.position = start.lerp(dst, t) - Vector2(0.0, 4.0 * lift * t * (1.0 - t))
+			, 0.0, 1.0, travel_time).set_trans(Tween.TRANS_SINE).set_ease(easing)
+		else:
+			tw.tween_property(n, "position", dst, travel_time).set_trans(Tween.TRANS_SINE).set_ease(easing)
+		tw.tween_property(n, "scale", settled_scale, travel_time).set_trans(Tween.TRANS_SINE).set_ease(easing)
+		tw.tween_property(n, "rotation", 0.0, travel_time).set_trans(Tween.TRANS_SINE).set_ease(easing)
 		tw.chain().tween_callback(func() -> void:
 			if is_instance_valid(n):
 				n.set_meta("flying", false)
+				_pz_clip_card(n)
+				if played:
+					play_sfx("card")
 				_pz_relayout())
 		n.set_meta("tw", tw)
 	_pz_relayout()
-	_pz_arm_clear()
+	_pz_arm_clear(travel_time if _motion_enabled() else 0.0)
 	return n
 
 
@@ -3310,11 +3769,11 @@ func _pz_judge(seat: int, card: Dictionary, reason: String) -> void:
 	back.visible = true
 	var tw := n.create_tween()
 	tw.tween_interval(CARD_FLY_TIME)
-	tw.tween_property(n, "scale:x", 0.04, 0.07)
+	tw.tween_property(n, "scale:x", _pz_fit_scale() * 0.04, 0.10).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN)
 	tw.tween_callback(func() -> void:
 		face.visible = true
 		back.visible = false)
-	tw.tween_property(n, "scale:x", 1.0, 0.09)
+	tw.tween_property(n, "scale:x", _pz_fit_scale(), 0.13).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
 	if stamp.text != "":
 		tw.tween_callback(func() -> void:
 			stamp.visible = true
@@ -3328,23 +3787,15 @@ func _pz_judge(seat: int, card: Dictionary, reason: String) -> void:
 # ---------- 看破链 ----------
 
 func _nullify_reset() -> void:
-	nullify_chain.clear()
-	if nullify_panel != null:
-		nullify_panel.visible = false
+	nullify_count = 0
 
 
 func _nullify_push(seat: int, negated: bool) -> void:
-	if nullify_panel == null or auto_all:
+	if auto_all:
 		return
-	var nm := String(players[seat]["char"]["name"]) if seat >= 0 and seat < players.size() else "?"
-	nullify_chain.append("%s 打出「看破」→ %s" % [nm, "锦囊失效" if negated else "锦囊恢复生效"])
-	var lines: Array = ["看破链"]
-	var start := maxi(0, nullify_chain.size() - 5)
-	for i in range(start, nullify_chain.size()):
-		lines.append("%d. %s" % [i + 1, nullify_chain[i]])
-	nullify_label.text = "\n".join(lines)
-	nullify_panel.visible = true
-	nullify_panel.modulate.a = 1.0
+	nullify_count += 1
+	_show_play_notice("%s 响应「看破」" % _event_seat_name(seat),
+		"第 %d 次看破 · %s" % [nullify_count, "锦囊失效" if negated else "锦囊恢复生效"])
 
 
 # ---------- 摸牌 / 装备 / 延时锦囊 ----------
@@ -3368,8 +3819,8 @@ func fx_draw_fly(seat: int, n: int) -> void:
 			back.add_theme_stylebox_override("panel", back_style)
 			_add_motion_fx(back)
 			var tw := back.create_tween()
-			tw.tween_property(back, "position", to - Vector2(30, 42) + Vector2((i - (cnt - 1) * 0.5) * 18.0, 0), CARD_FLY_TIME).set_delay(0.018 * i).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
-			tw.tween_property(back, "modulate:a", 0.0, 0.075)
+			tw.tween_property(back, "position", to - Vector2(30, 42) + Vector2((i - (cnt - 1) * 0.5) * 18.0, 0), CARD_FLY_TIME).set_delay(0.027 * i).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
+			tw.tween_property(back, "modulate:a", 0.0, 0.10)
 			tw.tween_callback(back.queue_free)
 	if seat != 0:
 		fx_float(seat, "+%d" % n, Color(0.30, 0.55, 0.95), 40, 50.0)
@@ -3394,7 +3845,7 @@ func _fx_float_at(pos: Vector2, text: String, color: Color, fsize: int) -> void:
 		_add_float_motion(lb, tw, 24.0)
 	else:
 		tw.tween_interval(0.52)
-	tw.tween_property(lb, "modulate:a", 0.0, 0.16)
+		tw.tween_property(lb, "modulate:a", 0.0, 0.18)
 	tw.tween_callback(lb.queue_free)
 
 
@@ -3420,8 +3871,8 @@ func fx_equip_fly(seat: int, nm: String) -> void:
 	_add_motion_fx(chip)
 	chip.position = from - Vector2(70, 18)
 	var tw := chip.create_tween()
-	tw.tween_property(chip, "position", to - Vector2(70, 18), CARD_FLY_TIME).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
-	tw.tween_property(chip, "modulate:a", 0.0, 0.13)
+	tw.tween_property(chip, "position", to - Vector2(70, 18), CARD_FLY_TIME).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
+	tw.tween_property(chip, "modulate:a", 0.0, 0.18)
 	tw.tween_callback(chip.queue_free)
 	fx_target_ring(seat, Color(1.0, 0.82, 0.45))
 
@@ -3724,6 +4175,8 @@ func ask(prompt: String, options: Array, on_built: Callable = Callable(), mode: 
 	ask_mode = mode
 	ask_prompt = prompt
 	ask_context = String(presentation.get("context", ""))
+	if mode == "respond" and not ask_context.is_empty():
+		_hide_play_notice()
 	ask_confirm_text = String(presentation.get("confirm", "确认选择"))
 	ask_options = options
 	ask_default = _default_answer(options)
@@ -3733,6 +4186,7 @@ func ask(prompt: String, options: Array, on_built: Callable = Callable(), mode: 
 	ask_opt_btns = []
 	ask_confirm_btn = null
 	show_hint(prompt, ask_context)
+	_emphasize_new_prompt()
 	for option in options:
 		if _ask_same(option["value"], ask_default):
 			ask_default_caption = String(option["label"])
@@ -3799,7 +4253,10 @@ func start_match(sim: bool) -> void:
 		puzzle_hint_shown = false
 	match_players = Puzzles.identities(pspec).size() if game_mode == "puzzle" else (3 if game_mode == "doudizhu" else (2 if game_mode == "duel" else (4 if (game_mode == "twovtwo" or game_mode == "boss") else 5)))
 	game_over = false
+	_result_music_scene = ""
+	_cv_seat_ms.clear()
 	round_no = 1
+	last_turn_seat = -1
 	log_lines.clear()
 	build_table()
 	if fx_root != null:
@@ -3830,7 +4287,6 @@ func start_match(sim: bool) -> void:
 		match_players = 5
 		identities = ["主公", "忠臣", "反贼", "反贼", "内奸"]
 		identities.shuffle()
-	luck_left = 0 if (tutorial or game_mode == "puzzle") else 2
 	lord_pre_char = {}
 	var pool: Array = Meta.enabled_pool(Characters.LIST)
 	pool.shuffle()
@@ -3884,6 +4340,7 @@ func start_match(sim: bool) -> void:
 		"is_human": Callable(self, "_eng_is_human"),
 		"log": Callable(self, "_eng_log"),
 		"changed": Callable(self, "_eng_changed"),
+		"opening_luck": Callable(self, "_eng_opening_luck"),
 		"pace": Callable(self, "_eng_pace"),
 		"played": Callable(self, "_eng_played"),
 		"fx": Callable(self, "_eng_fx"),
@@ -3917,6 +4374,9 @@ func start_match(sim: bool) -> void:
 		if p["identity"] == first_id:
 			turn_seat = int(p["seat"])
 			break
+	if not fast and not tutorial and game_mode != "puzzle":
+		turn_seat = -1
+		set_phase("起手准备")
 	if game_mode == "duel":
 		log_msg("对局开始！你执【%s】，角色是【%s】。" % [identities[0], human_char["name"]])
 	elif game_mode == "twovtwo":
@@ -3961,31 +4421,48 @@ func ask_pick_character(candidates: Array, my_identity: String) -> Dictionary:
 		draft_banner.text = "你的%s：【%s】%s\n%s" % [word, my_identity, lord_line, String(goals.get(my_identity, ""))]
 	draft_banner.visible = true
 	draft_my_identity = my_identity
+	_draft_refresh_used = false
+	_draft_confirming = false
+	draft_refresh_btn.disabled = false
+	draft_refresh_btn.text = "换一批（剩 1 次）"
 	for n in table_nodes:
 		(n as Control).visible = false
+	_set_draft_hud(true)
 	turn_label.text = "开局选将"
 	draft_layer.visible = true
+	_update_music_scene()
 	diff_layer.visible = true
 	_populate_draft_cards(candidates, my_identity)
+	_layout_draft()
 	var picked: Variant = await decided
 	if not is_inside_tree():
 		return {}
-	if free_pick_overlay != null and is_instance_valid(free_pick_overlay):
-		free_pick_overlay.visible = false
+	var chosen: Dictionary = picked if picked is Dictionary and _draft_candidates.has(picked) else {}
+	_draft_candidates.clear()
 	draft_layer.visible = false
 	diff_layer.visible = false
 	draft_banner.visible = false
+	_set_draft_hud(false)
 	for n in table_nodes:
 		(n as Control).visible = true
 	for ch in draft_layer.get_children():
 		draft_layer.remove_child(ch)
 		ch.queue_free()
-	if picked is Dictionary and not (picked as Dictionary).is_empty():
-		return picked
-	return {}
+	return chosen
+
+
+func _layout_draft() -> void:
+	var width := vw - safe_insets.x - safe_insets.z
+	var center_x := safe_insets.x + width * 0.5
+	draft_banner.position = Vector2(safe_insets.x, safe_insets.y + table_hud_height + 12.0)
+	draft_banner.size.x = width
+	draft_banner.size.y = maxf(90.0, draft_banner.get_combined_minimum_size().y)
+	draft_layer.position = Vector2(center_x - draft_layer.size.x * 0.5, maxf(262.0, draft_banner.position.y + draft_banner.size.y + 20.0))
+	diff_layer.position = Vector2(center_x - diff_layer.size.x * 0.5, draft_layer.position.y + draft_layer.size.y + 24.0)
 
 
 func _populate_draft_cards(candidates: Array, my_identity: String) -> void:
+	_draft_candidates = candidates.duplicate()
 	for ch in draft_layer.get_children():
 		draft_layer.remove_child(ch)
 		ch.queue_free()
@@ -4003,10 +4480,10 @@ func _populate_draft_cards(candidates: Array, my_identity: String) -> void:
 		vb.offset_right = -16
 		vb.offset_top = 8
 		vb.add_theme_constant_override("separation", 4)
-		# V0.31：选将卡改为完整 CG 卡面（竖排名牌 + 体力樱花，主公体力 +1 一并显示）
+		# 选将时展示角色基础体力及主公的体力加成。
 		var cdisp: Dictionary = (c as Dictionary).duplicate()
 		cdisp["hp"] = int(c["hp"]) + hp_bonus
-		var ccard := Art.cg_card(cdisp, Vector2(368, 300), {"zoom": 0.58, "face_y": 0.32, "fs": 27})
+		var ccard := Art.cg_card(cdisp, Vector2(368, 300), {"zoom": 0.58, "face_y": 0.32, "fs": 27, "draft": true})
 		ccard.name = "DraftCG"
 		vb.add_child(ccard)
 		for s in c["skills"]:
@@ -4033,17 +4510,26 @@ func _populate_draft_cards(candidates: Array, my_identity: String) -> void:
 			tw.tween_property(b, "scale", Vector2.ONE, 0.14))
 		var cref: Dictionary = c
 		b.set_meta("intro", IntroPop.char_spec(c))
-		b.pressed.connect(func() -> void:
-			var tw := create_tween().bind_node(b)
-			tw.tween_property(b, "scale", Vector2(1.07, 1.07), 0.09)
-			tw.tween_property(b, "scale", Vector2(1.02, 1.02), 0.12)
-			await tw.finished
-			if is_instance_valid(b):
-				_on_decided(cref))
+		b.pressed.connect(_confirm_draft_card.bind(b, cref))
 		draft_layer.add_child(b)
 		var tin := create_tween().bind_node(b)
 		tin.tween_interval(0.09 * idx_now)
 		tin.tween_property(b, "modulate:a", 1.0, 0.28)
+
+
+func _confirm_draft_card(button: Button, character: Dictionary) -> void:
+	if _draft_confirming or not draft_layer.visible or button.get_parent() != draft_layer:
+		return
+	_draft_confirming = true
+	draft_refresh_btn.disabled = true
+	for candidate: Button in draft_layer.get_children():
+		candidate.disabled = true
+	var tw := button.create_tween()
+	tw.tween_property(button, "scale", Vector2(1.07, 1.07), 0.09)
+	tw.tween_property(button, "scale", Vector2(1.02, 1.02), 0.12)
+	await tw.finished
+	if is_instance_valid(button) and button.get_parent() == draft_layer:
+		_on_decided(character)
 
 
 # ---------------- 对局主循环 ----------------
@@ -4070,6 +4556,7 @@ func end_game(text: String) -> void:
 	if game_over:
 		return
 	game_over = true
+	_clear_designated_targets()
 	interactive = false
 	var your_result := ""
 	if players.size() > 0:
@@ -4112,10 +4599,15 @@ func end_game(text: String) -> void:
 		meta_result = _record_meta(text, your_result)
 	if your_result == "你赢了！":
 		play_sfx("win")
+		_result_music_scene = "result_win"
 	elif your_result == "你输了。":
 		play_sfx("lose")
+		_result_music_scene = "result_lose"
+	else:
+		_result_music_scene = "result_draw"
 	if auto_all:
 		return
+	_update_music_scene()
 	hide_prompt()
 	build_settlement(text, your_result)
 	refresh()
@@ -4184,8 +4676,15 @@ func _puzzle_show(pspec: Dictionary) -> void:
 	if puzzle_panel == null or not is_instance_valid(puzzle_panel):
 		puzzle_panel = PanelContainer.new()
 		puzzle_panel.add_theme_stylebox_override("panel", _tight(style(Color(1.0, 0.98, 0.93, 0.95), 16, Color(0.85, 0.52, 0.16), 3, true), 14, 10))
-		var tw := 440.0 if match_players == 4 else (390.0 if match_players == 3 else minf(660.0, vw / 2.0 - 200.0))
-		puzzle_panel.position = Vector2(360, 126) if match_players == 4 else (Vector2(36, 184) if match_players == 3 else Vector2(40, 184))
+		var side := seat_panel_of(1)
+		var x := safe_insets.x + 22.0
+		var right := play_area.position.x - 16.0
+		if match_players == 3:
+			right = side.position.x - 14.0
+		elif match_players == 4:
+			x = side.position.x + side.size.x + 14.0
+		var tw := minf(550.0, right - x)
+		puzzle_panel.position = Vector2(x, maxf(184.0, play_area.position.y + 46.0))
 		puzzle_panel.custom_minimum_size = Vector2(tw, 0)
 		puzzle_panel.size = Vector2(tw, 0)
 		var vb := VBoxContainer.new()
@@ -4198,11 +4697,11 @@ func _puzzle_show(pspec: Dictionary) -> void:
 		row.add_theme_constant_override("separation", 10)
 		puzzle_hint_btn = plain_btn("💡 看提示", Color(1.0, 0.94, 0.78), Color(0.45, 0.25, 0.05), 19)
 		_set_btn_theme(puzzle_hint_btn, Color(1.0, 0.94, 0.78), C_GOLD, Color(0.45, 0.25, 0.05), 14, 2, false, Vector2i(10, 6), C_PINK_DEEP)
-		puzzle_hint_btn.custom_minimum_size = Vector2(132, 46)
+		puzzle_hint_btn.custom_minimum_size = Vector2(104, 46)
 		row.add_child(puzzle_hint_btn)
 		var rst := plain_btn("重开", Color(1, 1, 1, 0.95), C_PINK_DEEP, 19)
 		_set_btn_theme(rst, Color(1, 1, 1, 0.95), C_GOLD, C_PINK_DEEP, 14, 2, false, Vector2i(10, 6), C_PINK_DEEP)
-		rst.custom_minimum_size = Vector2(104, 46)
+		rst.custom_minimum_size = Vector2(80, 46)
 		rst.pressed.connect(_restart_puzzle)
 		row.add_child(rst)
 		vb.add_child(row)
@@ -4242,8 +4741,9 @@ func _tut_show(i: int) -> void:
 		tut_panel.mouse_filter = MOUSE_FILTER_IGNORE
 		tut_panel.add_theme_stylebox_override("panel", style(Color(1.0, 0.97, 0.94, 0.96), 20, Art.BLOSSOM_DEEP, 3, true))
 		# 放在左上空白区（对手座位与己方立绘之间），不挡座位与出牌提示条
-		var tw := minf(760.0, vw / 2.0 - 190.0)
-		tut_panel.position = Vector2(40, 190)
+		var x := safe_insets.x + 40.0
+		var tw := minf(760.0, play_area.position.x - x - 16.0)
+		tut_panel.position = Vector2(x, maxf(190.0, play_area.position.y + 52.0))
 		tut_panel.custom_minimum_size = Vector2(tw, 0)
 		tut_panel.size = Vector2(tw, 0)
 		var mg := MarginContainer.new()
@@ -4763,7 +5263,7 @@ func _on_seat_clicked(seat_idx: int) -> void:
 		extra_target = seat_idx
 	else:
 		sel_target = seat_idx
-	play_sfx("draw")
+	play_sfx("select")
 	_show_sel_hint()
 	refresh()
 	_maybe_auto_confirm()
@@ -4878,7 +5378,7 @@ func _toggle_spear_card(card: Dictionary) -> void:
 		_nudge_card(card)
 		return
 	spear_cards.append(card)
-	play_sfx("draw")
+	play_sfx("select")
 	_show_sel_hint()
 	refresh()
 	_maybe_auto_confirm()
@@ -5156,18 +5656,22 @@ func _eng_changed() -> void:
 		turn_seat = int(eng.turn_player["seat"])
 		if turn_seat != last_turn_seat:
 			last_turn_seat = turn_seat
+			_clear_designated_targets()
 			discard_queue.clear()
 			discard_auto_left = 0
-			if not auto_all:
-				show_turn_banner(String(eng.turn_player["char_name"]))
-				if turn_seat == 0:
-					play_sfx("turn")
+			if not auto_all and turn_seat == 0:
+				show_turn_banner()
+				play_sfx("turn")
+			else:
+				_hide_turn_banner()
 	round_no = eng.round_no
 	_update_music_scene()
 	_queue_refresh()
 
 
 func _update_music_scene() -> void:
+	if auto_all or not is_inside_tree():
+		return
 	var director := get_tree().get_first_node_in_group("music_director") as MusicDirector
 	if director == null:
 		return
@@ -5175,6 +5679,10 @@ func _update_music_scene() -> void:
 
 
 func _battle_music_scene() -> String:
+	if not _result_music_scene.is_empty():
+		return _result_music_scene
+	if is_instance_valid(draft_layer) and draft_layer.visible:
+		return "draft"
 	if eng == null or players.is_empty():
 		return "battle"
 	if game_over:
@@ -5224,22 +5732,49 @@ func _eng_pace(sec: float) -> void:
 
 func _eng_played(card: Dictionary, owner: String, target_name: String = "") -> void:
 	var seat := -1
-	var actor := _short_name(owner)
+	var target_seat := -1
 	for p in players:
-		if (eng != null and eng.pname(p) == owner) or pname(p) == owner:
+		var table_name := pname(p)
+		var engine_name: String = eng.pname(p) if eng != null else table_name
+		if owner == table_name or owner == engine_name:
 			seat = int(p["seat"])
-			actor = String(p["char_name"])
-			break
-	var label := "你" if seat == 0 else actor
-	if target_name != "":
-		label += " ➜ " + _short_name(target_name)
-	if seat >= 0 and not auto_all:
+		if target_name == table_name or target_name == engine_name:
+			target_seat = int(p["seat"])
+	# 响应牌不清掉仍在结算的目标。
+	if target_seat >= 0:
+		_replace_designated_targets([target_seat])
+	elif target_name in ["", "重铸"]:
+		_clear_designated_targets()
+	if seat >= 0 and target_seat >= 0 and seat != target_seat:
+		# 从确认出牌开始指向目标，和离手动画同步。
+		if String(card.get("name", "")) == "突击":
+			fx_attack_fx(seat, target_seat, String(card.get("nature", "")))
+		else:
+			fx_target_mark(seat, target_seat)
+	elif seat >= 0 and not auto_all:
 		fx_target_ring(seat, Color(1.0, 0.72, 0.22))
 	if seat == 0:
 		_battle_haptic(12)
-	_show_play_callout(card, actor, target_name, seat)
-	show_played_card(card, label, seat)
+	var actor := _event_seat_name(seat) if seat >= 0 else _short_name(owner)
+	_show_play_callout(card, actor, _event_seat_name(target_seat), target_name)
+	var hand_wrap: Control = null
+	if seat == 0:
+		var physical := card
+		var costs: Array = card.get("src_cards", [])
+		if costs.size() == 1:
+			physical = costs[0]
+		hand_wrap = _find_wrap(physical)
+	var staged := show_played_card(card, seat, hand_wrap)
 	_queue_refresh()
+	if staged == null or not _motion_enabled():
+		return
+	# 处理区的牌已经接手画面，等待规则移除实体手牌时不显示第二张。
+	var departing := hand_wrap if target_name != "展示" else null
+	if is_instance_valid(departing):
+		departing.hide()
+	await wait(PLAYED_CARD_SLIDE + PLAYED_CARD_HOLD)
+	if is_instance_valid(departing) and not departing.is_queued_for_deletion():
+		departing.show()
 
 
 func _eng_ask_skill(p: Dictionary, sid: String, timing: String, ctx: Dictionary) -> bool:
@@ -5261,8 +5796,7 @@ func _eng_ask_respond(p: Dictionary, card_name: String, reason: String) -> bool:
 			tut_label.text = "对手使用了「突击」。选中亮起的闪避，再点「打出闪避」。"
 			move_child(tut_panel, get_child_count() - 1)
 	var reply := "打出%s" % card_name
-	var context := "受到「突击」" if reason == "抵挡突击" else reason
-	var v: Variant = await ask("选择一张「%s」" % card_name, [{"label": reply, "value": true}, {"label": "不响应", "value": false}], Callable(), "respond", {"context": context, "confirm": reply})
+	var v: Variant = await ask("选择一张「%s」" % card_name, [{"label": reply, "value": true}, {"label": "不响应", "value": false}], Callable(), "respond", {"context": reason, "confirm": reply})
 	respond_name = ""
 	respond_names = []
 	_queue_refresh()
@@ -5274,7 +5808,9 @@ func _eng_ask_save(p: Dictionary, dying: Dictionary) -> bool:
 	respond_names = ["补给", "特饮"] if p == dying else ["补给"]
 	resp_pref_card = {}
 	var save_hint := "补给/特饮" if p == dying else "补给"
-	var v: Variant = await ask("选一张救援牌（%s）" % save_hint, [{"label": "救援", "value": true}, {"label": "不救", "value": false}], Callable(), "respond", {"context": "%s 濒死" % pname(dying), "confirm": "救援"})
+	var need := maxi(1, 1 - int(dying["hp"]))
+	var context := "%s 濒死 · 需回复 %d 点体力" % [String(dying["char_name"]), need]
+	var v: Variant = await ask("选一张救援牌（%s）" % save_hint, [{"label": "救援", "value": true}, {"label": "不救", "value": false}], Callable(), "respond", {"context": context, "confirm": "救援"})
 	respond_name = ""
 	respond_names = []
 	_queue_refresh()
@@ -5411,79 +5947,16 @@ func _eng_play_phase(eng_ref, p: Dictionary) -> void:
 
 # ---------------- 特效层（对照无名杀/手杀：飘字、连线、技能名、飞牌） ----------------
 
-const CHAR_LINES := {
-	"hina": {"attack": ["花瓣啊，听我的心愿！", "对不起，这一下是必须的"], "hurt": ["呜…没关系的", "好痛…但还能坚持"], "dying": "花签…还没许完愿呢…", "death": "花瓣…都飘走了…", "skill": "把心愿，交给樱花吧", "heal": "谢谢你…暖洋洋的"},
-	"rena": {"attack": ["站住！违反校规！", "风纪检查，不许动！"], "hurt": ["好、好痛…", "我、我不会退让的！"], "dying": "铃声…还没停…", "death": "风纪…就到这里了…", "skill": "风纪委员，执行！", "heal": "哼，这次就谢谢你"},
-	"kaori": {"attack": ["听我的歌吧！", "上吧，麦克风！"], "hurt": ["呜哇，麦克风要掉了…", "好痛…歌声不能停！"], "dying": "最后…再唱一首…", "death": "谢幕了…谢谢大家…", "skill": "你的心跳，我听见了", "heal": "恢复啦！继续演出！"},
-	"chinatsu": {"attack": ["全速冲刺——！", "看我的起跑！"], "hurt": ["摔一跤而已！", "呜…再来一次！"], "dying": "终点线…就在前面…", "death": "跑不动了…", "skill": "元气补给，满格！", "heal": "能量回来啦！"},
-	"shizuha": {"attack": ["呜…茶要凉了啦", "别打扰我睡觉…"], "hurt": ["好困…被打醒了…", "呜…好痛…"], "dying": "星星…好远啊…", "death": "呼啊…睡着了…", "skill": "呼啊…我去看星星了哦", "heal": "嗯…热茶暖暖的…"},
-	"hibiki": {"attack": ["听好了，练习曲开始！", "这一击，用琴音！"], "hurt": ["笨、笨蛋，轻一点…", "呜…琴弦要断了…"], "dying": "琴弦…断了…", "death": "演奏…结束了…", "skill": "吵死了，都安静！", "heal": "哼…还算你识相"},
-	"koume": {"attack": ["请恕我失礼了", "这、这一杯请您收下！"], "hurt": ["呜…围裙要脏了…", "对不起，我没躲开…"], "dying": "茶…还没泡好…", "death": "今天…打烊了…", "skill": "请让我来招待您吧", "heal": "感谢您的温柔"},
-	"sena": {"attack": ["按学生会章程，予以肃清！", "这一步，也在星轨推算之中。"], "hurt": ["唔…推算偏了一分吗…", "学生会长绝不会退缩！"], "dying": "星轨…还没有走到尽头…", "death": "会长室的灯…先熄了…", "skill": "星辰轨迹，尽在掌握！", "heal": "重整态势，继续推演"},
-	"reo": {"attack": ["看剑！一刀两断！", "我的竹刀，绝不迟疑！"], "hurt": ["好刀法…再战！", "这点伤，连热身都不算！"], "dying": "剑道…还没有登顶…", "death": "胜负已分…佩服…", "skill": "秘剑·残月——斩！", "heal": "气息调匀，剑锋重燃！"},
-	"mahiru": {"attack": ["翻至阳之卷，星火燎原！", "书页记载的命数，收下吧"], "hurt": ["唔…把书页弄乱了…", "阴与阳的平衡…还在…"], "dying": "借书证…还没到期呢…", "death": "合上书卷…晚安…", "skill": "昼夜轮转，阴阳易位！", "heal": "静下心来，再读一页"},
-	"aya": {"attack": ["一矢中的，破！", "落樱百步，逃不掉的！"], "hurt": ["弓弦未乱，还能再射！", "这点小伤，休想动摇我"], "dying": "弦…要断了吗…", "death": "漂亮的胜负…", "skill": "心眼开阖，神射无双！", "heal": "调息完毕，重挽长弓"},
-	"nana": {"attack": ["尝尝特制星光试剂！", "小心爆炸哦——砰！"], "hurt": ["哇啊！烧杯差点碎了！", "呜…配方算错了吗…"], "dying": "实验…还没写完报告…", "death": "实验室…要先关门啦…", "skill": "催化剂投入，连锁反应开始！", "heal": "喝口营养液，满血复活！"},
-	"rin": {"attack": ["这一手，将军（王手）！", "棋路早已算定，无处可逃！"], "hurt": ["嗯…弃子争先罢了", "这一步，还在计算之内"], "dying": "终盘…还没分出胜负…", "death": "是我输了这局棋…", "skill": "妙算入神，一子定乾坤！", "heal": "复盘重整，再弈一局"},
-	"yukine": {"attack": ["违规预算，予以冻结！", "凝结吧，冰霜之刃！"], "hurt": ["账目…不容许任何差池！", "寒霜会记住这次冒犯"], "dying": "决算报告…还没交接…", "death": "冰雪…终究会融化吗…", "skill": "精算无遗，凛霜反噬！", "heal": "账目核销，状态恢复"},
-	"lilia": {"attack": ["以骑士团之名，突进！", "荣耀之剑，绝不偏斜！"], "hurt": ["圣盾尚在，无妨！", "休想越过我的防线！"], "dying": "骑士的誓言…永不磨灭…", "death": "请大家…继续前进吧…", "skill": "展开吧，圣纹护盾！", "heal": "荣光庇佑，重振旗鼓！"},
-	"sakuya": {"attack": ["时针指处，即是终局。", "星辰的轨迹，早已注定。"], "hurt": ["时间…出现了裂隙吗…", "这点波动，还在计算之内。"], "dying": "钟摆…快要停下了吗…", "death": "时间…在今夜静止了…", "skill": "拨转星盘，逆写此刻的宿命！", "heal": "发条重铸，时计再度运转。"},
-	"sana": {"attack": ["黑羽所至，一闪即斩！", "太慢了——看刀！"], "hurt": ["哼…这片影羽，我记下了。", "好重的剑气…再来！"], "dying": "刀锋…还没有折断…", "death": "绯色的樱花…落尽了吗…", "skill": "万羽归刃，破空连斩——！", "heal": "敛羽调息，锋芒更胜从前。"},
-	"yuu": {"attack": ["灵札指路，厄运难逃哦～", "卦象说，你这一下躲不开呢。"], "hurt": ["呀…占卜没有算到这一着…", "呜…护身符被震碎了…"], "dying": "星盘的光…正在消散…", "death": "命运的红线…到此为止了吗…", "skill": "天命流转，由我改写此签！", "heal": "吉签降临，神明大人保佑～"},
-	"mafuyu": {"attack": ["风纪肃清，连同呼吸一并冻结！", "吹雪之刃，绝不留情！"], "hurt": ["唔…冰层裂开了一道缝吗…", "冷静…寒霜不会因此动摇。"], "dying": "冬樱…要提前凋零了吗…", "death": "漫天飞雪…终究归于寂静…", "skill": "霜封万里，万物皆寂——破！", "heal": "冰心澄澈，寒气重凝。"},
-}
-
-
-const TOUCH_LINES := {
-	"hina": {"head": "诶？摸头的话会害羞啦，不过感觉暖洋洋的呢～", "face": "脸颊红了吗？一定是因为樱花瓣映的啦！", "body": "校服上还带着神社的樱花香哦～", "vow": "我的第一千支花签，写下的全都是你的名字……今后也请一直牵着我的手吧。"},
-	"rena": {"head": "笨、笨蛋！乱摸风纪委员的头，要扣分的哦！", "face": "别捏我脸啦！威严都要没有了！", "body": "袖章歪了吗？哼，那你帮我戴好不就行了……", "vow": "校规第零条：柚木铃奈的心，只属于你一个人……不许违抗！"},
-	"kaori": {"head": "嘿嘿，是粉丝福利时间吗？最喜欢你的摸头杀啦！", "face": "靠这么近看我，我会紧张得忘词的～", "body": "舞台打歌服好看吗？专门为你挑的配色哦！", "vow": "哪怕台下有万千星光，我眼中唯一的安可曲，永远只唱给你听！"},
-	"chinatsu": {"head": "哇！别突然揉我头发啦，刚跑完步还热乎乎的呢！", "face": "嘿嘿，脸上沾到汗水了吗？谢啦！", "body": "心跳这么快，肯定不是因为刚跑完冲刺……是因为你啦！", "vow": "无论多远的终点线，只要你在那里等我，我就会第一个冲进你怀里！"},
-	"shizuha": {"head": "嗯……再让我靠在你肩上睡五分钟嘛，暖呼呼的……", "face": "呼啊……捏脸也不会醒的哦……除非亲一下……", "body": "披肩分你一半，一起看今晚的流星吧……", "vow": "漫长夜空里最亮的那颗星，我已经找到了……晚安，我的全世界。"},
-	"hibiki": {"head": "哼，本小姐的头发也是你能随便碰的？……再摸一下也不是不行。", "face": "干、干嘛一直盯着人家的脸看啦，笨蛋！", "body": "礼服勒得有点紧……不许笑！转过去帮我系一下蝴蝶结！", "vow": "这首只属于两人的协奏曲，我要和你弹一辈子，不许中途退场哦！"},
-	"koume": {"head": "主人，今天也辛苦了，被您摸头感觉好幸福呢～", "face": "呜……小梅的脸烫得像刚烧开的茶壶一样了……", "body": "围裙上的蕾丝是小梅亲手缝的，您喜欢吗？", "vow": "无论清晨的热茶还是余生的每个夜晚，小梅都想永远侍奉在您身旁。"},
-	"sena": {"head": "在学生会室对我做这种事……咳，下不为例，只允许你一个人哦。", "face": "靠得太近了……学生会长也是会害羞的。", "body": "学生会长的披风很重，但有你在身边，就觉得无比安心。", "vow": "推算过亿万种星辰轨迹，唯有与你相伴的未来，是我唯一的最高决议。"},
-	"reo": {"head": "喂！剑道主将的马尾可不能乱碰……算了，随你吧。", "face": "我的眼神很凶吗？面对你的时候，明明已经很温柔了……", "body": "护具下面的心跳声……这么明显吗？", "vow": "我的剑只为斩开阻碍，而我的余生，只为守护你一人而战！"},
-	"mahiru": {"head": "嘘……在图书室靠这么近摸头，心跳声会被听见的……", "face": "你的手指暖暖的，像午后晒过太阳的书页一样。", "body": "想看我怀里的笔记吗？里面夹着为你写的诗哦……", "vow": "昼与夜交替的每一页篇章，我都想与你共同署名，直到故事尽头。"},
-	"aya": {"head": "摸头的话……发簪会歪掉的，不过你的手很温柔呢。", "face": "别一直盯着我看呀，拉弓的手都要抖了……", "vow": "百步穿杨的心眼，从一开始锁定的靶心，就只有你那颗心而已。", "body": "弓道服的系带松了吗？谢谢你提醒我……"},
-	"nana": {"head": "嘿嘿，摸奈奈的头会长不高啦～拿恋爱药水赔我哦！", "face": "前辈的眼神好炽热，比本生灯的温度还高呢！", "body": "白大褂口袋里藏着草莓糖，要我喂你吃一颗吗？", "vow": "经过成千上万次实验证明：你就是让奈奈心动指数无穷大的唯一催化剂！"},
-	"rin": {"head": "算尽了棋盘上的百步变化，却算不准你摸头时的心跳呢。", "face": "投子认负了……被你这样温柔地注视，根本没法冷静思考嘛。", "body": "棋子冰凉，但靠着你的温度刚刚好。", "vow": "这局名为一生的对弈，我甘愿被你『王手』捕获，永不悔棋。"},
-	"yukine": {"head": "手这么暖和……再摸一会儿的话，我的冰霜可要被你融化了。", "face": "脸颊不冷……是你手心的温度太犯规了。", "body": "账本上有一笔无价的呆账，叫做我对你的心意。", "vow": "冬月家的全部预算与我的整颗心，从今天起全部移交由你一人保管。"},
-	"lilia": {"head": "向您献上骑士的忠诚……诶？摸头发可不在骑士礼仪里呀！", "face": "呜……再这样看着我，圣盾都要挡不住脸红了！", "body": "这枚骑士勋章，请允许我别在离你最近的地方。", "vow": "以圣护院之名立下永恒誓约：我的剑、我的盾与我的心，生生世世皆属于你。"},
-	"sakuya": {"head": "如果能把时间停在这一刻，就能一直被你温柔地抚摸了呢。", "face": "钟塔的风很凉，但你的指尖像星光一样温暖。", "body": "怀表的滴答声，不知不觉和你的心跳同步了呢。", "vow": "跨越无数次时计轮回，我终于在时间的尽头握紧了你的手，再也不放开。"},
-	"sana": {"head": "孤高的剑客可不习惯被人摸头……唔，再多摸一会儿也不坏。", "face": "我的围巾很暖和哦，想围在一起的话，再靠近一点吧。", "body": "收集的影羽，其实每一片都藏着思念你的温度。", "vow": "曾以为孤剑天涯便是宿命，直到遇见你，我的刀鞘才有了真正的归处。"},
-	"yuu": {"head": "今天抽到了上上签哦～签文上写着，摸头会让好运翻倍呢～", "face": "占卜巫女的脸颊可是灵力汇聚之处，被你捏一下就满溢出来啦！", "body": "灵札在发光呢，它在告诉我你现在也很喜欢我哦～", "vow": "红线早已在星盘上系成死结，无论今生来世，你都逃不出我的卦象啦～"},
-	"mafuyu": {"head": "明明是风纪巡查时间……被你这样温柔地摸头，怎么冷得下脸嘛。", "face": "雪花落在脸上了？谢、谢谢你帮我拂去……手别急着拿开呀。", "body": "冰晶细剑虽然寒冷，但只要靠近你，心口就会变得滚烫。", "vow": "千早真冬在此签署终身风纪条例：从今往后，我只做你一个人的专属雪樱。"},
-}
-
-
 static func line_for(cid: String, cat: String = "skill") -> String:
-	if TOUCH_LINES.has(cid) and (TOUCH_LINES[cid] as Dictionary).has(cat):
-		return String(TOUCH_LINES[cid][cat])
-	if not CHAR_LINES.has(cid):
-		return ""
-	var entry: Variant = CHAR_LINES[cid].get(cat, "")
-	if entry is Array:
-		var arr: Array = entry
-		return String(arr[0]) if not arr.is_empty() else ""
-	return String(entry)
+	return AudioCfg.cv_text(cid, cat)
 
 
-func show_bubble(seat: int, cat: String) -> void:
+func show_bubble(seat: int, cat: String, seconds: float = 1.8) -> void:
 	if not _motion_enabled() or not _can_show_fx() or seat < 0 or seat >= players.size():
 		return
 	var ch: Dictionary = players[seat].get("char", {})
 	var cid := String(ch.get("id", ""))
-	if not CHAR_LINES.has(cid):
-		return
-	var entry = CHAR_LINES[cid].get(cat, "")
-	var text := ""
-	if entry is Array:
-		if (entry as Array).is_empty():
-			return
-		text = String(entry[rng.randi_range(0, (entry as Array).size() - 1)])
-	else:
-		text = String(entry)
+	var text := line_for(cid, cat)
 	if text == "":
 		return
 	if bubble_nodes.has(seat) and is_instance_valid(bubble_nodes[seat]):
@@ -5544,7 +6017,7 @@ func show_bubble(seat: int, cat: String) -> void:
 	var btw := create_tween().bind_node(bub)
 	btw.tween_property(bub, "modulate:a", 1.0, 0.15)
 	btw.parallel().tween_property(bub, "position:y", bub.position.y - 8.0, 0.18)
-	btw.tween_interval(1.5)
+	btw.tween_interval(clampf(seconds - 0.3, 1.5, 6.0))
 	btw.tween_property(bub, "modulate:a", 0.0, 0.3)
 	btw.tween_callback(func() -> void: if is_instance_valid(bub): bub.queue_free())
 
@@ -5563,7 +6036,13 @@ func seat_center(seat: int) -> Vector2:
 	return pn.position + pn.size * 0.5
 
 
-func _process(delta: float) -> void:
+func _process(_delta: float) -> void:
+	if _designated_until_ms > 0:
+		var now := Time.get_ticks_msec()
+		if asking:
+			_designated_until_ms = maxi(_designated_until_ms, now + 700)
+		elif now >= _designated_until_ms:
+			_clear_designated_targets()
 	if ask_deadline_ms > 0 and asking:
 		var remaining := ask_deadline_ms - Time.get_ticks_msec()
 		if remaining <= 0:
@@ -5572,22 +6051,6 @@ func _process(delta: float) -> void:
 			_on_decided(ask_default)
 		else:
 			_countdown_tick(float(remaining) / 1000.0)
-	if not _motion_enabled() or not is_visible_in_tree() or players.is_empty():
-		return
-	breath_t += delta
-	for i in seat_panels.size():
-		var panel := seat_panels[i] as Control
-		if panel == null:
-			continue
-		var tr := panel.get_node_or_null("Portrait") as Control
-		if tr == null:
-			continue
-		var active := (i + 1) == turn_seat
-		var amp := 3.2 if active else 1.6
-		var spd := 1.5 if active else 0.8
-		tr.position.y = 7.0 + sin(breath_t * spd + float(i) * 1.7) * amp
-	if player_portrait != null and me_panel_ref != null and me_panel_ref.visible:
-		player_portrait.position.y = -2.0 + sin(breath_t * 0.8 + 0.6) * 1.4
 
 
 func _motion_enabled() -> bool:
@@ -5605,11 +6068,18 @@ func _add_motion_fx(node: Node) -> void:
 
 func _skip_transient_motion() -> void:
 	_pz_finish_motion()
-	if turn_banner_tween != null and turn_banner_tween.is_valid():
-		turn_banner_tween.kill()
-		if is_instance_valid(turn_banner_panel):
-			turn_banner_panel.scale = Vector2.ONE
-			turn_banner_panel.modulate.a = 0.0
+	if is_instance_valid(target_trace_fades):
+		for trace in target_trace_fades.get_children():
+			target_trace_fades.remove_child(trace)
+			trace.queue_free()
+	if is_instance_valid(target_traces):
+		for trace in target_traces.get_children():
+			trace.finish()
+	_hide_turn_banner()
+	_stop_drag_pose()
+	_draw_drag_pose(Vector3.ZERO)
+	_layout_hand(false)
+	_reset_prompt_surface()
 	if not is_instance_valid(fx_root):
 		return
 	for node in fx_root.get_children():
@@ -5620,10 +6090,13 @@ func _skip_transient_motion() -> void:
 
 func _add_float_motion(label: Label, tween: Tween, rise: float) -> void:
 	label.set_meta("transient_motion", true)
-	label.scale = Vector2(0.88, 0.88)
-	tween.tween_property(label, "scale", Vector2.ONE, 0.11).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
-	tween.parallel().tween_property(label, "position:y", label.position.y - rise, 0.48).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
-	tween.tween_property(label, "modulate:a", 0.0, 0.19)
+	label.scale = Vector2(0.978, 0.978)
+	label.modulate.a = 0.15
+	tween.set_parallel(true).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
+	tween.tween_property(label, "modulate:a", 1.0, 0.08)
+	tween.tween_property(label, "scale", Vector2.ONE, 0.16)
+	tween.tween_property(label, "position:y", label.position.y - rise, 0.68)
+	tween.tween_property(label, "modulate:a", 0.0, 0.22).set_delay(0.49).set_ease(Tween.EASE_IN_OUT)
 
 
 func fx_float(seat: int, text: String, color: Color, fsize: int = 46, rise: float = 84.0) -> void:
@@ -5649,7 +6122,16 @@ func fx_float(seat: int, text: String, color: Color, fsize: int = 46, rise: floa
 	else:
 		tw.tween_interval(0.56)
 		tw.tween_property(lb, "modulate:a", 0.0, 0.17)
-	tw.tween_callback(lb.queue_free)
+	tw.chain().tween_callback(lb.queue_free)
+
+
+func _fade_effect(item: CanvasItem, fade_in: float, hold: float, fade_out: float) -> void:
+	var tween := item.create_tween().set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+	if fade_in > 0.0:
+		item.modulate.a = 0.0
+		tween.tween_property(item, "modulate:a", 1.0, fade_in)
+	tween.tween_property(item, "modulate:a", 0.0, fade_out).set_delay(hold)
+	tween.tween_callback(item.queue_free)
 
 
 func fx_flash(seat: int, color: Color) -> void:
@@ -5657,13 +6139,12 @@ func fx_flash(seat: int, color: Color) -> void:
 	if not _motion_enabled() or not _can_show_fx() or panel == null:
 		return
 	var pulse := Panel.new()
+	pulse.name = "SeatImpactGlow"
 	pulse.position = panel.position
 	pulse.size = panel.size
-	pulse.add_theme_stylebox_override("panel", style(Color(color.r, color.g, color.b, 0.14), 22, color, 3))
+	pulse.add_theme_stylebox_override("panel", style(Color(color, 0.075), 22, Color(color.lightened(0.12), 0.80), 3))
 	_add_motion_fx(pulse)
-	var tw := pulse.create_tween()
-	tw.tween_property(pulse, "modulate:a", 0.0, 0.19)
-	tw.tween_callback(pulse.queue_free)
+	_fade_effect(pulse, 0.07, 0.055, 0.22)
 
 
 func fx_target_ring(seat: int, col: Color) -> void:
@@ -5676,50 +6157,213 @@ func fx_target_ring(seat: int, col: Color) -> void:
 	ring.position = panel.position - Vector2(5, 5)
 	ring.size = panel.size + Vector2(10, 10)
 	ring.add_theme_stylebox_override("panel", style(Color(0, 0, 0, 0), 22, col, 3))
-	fx_root.add_child(ring)
-	var tw := ring.create_tween()
-	tw.tween_interval(0.14 if _motion_enabled() else 0.31)
-	tw.tween_property(ring, "modulate:a", 0.0, 0.15)
-	tw.tween_callback(ring.queue_free)
+	if _motion_enabled():
+		_add_motion_fx(ring)
+		_fade_effect(ring, 0.075, 0.14, 0.21)
+	else:
+		fx_root.add_child(ring)
+		_fade_effect(ring, 0.0, 0.31, 0.19)
 
 
-func _fx_trace(src_seat: int, tgt_seat: int, color: Color) -> void:
-	if not _motion_enabled() or not _can_show_fx():
+class TargetTrace extends Node2D:
+	const INK := Color("#513746")
+	const LIGHT := Color("#fff3e8")
+	var points: PackedVector2Array
+	var path_length := 0.0
+	var _distances: PackedFloat32Array
+	var tint: Color:
+		set(value):
+			tint = value
+			queue_redraw()
+	var progress := 0.0:
+		set(value):
+			progress = value
+			queue_redraw()
+	var tail_progress := 0.0:
+		set(value):
+			tail_progress = value
+			queue_redraw()
+	var arrival := 0.0:
+		set(value):
+			arrival = value
+			queue_redraw()
+	var _animation: Tween
+
+	func set_route(path: PackedVector2Array) -> void:
+		points = path
+		path_length = 0.0
+		_distances = PackedFloat32Array([0.0])
+		for i in range(1, points.size()):
+			path_length += points[i - 1].distance_to(points[i])
+			_distances.append(path_length)
+
+	func point_at(fraction: float) -> Vector2:
+		if path_length <= 0.0:
+			return Vector2.ZERO
+		if fraction <= 0.0:
+			return points[0]
+		if fraction >= 1.0:
+			return points[-1]
+		var distance := fraction * path_length
+		var i := clampi(_distances.bsearch(distance), 1, points.size() - 1)
+		var length := _distances[i] - _distances[i - 1]
+		return points[i - 1].lerp(points[i], (distance - _distances[i - 1]) / maxf(0.001, length))
+
+	func start(travel_time: float) -> void:
+		_animation = create_tween()
+		_animation.tween_property(self, "progress", 1.0, travel_time).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+		_animation.tween_property(self, "arrival", 1.0, 0.32)
+		_animation.parallel().tween_property(self, "tail_progress", 1.0, 0.22).set_delay(0.20).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+
+	func finish() -> void:
+		if _animation and _animation.is_valid():
+			_animation.kill()
+		progress = 1.0
+		tail_progress = 1.0
+		arrival = 1.0
+
+	func fade_out() -> void:
+		# 退场时保留已画出的部分，让下一次指定可以立即开始。
+		if _animation and _animation.is_valid():
+			_animation.kill()
+		_animation = create_tween()
+		_animation.tween_property(self, "modulate:a", 0.0, 0.16).set_trans(Tween.TRANS_SINE)
+		_animation.tween_callback(queue_free)
+
+	func _path_between(start_fraction: float, end_fraction: float) -> PackedVector2Array:
+		var start_index := _distances.bsearch(start_fraction * path_length, false)
+		var end_index := mini(_distances.bsearch(end_fraction * path_length), points.size() - 1)
+		var portion := PackedVector2Array([point_at(start_fraction)])
+		portion.append_array(points.slice(start_index, end_index))
+		portion.append(point_at(end_fraction))
+		return portion
+
+	func _draw_bright_trail() -> void:
+		var trail := _path_between(tail_progress, progress)
+		var light := 1.0 - tail_progress
+		draw_polyline(trail, Color(tint, 0.26 * light), 15.0, true)
+		var colors := PackedColorArray([Color(tint, 0.16 * light)])
+		var span := maxf((progress - tail_progress) * path_length, 0.001)
+		var traveled := 0.0
+		for i in range(1, trail.size()):
+			traveled += trail[i - 1].distance_to(trail[i])
+			var blend := clampf(traveled / span, 0.0, 1.0)
+			colors.append(Color(tint.lerp(LIGHT, blend * blend), lerpf(0.16, 1.0, blend) * light))
+		draw_polyline_colors(trail, colors, 5.0, true)
+		var tip := trail[-1]
+		draw_circle(tip, 12.0, Color(tint, 0.20 * light), true, -1.0, true)
+		draw_circle(tip, 7.0, Color(tint, 0.68 * light), true, -1.0, true)
+		draw_circle(tip, 3.6, Color(LIGHT, light), true, -1.0, true)
+
+	func _draw() -> void:
+		if path_length <= 0.0 or progress <= 0.0:
+			return
+		var guide := _path_between(0.0, progress)
+		draw_polyline(guide, Color(INK, 0.64), 8.0, true)
+		draw_polyline(guide, Color(tint, 0.82), 3.8, true)
+		draw_circle(points[0], 5.5, Color(INK, 0.72), true, -1.0, true)
+		draw_circle(points[0], 3.4, tint, true, -1.0, true)
+		if tail_progress < progress:
+			_draw_bright_trail()
+		if arrival > 0.0:
+			var tip := points[-1]
+			var forward := point_at(0.95).direction_to(tip)
+			var base := tip - forward * 16.0
+			var wing := forward.orthogonal() * 7.0
+			var arrow := PackedVector2Array([base + wing, tip, base - wing])
+			var opacity := smoothstep(0.0, 0.20, arrival)
+			draw_polyline(arrow, Color(INK, 0.77 * opacity), 8.0, true)
+			draw_polyline(arrow, Color(tint.lerp(LIGHT, 0.22), opacity), 3.8, true)
+			if arrival < 1.0:
+				var pulse := sin(PI * arrival) * (1.0 - arrival)
+				draw_arc(tip, lerpf(7.0, 27.0, arrival), 0.0, TAU, 32, Color(tint, pulse), 2.6, true)
+
+
+func _trace_port(rect: Rect2, toward: Vector2) -> Vector2:
+	var center := rect.get_center()
+	var direction := center.direction_to(toward)
+	var half := rect.size * 0.5
+	var edge_distance := minf(half.x / maxf(absf(direction.x), 0.001), half.y / maxf(absf(direction.y), 0.001))
+	return center + direction * (edge_distance + 9.0)
+
+
+func _trace_path(source: Control, target: Control) -> PackedVector2Array:
+	var source_rect := source.get_rect()
+	var target_rect := target.get_rect()
+	var middle := source_rect.get_center().lerp(target_rect.get_center(), 0.5)
+	var inward := 1.0 if middle.x < vw * 0.5 else -1.0
+	var obstacles: Array[Rect2] = [source_rect.grow(-8.0), target_rect.grow(-8.0)]
+	for panel in seat_panels:
+		if panel != source and panel != target and panel.visible:
+			obstacles.append(panel.get_rect())
+	if me_panel_ref != source and me_panel_ref != target and me_panel_ref.visible:
+		obstacles.append(me_panel_ref.get_rect())
+	var lowest_score := INF
+	var best := PackedVector2Array()
+	# 座位靠得很近时，把线弯向桌心，给箭头留出距离。
+	for offset in [Vector2.ZERO, Vector2(0, 170), Vector2(inward * 245, 0),
+		Vector2(0, 310), Vector2(inward * 375, 0), Vector2(0, -170), Vector2(0, -310)]:
+		var via: Vector2 = middle + offset
+		if source_rect.grow(12).has_point(via) or target_rect.grow(12).has_point(via):
+			continue
+		var start := _trace_port(source_rect, via)
+		var end := _trace_port(target_rect, via)
+		var path := PackedVector2Array([start])
+		var length := 0.0
+		var score := 0.0
+		for step in range(1, 25):
+			var t := step / 24.0
+			var point := start.lerp(via, t).lerp(via.lerp(end, t), t)
+			var segment := Rect2(path[-1], Vector2.ZERO).expand(point).grow(8.0)
+			for obstacle in obstacles:
+				if segment.intersects(obstacle):
+					score += 1.0
+			length += path[-1].distance_to(point)
+			path.append(point)
+		if length < 120.0:
+			score += 1.0 + (120.0 - length) / 24.0
+		if score == 0.0:
+			return path
+		if score < lowest_score:
+			lowest_score = score
+			best = path
+	return best
+
+
+func _fx_trace(src_seat: int, tgt_seat: int, color: Color, travel_time: float) -> void:
+	if auto_all or game_over or not is_instance_valid(target_traces) or src_seat == tgt_seat:
 		return
-	var a := seat_center(src_seat)
-	var b := seat_center(tgt_seat)
-	var dir := (b - a).normalized()
-	var trail := Line2D.new()
-	trail.name = "TargetTrace"
-	trail.width = 8.0
-	trail.default_color = color
-	trail.antialiased = true
-	trail.begin_cap_mode = Line2D.LINE_CAP_ROUND
-	trail.end_cap_mode = Line2D.LINE_CAP_ROUND
-	trail.add_point(-dir * 26.0)
-	trail.add_point(dir * 9.0)
-	trail.position = a
-	_add_motion_fx(trail)
-	var tw := trail.create_tween()
-	tw.tween_property(trail, "position", b, CARD_FLY_TIME).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
-	tw.parallel().tween_property(trail, "modulate:a", 0.30, CARD_FLY_TIME).set_ease(Tween.EASE_IN)
-	tw.tween_callback(trail.queue_free)
+	var source := seat_panel_of(src_seat)
+	var target := seat_panel_of(tgt_seat)
+	if source == null or target == null:
+		return
+	if target_traces.get_child_count() > 0 and int(target_traces.get_child(0).get_meta("src_seat")) != src_seat:
+		_replace_designated_targets([tgt_seat])
+	for trace in target_traces.get_children():
+		if trace.get_meta("src_seat") == src_seat and trace.get_meta("tgt_seat") == tgt_seat:
+			# 普通突击可能已声明，之后由装备改变属性色。
+			if trace.tint != color:
+				trace.tint = color
+			return
+	var trace := TargetTrace.new()
+	trace.name = "TargetTrace"
+	trace.set_meta("src_seat", src_seat)
+	trace.set_meta("tgt_seat", tgt_seat)
+	trace.set_route(_trace_path(source, target))
+	trace.tint = color
+	target_traces.add_child(trace, true)
+	if _motion_enabled():
+		trace.start(travel_time)
+	else:
+		trace.finish()
 
 
 func fx_target_mark(src_seat: int, tgt_seat: int) -> void:
-	if src_seat < 0 or tgt_seat < 0 or src_seat == tgt_seat:
-		return
-	var gold := Color(1.0, 0.78, 0.45, 0.89)
-	fx_target_ring(tgt_seat, gold)
-	_fx_trace(src_seat, tgt_seat, gold)
+	_fx_trace(src_seat, tgt_seat, Color("#ffd17e"), 0.26)
 
 
 func fx_attack_fx(src_seat: int, tgt_seat: int, nature: String = "") -> void:
-	if src_seat < 0 or tgt_seat < 0 or src_seat == tgt_seat:
-		return
-	var color := _attack_color(nature, Color(1.0, 0.48, 0.65))
-	fx_target_ring(tgt_seat, color)
-	_fx_trace(src_seat, tgt_seat, color)
+	_fx_trace(src_seat, tgt_seat, _attack_color(nature, Color("#ff8cb1")), 0.26)
 
 
 func _attack_color(nature: String, fallback: Color) -> Color:
@@ -5738,102 +6382,169 @@ func fx_slash(tgt_seat: int, color: Color) -> void:
 		return
 	var strike := Line2D.new()
 	strike.name = "AttackImpact"
-	strike.width = 10.0
-	strike.default_color = color
+	strike.width = 12.0
+	strike.default_color = color.lightened(0.19)
+	if _impact_width == null:
+		_impact_width = Curve.new()
+		_impact_width.add_point(Vector2(0.0, 0.16))
+		_impact_width.add_point(Vector2(0.48, 1.0))
+		_impact_width.add_point(Vector2(1.0, 0.13))
+	strike.width_curve = _impact_width
 	strike.antialiased = true
 	strike.begin_cap_mode = Line2D.LINE_CAP_ROUND
 	strike.end_cap_mode = Line2D.LINE_CAP_ROUND
 	strike.add_point(Vector2(-57, 36))
+	strike.add_point(Vector2(-2, -9))
 	strike.add_point(Vector2(57, -36))
 	strike.position = seat_center(tgt_seat)
+	strike.modulate.a = 0.0
+	strike.scale = Vector2(0.98, 0.98)
 	_add_motion_fx(strike)
-	var tw := strike.create_tween()
-	tw.tween_property(strike, "scale", Vector2(1.18, 1.18), 0.15)
-	tw.parallel().tween_property(strike, "modulate:a", 0.0, 0.15)
-	tw.tween_callback(strike.queue_free)
+	var tw := strike.create_tween().set_parallel(true).set_trans(Tween.TRANS_SINE)
+	tw.tween_property(strike, "scale", Vector2(1.05, 1.05), 0.32).set_ease(Tween.EASE_OUT)
+	tw.tween_property(strike, "modulate:a", 1.0, 0.075)
+	tw.tween_property(strike, "modulate:a", 0.0, 0.20).set_delay(0.13)
+	tw.chain().tween_callback(strike.queue_free)
 
 
 func fx_skill_banner(seat: int, skill_name: String, important: bool = false) -> void:
-	if not _can_show_fx() or seat < 0 or seat >= players.size():
+	if auto_all or not is_instance_valid(skill_notice_panel) or seat < 0 or seat >= players.size():
 		return
-	var center := seat_center(seat)
-	var ribbon := PanelContainer.new()
-	ribbon.name = "SkillBanner"
-	var width := 344.0 if important else 268.0
-	ribbon.size = Vector2(width, 70 if important else 51)
-	ribbon.position = Vector2(clampf(center.x - width * 0.5, 18.0, vw - width - 18.0), clampf(center.y - 112.0, 126.0, 851.0))
-	var border := Color(1.0, 0.80, 0.52) if important else Color(0.77, 0.59, 0.80)
-	ribbon.add_theme_stylebox_override("panel", _tight(style(Color(0.19, 0.10, 0.24, 0.96), 17, border, 2), 14, 7))
-	var row := HBoxContainer.new()
-	row.alignment = BoxContainer.ALIGNMENT_CENTER
-	row.add_theme_constant_override("separation", 12)
-	ribbon.add_child(row)
-	if important and _motion_enabled():
-		var ch: Dictionary = players[seat].get("char", {})
-		if ch.has("portrait"):
-			var portrait := TextureRect.new()
-			portrait.custom_minimum_size = Vector2(56, 56)
-			portrait.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-			portrait.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
-			portrait.texture = Art.cg_crop(ch, 1.0, 1.0, 0.30, true)
-			row.add_child(portrait)
-	var title := lbl(skill_name, 31 if important else 26, border.lightened(0.3), true, HORIZONTAL_ALIGNMENT_CENTER)
-	title.autowrap_mode = TextServer.AUTOWRAP_OFF
-	row.add_child(title)
-	if _motion_enabled():
-		_add_motion_fx(ribbon)
-	else:
-		fx_root.add_child(ribbon)
-	var tw := ribbon.create_tween()
-	if _motion_enabled():
-		ribbon.position.y += 10
-		tw.tween_property(ribbon, "position:y", ribbon.position.y - 10, 0.12).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
-	tw.tween_interval(0.78 if important else 0.54)
-	tw.tween_property(ribbon, "modulate:a", 0.0, 0.16)
-	tw.tween_callback(ribbon.queue_free)
+	if skill_notice_tween and skill_notice_tween.is_valid():
+		skill_notice_tween.kill()
+	_hide_turn_banner()
+	skill_notice_actor.text = "你 · %s" % String(players[0]["char_name"]) if seat == 0 else _event_seat_name(seat)
+	skill_notice_title.text = "发动「%s」" % skill_name
+	skill_notice_title.add_theme_color_override("font_color", Color("#ffdda3") if important else Color("#efe0ff"))
+	var width := skill_notice_panel.size.x - 28.0
+	for line in [skill_notice_actor, skill_notice_title]:
+		var preferred_size := 24 if line == skill_notice_actor else 30
+		var measured_width := font_bold.get_string_size(line.text, HORIZONTAL_ALIGNMENT_LEFT, -1, preferred_size).x
+		var fitted_size := maxi(18, floori(preferred_size * width / maxf(width, measured_width)))
+		line.add_theme_font_size_override("font_size", fitted_size)
+		line.add_theme_font_override("font", Art.compact_bold_font(fitted_size))
+	var motion := _motion_enabled()
+	skill_notice_panel.modulate.a = 0.66 if motion else 1.0
+	skill_notice_panel.show()
+	skill_notice_tween = skill_notice_panel.create_tween()
+	if motion:
+		skill_notice_tween.tween_property(skill_notice_panel, "modulate:a", 1.0, 0.14).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
+	skill_notice_tween.tween_interval(0.05 if fast else 2.0)
+	if motion:
+		skill_notice_tween.tween_property(skill_notice_panel, "modulate:a", 0.0, 0.24).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN)
+	skill_notice_tween.tween_callback(skill_notice_panel.hide)
 
 
-func show_turn_banner(char_name: String) -> void:
+func show_turn_banner() -> void:
 	if turn_banner == null or turn_banner_panel == null:
 		return
-	turn_banner.text = "轮到你了" if turn_seat == 0 else "%d号位 · %s 的回合" % [turn_seat + 1, char_name]
+	_hide_turn_banner()
+	if is_instance_valid(skill_notice_panel) and skill_notice_panel.visible:
+		return
+	turn_banner.text = "轮到你了"
+	var motion := _motion_enabled()
+	var top := safe_insets.y + table_hud_height + 14.0
+	turn_banner_panel.position.y = top + (6.0 if motion else 0.0)
+	turn_banner_panel.modulate.a = 1.0
+	turn_banner_panel.show()
+	turn_banner_tween = turn_banner_panel.create_tween()
+	if motion:
+		turn_banner_tween.tween_property(turn_banner_panel, "position:y", top, 0.18).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	turn_banner_tween.tween_interval(0.95)
+	if motion:
+		turn_banner_tween.tween_property(turn_banner_panel, "modulate:a", 0.0, 0.18)
+	turn_banner_tween.tween_callback(turn_banner_panel.hide)
+
+
+func _hide_turn_banner() -> void:
 	if turn_banner_tween and turn_banner_tween.is_valid():
 		turn_banner_tween.kill()
-	turn_banner_panel.modulate = Color(1, 1, 1, 0)
-	turn_banner_panel.scale = Vector2(0.96, 0.96) if _motion_enabled() else Vector2.ONE
-	turn_banner_tween = create_tween()
-	var pg := turn_banner_tween.set_parallel(true)
-	pg.tween_property(turn_banner_panel, "modulate:a", 1.0, 0.16)
-	if _motion_enabled():
-		pg.tween_property(turn_banner_panel, "scale", Vector2.ONE, 0.16).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
-	turn_banner_tween.chain().tween_interval(0.66)
-	turn_banner_tween.tween_property(turn_banner_panel, "modulate:a", 0.0, 0.18)
+	turn_banner_tween = null
+	if is_instance_valid(turn_banner_panel):
+		turn_banner_panel.hide()
 
 
-func _show_play_callout(card: Dictionary, owner: String, target_name: String, seat: int) -> void:
-	if play_callout_panel == null or play_callout_label == null or auto_all or card.is_empty():
+func _event_seat_name(seat: int) -> String:
+	if seat < 0 or seat >= players.size():
+		return ""
+	return "你" if seat == 0 else "%d号位 %s" % [seat + 1, String(players[seat]["char_name"])]
+
+
+func _show_play_callout(card: Dictionary, actor: String, target: String, detail: String) -> void:
+	if auto_all or card.is_empty():
 		return
-	var actor_s := "你" if seat == 0 else owner
 	var cname := String(card.get("name", ""))
 	var kind := CardDefs.kind_of(cname)
 	var action_txt := ""
-	if target_name != "":
-		action_txt = "%s 对 %s 使用「%s」" % [actor_s, _short_name(target_name), cname]
+	var result_txt := ""
+	if target != "":
+		action_txt = "%s 使用「%s」" % [actor, cname]
+		result_txt = "目标  %s" % target
+	elif detail == "重铸":
+		action_txt = "%s 重铸「%s」" % [actor, cname]
+	elif detail == "自救":
+		action_txt = "%s 使用「%s」自救" % [actor, cname]
+	elif detail == "展示":
+		action_txt = "%s 展示「%s」" % [actor, cname]
+	elif not detail.is_empty():
+		action_txt = "%s 响应「%s」" % [actor, cname]
 	elif kind in ["武器", "防具", "饰品", "宝物"]:
-		action_txt = "%s 装备「%s」" % [actor_s, cname]
+		action_txt = "%s 装备「%s」" % [actor, cname]
 	else:
-		action_txt = "%s 打出「%s」" % [actor_s, cname]
-	play_callout_label.text = action_txt
-	if play_callout_tween and play_callout_tween.is_valid():
-		play_callout_tween.kill()
+		action_txt = "%s 打出「%s」" % [actor, cname]
+	_show_play_notice(action_txt, result_txt)
+
+
+func _show_play_notice(text: String, result: String = "", result_color: Color = Color("#ffe5ab")) -> void:
+	if auto_all or not is_instance_valid(play_callout_panel):
+		return
+	_hide_play_notice()
+	play_callout_label.text = text
+	play_result_label.text = result
+	play_result_label.visible = not result.is_empty()
+	play_result_label.add_theme_color_override("font_color", result_color)
+	var text_width := play_callout_panel.size.x - 32.0
+	for line in [play_callout_label, play_result_label]:
+		var preferred_size := 32 if line == play_callout_label else 28
+		var font := Art.compact_bold_font(preferred_size)
+		var measured_width := font.get_string_size(line.text, HORIZONTAL_ALIGNMENT_LEFT, -1, preferred_size).x
+		var fitted_size := maxi(preferred_size - 5, floori(preferred_size * text_width / maxf(text_width, measured_width)))
+		line.add_theme_font_override("font", Art.compact_bold_font(fitted_size))
+		line.add_theme_font_size_override("font_size", fitted_size)
 	play_callout_panel.visible = true
 	play_callout_panel.modulate = Color(1, 1, 1, 1)
 	play_callout_tween = create_tween()
-	play_callout_tween.tween_interval(0.05 if fast else 1.50)
-	play_callout_tween.tween_property(play_callout_panel, "modulate:a", 0.0, 0.20)
+	play_callout_tween.tween_interval(0.05 if fast else 3.0)
+	play_callout_tween.tween_property(play_callout_panel, "modulate:a", 0.0, 0.26)
 	play_callout_tween.tween_callback(func() -> void:
 		if play_callout_panel != null and is_instance_valid(play_callout_panel):
 			play_callout_panel.visible = false)
+
+
+func _hide_play_notice() -> void:
+	if play_callout_tween and play_callout_tween.is_valid():
+		play_callout_tween.kill()
+	if is_instance_valid(play_callout_panel):
+		play_callout_panel.hide()
+
+
+func _show_resolved_health(data: Dictionary, damage: bool) -> void:
+	var recipient := _event_seat_name(int(data.get("seat", -1)))
+	if recipient == "":
+		return
+	var source := _event_seat_name(int(data.get("src_seat", -1)))
+	var cause := String(data.get("cause", ""))
+	var effect := "伤害" if damage else "回复"
+	var title := "%s结算" % effect
+	if cause != "":
+		title = "「%s」结算" % cause if source == "" else "%s ·「%s」" % [source, cause]
+	elif source != "":
+		title = "%s 造成伤害" % source if damage else "%s 提供回复" % source
+	if damage and bool(data.get("spread", false)):
+		effect = "传导"
+	var sign := "−" if damage else "+"
+	var result := "%s  %s %s%d 体力" % [effect, recipient, sign, int(data["num"])]
+	_show_play_notice(title, result, Color("#ffc1ce") if damage else Color("#c7f6d5"))
 
 
 func _eng_fx(kind: String, data: Dictionary) -> void:
@@ -5844,25 +6555,29 @@ func _eng_fx(kind: String, data: Dictionary) -> void:
 		"damage":
 			var nat := String(data.get("nature", ""))
 			var dcol := _attack_color(nat, Color(1.0, 0.44, 0.51))
+			var amount := int(data["num"])
+			_show_resolved_health(data, true)
 			if bool(data.get("attack_hit", false)):
 				fx_slash(seat, dcol)
 			fx_flash(seat, dcol)
-			fx_float(seat, "−%d" % int(data["num"]), dcol, 57)
+			fx_float(seat, "−%d" % amount, dcol, 64 if amount >= 2 else 54, 34.0)
 			if seat == 0:
-				_battle_haptic(28 if int(data["num"]) >= 2 else 20)
-			play_sfx("fire_hit" if nat == "火" else ("thunder_hit" if nat == "雷" else "hit"))
+				_battle_haptic(28 if amount >= 2 else 20)
+			var impact_sound := "hit_heavy" if amount >= 2 else "hit"
+			match nat:
+				"火": impact_sound = "fire_hit"
+				"雷": impact_sound = "thunder_hit"
+				"冰": impact_sound = "ice_hit"
+			play_sfx(impact_sound, 1.0 if amount >= 2 and nat != "" else 0.0)
 			if seat == 0 or rng.randf() < 0.78:
 				play_cv_battle(seat, "hurt", 2)
-			if _motion_enabled() and rng.randf() < 0.32:
-				show_bubble(seat, "hurt")
 		"heal":
+			_show_resolved_health(data, false)
 			fx_float(seat, "+%d" % int(data["num"]), Color(0.25, 0.78, 0.38), 56)
 			fx_flash(seat, Color(0.4, 1.0, 0.55))
 			play_sfx("heal")
 			if rng.randf() < 0.65:
 				play_cv_battle(seat, "heal", 1)
-			if _motion_enabled() and rng.randf() < 0.35:
-				show_bubble(seat, "heal")
 		"draw":
 			fx_draw_fly(seat, int(data.get("n", data.get("num", 1))))
 			play_sfx("draw")
@@ -5884,23 +6599,36 @@ func _eng_fx(kind: String, data: Dictionary) -> void:
 			play_sfx("equip")
 		"attack":
 			var a_src := int(data.get("src_seat", -1))
-			fx_attack_fx(a_src, int(data.get("tgt_seat", -1)), String(data.get("nature", "")))
-			if not bool(data.get("extra_target", false)):
+			var a_tgt := int(data.get("tgt_seat", -1))
+			var extra := bool(data.get("extra_target", false))
+			_add_designated_target(a_tgt)
+			if _event_seat_name(a_src) != "" and _event_seat_name(a_tgt) != "":
+				_show_play_callout({"name": "突击"}, _event_seat_name(a_src), _event_seat_name(a_tgt), "")
+			fx_attack_fx(a_src, a_tgt, String(data.get("nature", "")))
+			if not extra:
 				play_sfx("slash")
 				if a_src == 0 or rng.randf() < 0.80:
-					play_cv_battle(a_src, "attack", 2)
+					play_cv_battle(a_src, "attack", 1)
 		"yingbian":
 			fx_float(seat, String(data.get("text", "应变")), Color(0.95, 0.45, 0.75), 40, 70.0)
 			play_sfx("skill")
 		"target":
-			fx_target_mark(int(data.get("src_seat", -1)), int(data.get("tgt_seat", -1)))
-			if _motion_enabled() and rng.randf() < 0.25:
-				show_bubble(int(data["src_seat"]), "attack")
+			var source := int(data.get("src_seat", -1))
+			var target := int(data.get("tgt_seat", -1))
+			var card_name := String(data.get("card", ""))
+			_add_designated_target(target)
+			if card_name != "" and _event_seat_name(source) != "" and _event_seat_name(target) != "":
+				_show_play_callout({"name": card_name}, _event_seat_name(source), _event_seat_name(target), "")
+			fx_target_mark(source, target)
 		"dodge":
 			var dodge_color := Color(0.58, 0.80, 1.0)
+			_show_play_notice("%s 成功闪避" % _event_seat_name(seat))
 			fx_target_ring(seat, dodge_color)
 			fx_float(seat, "闪避", dodge_color, 45, 34.0)
-			play_sfx("dodge")
+			var barrier := bool(data.get("barrier", false))
+			play_sfx("shield_block" if barrier else "dodge")
+			if not barrier:
+				play_cv_battle(seat, "dodge", 2)
 		"dying":
 			fx_target_ring(seat, Color(1.0, 0.33, 0.46))
 			play_sfx("dying")
@@ -5909,9 +6637,7 @@ func _eng_fx(kind: String, data: Dictionary) -> void:
 		"death":
 			_fx_reveal_gem(seat)
 			play_sfx("death")
-			play_cv_battle(seat, "death", 3)
-			if _motion_enabled():
-				show_bubble(seat, "death")
+			play_cv_battle(seat, "death", 5)
 			if seat == dying_seat:
 				fx_dying_hide()
 		"revived":
@@ -5919,6 +6645,7 @@ func _eng_fx(kind: String, data: Dictionary) -> void:
 				fx_dying_hide()
 			fx_float(seat, "获救！", Color(0.25, 0.78, 0.38), 48, 50.0)
 			play_sfx("revive")
+			play_cv_battle(seat, "heal", 5)
 		"nullify":
 			var response := String(data.get("name", "看破"))
 			fx_float(seat, response, Color(1.0, 0.82, 0.40), 46, 28.0)
@@ -5935,22 +6662,16 @@ func _eng_fx(kind: String, data: Dictionary) -> void:
 		"chain_hit":
 			fx_float(seat, "传导！", Color(1.0, 0.52, 0.16), 44, 60.0)
 			fx_target_ring(seat, Color(1.0, 0.52, 0.16))
-		"heavy_hit":
-			var hnum := int(data.get("num", 2))
-			var htitle := "万夫莫敌 · 无双乱舞！" if hnum >= 3 else "雷霆万钧 · 癫狂屠戮！"
-			fx_spree_banner(htitle, "单次造成 %d 点高额伤害" % hnum, false)
-			play_sfx("spree")
 		"kill_spree":
 			var kcnt := int(data.get("kills", 1))
 			var knm := String(data.get("name", ""))
-			var ktitles := {1: "一破 · 卧龙出山", 2: "双连 · 一战成名", 3: "三连 · 举世皆惊"}
-			var ktitle := String(ktitles.get(kcnt, "四连 · 天下无双"))
-			fx_spree_banner(ktitle, "%s 已累计击杀 %d 人" % [knm, kcnt], true)
+			var ktitle := "首次击破" if kcnt == 1 else "%d 连击破" % kcnt
+			fx_spree_banner(ktitle, "%s 已累计击杀 %d 人" % [knm, kcnt])
 			play_sfx("spree")
 		"awaken":
 			var awk_nm := String(data.get("name", "觉醒"))
 			var awk_ch := String(data.get("char", ""))
-			fx_spree_banner("★ 觉醒 · %s ★" % awk_nm, "%s 突破界限，习得新技能！" % awk_ch, true)
+			fx_spree_banner("★ 觉醒 · %s ★" % awk_nm, "%s 突破界限，习得新技能！" % awk_ch)
 			play_sfx("win")
 		"switch_skill":
 			var sw_st := String(data.get("state", "阳"))
@@ -5972,16 +6693,25 @@ func _eng_fx(kind: String, data: Dictionary) -> void:
 		"shield":
 			var sh_d := int(data.get("delta", 1))
 			var sh_now := int(data.get("shield", 0))
+			if sh_d < 0:
+				_show_play_notice("%s 的护甲" % _event_seat_name(seat), "抵消 %d 点伤害" % -sh_d, Color("#c4ebff"))
 			var sh_col := Color(0.35, 0.78, 1.0) if sh_d > 0 else (Color(1.0, 0.56, 0.25) if sh_now == 0 else Color(0.75, 0.85, 0.95))
 			var sh_msg := ("🛡护甲+%d" % sh_d) if sh_d > 0 else (("🛡抵消%d·碎甲" % (-sh_d)) if sh_now == 0 else ("🛡抵消%d" % (-sh_d)))
 			fx_target_ring(seat, sh_col)
 			fx_float(seat, sh_msg, sh_col, 44, 62.0)
-			play_sfx("shield")
+			var armor_sound := "shield"
+			if sh_d < 0:
+				if int(data.get("remaining_damage", 0)) > 0:
+					armor_sound = "shield_crack"
+				else:
+					armor_sound = "shield_break" if sh_now == 0 else "shield_block"
+			play_sfx(armor_sound)
 		"prevented":
 			var prevent_color := Color(0.60, 0.91, 0.86)
+			_show_play_notice("%s ·「%s」" % [_event_seat_name(seat), String(data["name"])], "抵消 %d 点伤害" % int(data["num"]), Color("#c4ebff"))
 			fx_target_ring(seat, prevent_color)
 			fx_float(seat, "%s · 抵消 %d" % [String(data["name"]), int(data["num"])], prevent_color, 40)
-			play_sfx("shield")
+			play_sfx("shield_block")
 		"mark":
 			var mk_n := String(data.get("name", ""))
 			var mk_d := int(data.get("delta", 1))
@@ -6006,123 +6736,59 @@ func fx_dying_show(seat: int) -> void:
 	fx_dying_hide()
 	if seat < 0 or seat >= players.size() or not is_instance_valid(fx_root) or auto_all:
 		return
+	var portrait := seat_panel_of(seat)
+	if portrait == null:
+		return
 	dying_seat = seat
-	var player: Dictionary = players[seat]
 	var holder := PanelContainer.new()
 	holder.name = "DyingNotice"
-	holder.add_theme_stylebox_override("panel", _tight(style(Color(0.24, 0.08, 0.18, 0.96), 18, Color(1.0, 0.48, 0.55), 2), 18, 9))
-	var body := VBoxContainer.new()
-	body.add_theme_constant_override("separation", 2)
-	holder.add_child(body)
-	var title := lbl("%s · 濒死" % pname(player), 33, Color(1.0, 0.80, 0.83), true, HORIZONTAL_ALIGNMENT_CENTER)
+	holder.add_theme_stylebox_override("panel", _tight(style(Color(0.24, 0.08, 0.18, 0.96), 15, Color(1.0, 0.48, 0.55), 2), 16, 5))
+	var title := lbl("濒死", 25, Color(1.0, 0.88, 0.89), true, HORIZONTAL_ALIGNMENT_CENTER)
 	title.autowrap_mode = TextServer.AUTOWRAP_OFF
-	body.add_child(title)
-	var savers := PackedStringArray()
-	for helper: Dictionary in players:
-		if not helper["alive"]:
-			continue
-		for card: Dictionary in helper["hand"]:
-			if String(card["name"]) == "补给" or (helper == player and String(card["name"]) == "特饮"):
-				savers.append(String(helper["char_name"]))
-				break
-	var details := "可救援 · " + "、".join(savers) if not savers.is_empty() else "无人持有救援牌"
-	var caption := lbl(details, 20, Color(1.0, 0.89, 0.87), false, HORIZONTAL_ALIGNMENT_CENTER)
-	caption.autowrap_mode = TextServer.AUTOWRAP_OFF
-	body.add_child(caption)
-	holder.size = Vector2(maxf(400.0, holder.get_combined_minimum_size().x), 92)
-	holder.position = Vector2((vw - holder.size.x) * 0.5, 139.0)
+	holder.add_child(title)
+	holder.size = holder.get_combined_minimum_size()
+	holder.position = portrait.position + Vector2((portrait.size.x - holder.size.x) * 0.5, 10.0)
 	fx_root.add_child(holder)
 	dying_holder = holder
 
 
 func fx_dying_hide() -> void:
 	if dying_holder != null and is_instance_valid(dying_holder):
+		var parent := dying_holder.get_parent()
+		if parent != null:
+			parent.remove_child(dying_holder)
 		dying_holder.queue_free()
 	dying_holder = null
 	dying_seat = -1
 
 
-# ---------------- 程序合成音效（无外部音频资源） ----------------
+# ---------------- 牌桌音效 ----------------
 
 func _ensure_sfx() -> void:
 	if not sfx_players.is_empty():
-		var ok := true
-		for pl0 in sfx_players:
-			if not is_instance_valid(pl0) or not (pl0 as Node).is_inside_tree():
-				ok = false
-		if ok:
+		var first: AudioStreamPlayer = sfx_players[0]
+		if is_instance_valid(first) and first.is_inside_tree() and not first.is_queued_for_deletion():
 			return
-		# V0.30：重建界面后旧播放器已离开场景树（会报 Playback can only happen...），重新创建
-		for pl1 in sfx_players:
-			if is_instance_valid(pl1) and not (pl1 as Node).is_inside_tree():
-				(pl1 as Node).queue_free()
+		for player in sfx_players:
+			if is_instance_valid(player) and not player.is_queued_for_deletion():
+				player.queue_free()
 		sfx_players.clear()
 	AudioCfg.ensure()
-	for i in 8:
-		var pl := AudioStreamPlayer.new()
-		pl.bus = "SFX"
-		add_child(pl)
-		sfx_players.append(pl)
-	sfx_streams["hit"] = _synth_hit()
-	sfx_streams["heal"] = _synth_melody([660.0, 880.0], 0.09)
-	sfx_streams["skill"] = _synth_melody([990.0, 1320.0], 0.07)
-	sfx_streams["draw"] = _synth_melody([1250.0], 0.05)
-	sfx_streams["dodge"] = _synth_melody([520.0, 940.0], 0.05)
-	sfx_streams["win"] = _synth_melody([523.0, 659.0, 784.0, 1047.0], 0.11)
-	sfx_streams["lose"] = _synth_melody([392.0, 330.0, 262.0], 0.16)
-	sfx_streams["judge"] = _synth_melody([1047.0, 1319.0], 0.06)
-	sfx_streams["trick"] = _synth_melody([740.0, 587.0], 0.07)
-	sfx_streams["equip"] = _synth_melody([440.0, 554.0, 659.0], 0.05)
-	sfx_streams["slash"] = _synth_melody([1560.0, 1180.0, 880.0], 0.035)
-	sfx_streams["dying"] = _synth_melody([620.0, 620.0, 620.0], 0.12)
-	sfx_streams["death"] = _synth_melody([330.0, 262.0, 196.0], 0.18)
-	sfx_streams["revive"] = _synth_melody([523.0, 659.0, 784.0], 0.08)
-	sfx_streams["nullify"] = _synth_melody([988.0, 988.0], 0.05)
-	sfx_streams["chain"] = _synth_melody([494.0, 494.0, 659.0], 0.06)
-	# V0.17.0 音效补全：锦囊/装备/判定/攻击挥击/锁链/看破/濒死/阵亡/获救/胜负结算
-	sfx_streams["trick"] = _synth_melody([880.0, 1174.0, 1568.0], 0.06)
-	sfx_streams["equip"] = _synth_clink()
-	sfx_streams["judge"] = _synth_melody([330.0, 330.0, 659.0], 0.1)
-	sfx_streams["slash"] = _synth_whoosh()
-	sfx_streams["chain"] = _synth_chain()
-	sfx_streams["nullify"] = _synth_melody([988.0, 587.0], 0.09)
-	sfx_streams["dying"] = _synth_melody([196.0, 196.0, 147.0], 0.12)
-	sfx_streams["death"] = _synth_melody([392.0, 311.0, 262.0, 196.0], 0.13)
-	sfx_streams["revive"] = _synth_melody([523.0, 659.0, 784.0, 1047.0], 0.08)
-	sfx_streams["win"] = _synth_melody([523.0, 659.0, 784.0, 1047.0, 1319.0], 0.11)
-	sfx_streams["lose"] = _synth_melody([392.0, 370.0, 349.0, 262.0], 0.14)
-	# V0.30：有文件音效的事件改用 assets/sfx/*.ogg（统一音色），其余保留程序合成
-	for k in AudioCfg.SFX_FILES:
-		var st := AudioCfg.sfx_stream(k)
-		if st != null:
-			sfx_streams[k] = st
-	if voice_player != null and is_instance_valid(voice_player):
-		voice_player.queue_free()
-	voice_player = AudioStreamPlayer.new()
-	voice_player.bus = "Voice"
-	add_child(voice_player)
+	for i in 6:
+		var player := AudioStreamPlayer.new()
+		player.bus = "SFX"
+		add_child(player)
+		sfx_players.append(player)
+	for key in AudioCfg.SFX_FILES:
+		sfx_streams[key] = AudioCfg.sfx_stream(key)
 
 
-func _fallback_sfx(key: String) -> AudioStream:
-	match key:
-		"hit":
-			return _synth_hit()
-		"equip":
-			return _synth_clink()
-		"slash":
-			return _synth_whoosh()
-		"chain":
-			return _synth_chain()
-		"win", "revive":
-			return _synth_melody([523.0, 659.0, 784.0, 1047.0], 0.08)
-		"lose", "dying", "death":
-			return _synth_melody([392.0, 311.0, 262.0], 0.13)
-	return _synth_melody([660.0, 880.0], 0.06)
-
-
-const VOICE_KEYS := {"slash": "attack", "dodge": "dodge", "heal": "heal", "dying": "dying", "win": "win", "lose": "lose", "skill": "skill"}
-const SFX_LEVELS := {"click": -8.0, "card": -5.0, "draw": -7.0, "slash": -3.0, "turn": -5.0, "spree": -4.0}
-const SFX_PRIORITIES := {"dying": 3, "death": 3, "revive": 3, "win": 3, "lose": 3, "hit": 2, "fire_hit": 2, "thunder_hit": 2, "dodge": 2, "shield": 2, "skill": 2}
+const SFX_MIN_GAP_MS := {"click": 55, "select": 65, "card": 45, "card_slide": 65, "draw": 90}
+const SFX_PRIORITIES := {
+	"dying": 3, "death": 3, "revive": 3, "win": 3, "lose": 3,
+	"hit": 2, "hit_heavy": 2, "fire_hit": 2, "thunder_hit": 2, "ice_hit": 2,
+	"dodge": 2, "shield_block": 2, "shield_crack": 2, "shield_break": 2, "skill": 2,
+}
 var last_haptic_ms := -120
 
 
@@ -6145,32 +6811,24 @@ func play_cv_battle(seat: int, cat: String, priority: int = 1) -> bool:
 	var cid := String((ch_d as Dictionary).get("id", ""))
 	if cid == "":
 		return false
-	var cv_st := AudioCfg.cv_stream(cid, cat)
-	if cv_st == null:
-		return false
 	var now := Time.get_ticks_msec()
-	if priority <= 1 and now - int(_cv_seat_ms.get(seat, 0)) < 750:
+	if priority <= 1 and now - int(_cv_seat_ms.get(seat, -1000)) < 820:
+		return false
+	var clip := AudioCfg.cv_stream(cid, cat)
+	if clip == null:
+		return false
+	var simulated := fast or DisplayServer.get_name() == "headless"
+	var played := simulated or AudioCfg.play_cv(self, cid, cat, priority, false)
+	if not simulated and (played or not AudioCfg.voice_audible()):
+		show_bubble(seat, cat, clip.get_length())
+	if not played:
 		return false
 	cv_played_count += 1
 	_cv_seat_ms[seat] = now
-	if fast or DisplayServer.get_name() == "headless":
-		return true
-	if voice_player == null or not is_instance_valid(voice_player) or not voice_player.is_inside_tree():
-		return false
-	AudioCfg.ensure()
-	if not bool(AudioCfg.get_v("voice_on")) or float(AudioCfg.get_v("master")) <= 0.001 or float(AudioCfg.get_v("voice_vol")) <= 0.001:
-		return false
-	if voice_player.playing:
-		if priority < 3 or priority < _cv_last_prio or (priority == _cv_last_prio and now - _cv_last_ms < 420):
-			return false
-	voice_player.stream = cv_st
-	voice_player.play()
-	_cv_last_prio = priority
-	_cv_last_ms = now
 	return true
 
 
-func play_sfx(key: String) -> void:
+func play_sfx(key: String, gain_db: float = 0.0) -> void:
 	if auto_all or fast or not is_inside_tree():
 		return
 	var stream := sfx_streams.get(key) as AudioStream
@@ -6179,18 +6837,15 @@ func play_sfx(key: String) -> void:
 	sfx_count += 1
 	if DisplayServer.get_name() == "headless" or not bool(AudioCfg.get_v("sfx_on")) or float(AudioCfg.get_v("master")) <= 0.001 or float(AudioCfg.get_v("sfx_vol")) <= 0.001:
 		return
-	# 语音（有打包语音文件且开启时才会响；当前版本未打包）
-	if VOICE_KEYS.has(key) and voice_player != null and not voice_player.playing and bool(AudioCfg.get_v("voice_on")):
-		var vs := AudioCfg.voice_stream(String(VOICE_KEYS[key]))
-		if vs != null:
-			if voice_player.is_inside_tree():
-				voice_player.stream = vs
-				voice_player.play()
+	var min_gap := int(SFX_MIN_GAP_MS.get(key, 0))
+	var now := Time.get_ticks_msec()
+	if min_gap > 0 and now - int(_sfx_last_ms.get(key, -min_gap)) < min_gap:
+		return
 	var priority := int(SFX_PRIORITIES.get(key, 1))
 	var lowest := priority
 	var candidate: AudioStreamPlayer
 	for player: AudioStreamPlayer in sfx_players:
-		if not is_instance_valid(player) or not player.is_inside_tree():
+		if not is_instance_valid(player) or not player.is_inside_tree() or player.is_queued_for_deletion():
 			continue
 		if not player.playing:
 			candidate = player
@@ -6200,125 +6855,13 @@ func play_sfx(key: String) -> void:
 			lowest = active_priority
 			candidate = player
 	if candidate != null:
+		_sfx_last_ms[key] = now
 		candidate.set_meta("priority", priority)
-		candidate.volume_db = float(SFX_LEVELS.get(key, 0.0))
+		candidate.volume_db = gain_db
+		# 轻微变化只用于频繁短音，保留命中和护甲的固定辨识度。
+		candidate.pitch_scale = [0.98, 1.0, 1.02][sfx_count % 3] if min_gap > 0 else 1.0
 		candidate.stream = stream
 		candidate.play()
-
-
-func _synth_melody(freqs: Array, step: float) -> AudioStreamWAV:
-	var rate := 22050
-	var total := int(rate * step * freqs.size()) + 800
-	var bytes := PackedByteArray()
-	bytes.resize(total)
-	for i in total:
-		var t := float(i) / rate
-		var idx := mini(int(t / step), freqs.size() - 1)
-		var f := float(freqs[idx])
-		var lt := t - idx * step
-		var env := clampf(1.0 - lt / (step * 1.6), 0.0, 1.0)
-		var v := sin(TAU * f * t) * env * 0.5
-		bytes[i] = int(clampf(128.0 + v * 110.0, 0.0, 255.0))
-	var w := AudioStreamWAV.new()
-	w.format = AudioStreamWAV.FORMAT_8_BITS
-	w.mix_rate = rate
-	w.data = bytes
-	return w
-
-
-func _synth_whoosh() -> AudioStreamWAV:
-	# 挥击：噪声包络先升后降＋下行啁啾，模拟破空声
-	var rate := 22050
-	var dur := 0.18
-	var total := int(rate * dur)
-	var bytes := PackedByteArray()
-	bytes.resize(total)
-	var seed := 777
-	var phase := 0.0
-	for i in total:
-		var t := float(i) / rate
-		seed = (seed * 1103515245 + 12345) % 2147483648
-		var noise := (float(seed % 2000) / 1000.0 - 1.0)
-		var f := 1400.0 - 900.0 * (t / dur)
-		phase += TAU * f / rate
-		var env := sin(PI * t / dur)
-		var v := (noise * 0.55 + sin(phase) * 0.3) * env
-		bytes[i] = int(clampf(128.0 + v * 105.0, 0.0, 255.0))
-	var w := AudioStreamWAV.new()
-	w.format = AudioStreamWAV.FORMAT_8_BITS
-	w.mix_rate = rate
-	w.data = bytes
-	return w
-
-
-func _synth_clink() -> AudioStreamWAV:
-	# 装备：两次金属轻击（高频正弦＋泛音，指数衰减）
-	var rate := 22050
-	var dur := 0.2
-	var total := int(rate * dur)
-	var bytes := PackedByteArray()
-	bytes.resize(total)
-	for i in total:
-		var t := float(i) / rate
-		var v := 0.0
-		for hit_t in [0.0, 0.055]:
-			if t >= float(hit_t):
-				var lt: float = t - float(hit_t)
-				var dec := exp(-lt * 38.0)
-				v += (sin(TAU * 2093.0 * lt) * 0.6 + sin(TAU * 2637.0 * lt) * 0.35 + sin(TAU * 3520.0 * lt) * 0.2) * dec
-		bytes[i] = int(clampf(128.0 + v * 62.0, 0.0, 255.0))
-	var w := AudioStreamWAV.new()
-	w.format = AudioStreamWAV.FORMAT_8_BITS
-	w.mix_rate = rate
-	w.data = bytes
-	return w
-
-
-func _synth_chain() -> AudioStreamWAV:
-	# 锁链：四下短促噪声咔哒，间隔递减
-	var rate := 22050
-	var dur := 0.24
-	var total := int(rate * dur)
-	var bytes := PackedByteArray()
-	bytes.resize(total)
-	var seed := 4242
-	var ticks := [0.0, 0.06, 0.115, 0.165]
-	for i in total:
-		var t := float(i) / rate
-		seed = (seed * 1103515245 + 12345) % 2147483648
-		var noise := (float(seed % 2000) / 1000.0 - 1.0)
-		var v := 0.0
-		for tt in ticks:
-			var lt: float = t - float(tt)
-			if lt >= 0.0 and lt < 0.035:
-				v += noise * (1.0 - lt / 0.035) * 0.8 + sin(TAU * 1180.0 * lt) * (1.0 - lt / 0.035) * 0.3
-		bytes[i] = int(clampf(128.0 + v * 100.0, 0.0, 255.0))
-	var w := AudioStreamWAV.new()
-	w.format = AudioStreamWAV.FORMAT_8_BITS
-	w.mix_rate = rate
-	w.data = bytes
-	return w
-
-
-func _synth_hit() -> AudioStreamWAV:
-	var rate := 22050
-	var total := int(rate * 0.14)
-	var bytes := PackedByteArray()
-	bytes.resize(total)
-	var seed := 12345
-	for i in total:
-		var t := float(i) / rate
-		seed = (seed * 1103515245 + 12345) % 2147483648
-		var noise := (float(seed % 2000) / 1000.0 - 1.0)
-		var env := clampf(1.0 - t / 0.14, 0.0, 1.0)
-		var thump := sin(TAU * (150.0 - 700.0 * t) * t) * 0.7
-		var v := (noise * 0.35 + thump) * env
-		bytes[i] = int(clampf(128.0 + v * 105.0, 0.0, 255.0))
-	var w := AudioStreamWAV.new()
-	w.format = AudioStreamWAV.FORMAT_8_BITS
-	w.mix_rate = rate
-	w.data = bytes
-	return w
 
 
 func show_match_banner() -> void:
@@ -6583,8 +7126,9 @@ func _maybe_first_hint(force: bool = false) -> void:
 		first_hint_label.mouse_filter = MOUSE_FILTER_IGNORE
 		first_hint_label.add_theme_stylebox_override("normal", _tight(style(_table_surface, 14, _table_edge, 1, true), 18, 9))
 		add_child(first_hint_label)
-	first_hint_label.size = Vector2(log_panel.size.x, 92)
-	first_hint_label.position = log_panel.position + Vector2(0, log_panel.size.y + 12.0)
+	first_hint_label.size = Vector2(374, 92)
+	first_hint_label.position = Vector2(history_btn.position.x + history_btn.size.x - first_hint_label.size.x,
+		history_btn.position.y + history_btn.size.y + 12.0)
 	first_hint_label.visible = true
 	first_hint_label.modulate.a = 1.0
 	var tw := first_hint_label.create_tween()
@@ -6845,7 +7389,7 @@ func build_audio_rows(vb: VBoxContainer) -> void:
 		sl.drag_ended.connect(func(_c: bool) -> void: play_sfx("click"))
 		hb.add_child(sl)
 		audio_sliders[vol_key] = sl
-	var note := lbl("语音：全 19 名角色二次元少女 CV 已实装；配乐支持樱华国风 / 经典交响切换。", 18, C_INK_SOFT)
+	var note := lbl("音乐、音效和语音可分别调节。角色开口时，配乐会轻轻退后。", 18, C_INK_SOFT)
 	note.autowrap_mode = TextServer.AUTOWRAP_OFF
 	vb.add_child(note)
 
@@ -7030,7 +7574,7 @@ func _enter_skill_mode(sid: String) -> void:
 		var cands: Array = (players[0]["hand"] as Array).filter(func(c: Dictionary) -> bool: return _skill_card_ok(c))
 		if cands.size() == 1:
 			skill_card = cands[0]
-	play_sfx("draw")
+	play_sfx("select")
 	_show_sel_hint()
 	refresh()
 	_maybe_auto_confirm()
@@ -7048,7 +7592,7 @@ func _skill_card_tap(card: Dictionary) -> void:
 		skill_card = {}
 	else:
 		skill_card = card
-	play_sfx("draw")
+	play_sfx("select")
 	_show_sel_hint()
 	_queue_refresh()
 	_maybe_auto_confirm()
@@ -7095,42 +7639,126 @@ func _is_cancel_val(v: Variant) -> bool:
 
 func _make_prompt_button(label: String, prominent: bool = false) -> Button:
 	var button := _make_action_btn(label, C_TABLE_ACTION, C_WHITE) if prominent else _make_action_btn(label, _table_button, _table_text)
-	button.custom_minimum_size = Vector2(clampf(64.0 + label.length() * 24.0, 136.0, 360.0), 64)
+	button.custom_minimum_size = Vector2(clampf(64.0 + label.length() * 24.0, 136.0, 360.0), TABLE_ACTION_H)
 	button.add_theme_font_size_override("font_size", 21 if label.length() > 10 else 26)
 	button.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	button.tooltip_text = label
 	return button
 
 
+class PromptChoiceScroll extends ScrollContainer:
+	const SWIPE_THRESHOLD := 18.0
+	var _press_control: Control
+	var _press_position := Vector2.ZERO
+	var _press_scroll := 0
+	var _touch_index := -1
+	var _swiping := false
+
+	func watch_choice(button: Button) -> void:
+		button.gui_input.connect(_choice_input.bind(button))
+
+	func _gui_input(event: InputEvent) -> void:
+		_choice_input(event, self)
+
+	func _start_press(control: Control, point: Vector2) -> void:
+		_press_control = control
+		_press_position = point
+		_press_scroll = scroll_horizontal
+		_swiping = false
+
+	func _move_press(point: Vector2) -> void:
+		var movement := point - _press_position
+		if not _swiping and movement.length() >= SWIPE_THRESHOLD:
+			_swiping = true
+			if _press_control is Button:
+				_press_control.notification(Control.NOTIFICATION_SCROLL_BEGIN)
+			if IntroPop.inst != null:
+				IntroPop.inst.cancel_longpress()
+		if _swiping:
+			scroll_horizontal = roundi(float(_press_scroll) - movement.x)
+
+	func _tap_choice(button: Button) -> void:
+		if is_instance_valid(button) and button.is_inside_tree() and not button.disabled:
+			button.pressed.emit()
+
+	func _choice_input(event: InputEvent, control: Control) -> void:
+		# 手机触摸会生成鼠标事件；只处理一份，避免同一划动重复滚动。
+		if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
+			if event.pressed:
+				_touch_index = -1
+				_start_press(control, control.get_global_transform_with_canvas() * event.position)
+			elif _press_control == control:
+				var button := control as Button
+				if button != null and event.device == InputEvent.DEVICE_ID_EMULATION:
+					# 等原生触摸释放再触发按钮，以免作答时提前销毁触摸焦点。
+					if button.button_pressed and not _swiping and not event.canceled and Rect2(Vector2.ZERO, button.size).has_point(event.position):
+						_tap_choice.call_deferred(button)
+					button.notification(Control.NOTIFICATION_SCROLL_BEGIN)
+				elif button != null and event.canceled:
+					button.notification(Control.NOTIFICATION_SCROLL_BEGIN)
+				_press_control = null
+			if control == self:
+				accept_event()
+		elif event is InputEventMouseMotion and _press_control == control and _touch_index == -1:
+			if event.button_mask & MOUSE_BUTTON_MASK_LEFT and event.global_position != IntroPop.FAKE_POS:
+				_move_press(control.get_global_transform_with_canvas() * event.position)
+			if control == self:
+				accept_event()
+		elif not Input.emulate_mouse_from_touch:
+			# 未开启触摸模拟时，原生触摸仍可滑动与点选。
+			if event is InputEventScreenTouch:
+				if event.pressed and _touch_index == -1:
+					_touch_index = event.index
+					_start_press(control, control.get_global_transform_with_canvas() * event.position)
+				elif not event.pressed and event.index == _touch_index:
+					var choice := control as Button
+					var tap: bool = not _swiping and not event.canceled and _press_control == control
+					_touch_index = -1
+					_press_control = null
+					if tap and choice != null and Rect2(Vector2.ZERO, choice.size).has_point(event.position):
+						_tap_choice(choice)
+			elif event is InputEventScreenDrag and event.index == _touch_index and _press_control == control:
+				_move_press(control.get_global_transform_with_canvas() * event.position)
+
+
 func _fit_prompt_btns() -> void:
 	var buttons := prompt_btns.get_children()
-	prompt_btns.add_theme_constant_override("separation", 12)
-	prompt_btns.size = Vector2(prompt_action_width, TABLE_ACTION_H)
-	var required := float(maxi(0, buttons.size() - 1)) * 12.0
-	for button in buttons:
-		required += (button as Control).custom_minimum_size.x
-	if required <= prompt_action_width:
+	if buttons.is_empty():
 		return
-	var choices: Array[Node] = []
-	if ask_mode == "pick":
-		for option in ask_opt_btns:
-			choices.append(option["btn"])
-	else:
-		choices.assign(buttons)
+	var fixed_count := 1 if ask_confirm_btn != null or discard_mode else 0
+	if fixed_count == 1 and buttons.size() >= 2 and bool(buttons[1].get_meta("ask_decline", false)):
+		fixed_count = 2
+	var required := float(buttons.size() - 1) * TABLE_ACTION_GAP
+	for i in buttons.size():
+		var button := buttons[i] as Button
+		if i < fixed_count:
+			_size_table_action(button)
+		else:
+			button.custom_minimum_size.y = TABLE_ACTION_H
+		required += button.get_combined_minimum_size().x
+	if required <= prompt_action_width:
+		prompt_btns.size = Vector2(prompt_action_width, TABLE_ACTION_H)
+		return
+	var choices := buttons.slice(fixed_count)
 	if choices.is_empty():
 		return
-	var scroll := ScrollContainer.new()
-	scroll.custom_minimum_size = Vector2(100, 78)
+	var scroll := PromptChoiceScroll.new()
+	scroll.name = "PromptChoiceScroll"
+	scroll.custom_minimum_size = Vector2(100, TABLE_ACTION_H)
 	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
 	scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	prompt_btns.add_child(scroll)
-	prompt_btns.move_child(scroll, 1 if ask_mode == "pick" else 0)
 	var row := HBoxContainer.new()
+	row.mouse_filter = MOUSE_FILTER_IGNORE
 	row.add_theme_constant_override("separation", 8)
 	scroll.add_child(row)
-	for button in choices:
+	prompt_btns.add_child(scroll)
+	for button: Button in choices:
 		button.reparent(row, false)
+		button.custom_minimum_size.y = TABLE_ACTION_H - 16.0
+		scroll.watch_choice(button)
+	# 选项移入滚动区后再缩回固定宽度，此前容器会受所有按钮的最小尺寸限制。
+	prompt_btns.size = Vector2(prompt_action_width, TABLE_ACTION_H)
 	if ask_context == "":
 		ask_context = "可左右滑动查看更多选项"
 		show_hint(ask_prompt, ask_context)
@@ -7140,7 +7768,7 @@ func _build_select_ask(options: Array) -> void:
 	ask_confirm_btn = _make_prompt_button(ask_confirm_text, true)
 	ask_confirm_btn.disabled = true
 	ask_confirm_btn.tooltip_text = "先选一张亮起的手牌" if ask_mode == "respond" else "先选择一项"
-	ask_confirm_btn.pressed.connect(_ask_confirm)
+	_bind_press_feedback(ask_confirm_btn, _ask_confirm, 18)
 	prompt_btns.add_child(ask_confirm_btn)
 	for opt in options:
 		var lab := String(opt["label"])
@@ -7148,13 +7776,17 @@ func _build_select_ask(options: Array) -> void:
 		if ask_mode == "respond" and value is bool and bool(value):
 			continue
 		var button := _make_prompt_button(lab)
-		if _is_cancel_val(value) or ask_mode == "respond":
+		var decline := _is_cancel_val(value)
+		if decline or ask_mode == "respond":
 			button.pressed.connect(func() -> void: _on_decided(value))
 		else:
 			button.pressed.connect(func() -> void: _ask_select(value))
 			ask_opt_btns.append({"btn": button, "value": value})
 		_attach_option_intro(button, lab, value)
 		prompt_btns.add_child(button)
+		if decline:
+			button.set_meta("ask_decline", true)
+			prompt_btns.move_child(button, 1)
 
 
 func _ask_same(a: Variant, b: Variant) -> bool:
@@ -7174,7 +7806,7 @@ func _ask_select(v: Variant, preselect: bool = false) -> void:
 	ask_sel_has = true
 	ask_sel_val = v
 	if not preselect:
-		play_sfx("draw")
+		play_sfx("select")
 	_ask_refresh_btns()
 	if not preselect or auto_confirm:
 		_ask_maybe_auto()
@@ -7279,30 +7911,33 @@ func _on_recast_pressed() -> void:
 	var c: Dictionary = selected_card
 	if not _hand_has(c) or not eng.can_recast(c):
 		return
+	fly_from_hand = _hand_flight_origin(_find_wrap(c))
+	if not fly_from_hand.is_empty():
+		fly_from_hand["card"] = c
 	cancel_targeting()
 	interactive = false
 	_update_action_bar()
-	eng.recast(players[0], c)
-	interactive = true
-	maybe_restore_hint()
-	refresh()
+	await eng.recast(players[0], c)
+	fly_from_hand = {}
+	if not game_over and is_inside_tree():
+		interactive = true
+		maybe_restore_hint()
+		refresh()
 
 
-# ================= V0.33 手杀风连破/高伤横幅、开局手气卡、换将与自由点将 =================
+# ================= 连破与高伤横幅、开局手气卡、选将换批 =================
 var luck_btn: Button = null
-var luck_left := 2
 var lord_pre_char: Dictionary = {}
 var draft_my_identity := "主公"
-var free_pick_overlay: Control = null
 
 
-func fx_spree_banner(title_text: String, sub_text: String, is_kill: bool) -> void:
+func fx_spree_banner(title_text: String, sub_text: String) -> void:
 	if fast or not _can_show_fx():
 		return
 	var box := PanelContainer.new()
 	box.mouse_filter = MOUSE_FILTER_IGNORE
-	var bg_col := Color(0.52, 0.08, 0.16, 0.94) if is_kill else Color(0.45, 0.18, 0.06, 0.94)
-	var bd_col := Color(1.0, 0.82, 0.32) if is_kill else Color(1.0, 0.64, 0.22)
+	var bg_col := Color(0.52, 0.08, 0.16, 0.94)
+	var bd_col := Color(1.0, 0.82, 0.32)
 	box.add_theme_stylebox_override("panel", style(bg_col, 24, bd_col, 4, true))
 	var vb := VBoxContainer.new()
 	vb.mouse_filter = MOUSE_FILTER_IGNORE
@@ -7316,7 +7951,7 @@ func fx_spree_banner(title_text: String, sub_text: String, is_kill: bool) -> voi
 	vb.add_child(sl)
 	box.add_child(vb)
 	box.size = Vector2(maxf(482.0, box.get_combined_minimum_size().x), 88)
-	box.position = Vector2((vw - box.size.x) * 0.5, 130 if is_kill else 218)
+	box.position = Vector2((vw - box.size.x) * 0.5, safe_insets.y + table_hud_height + 22.0)
 	box.pivot_offset = box.size * 0.5
 	if _motion_enabled():
 		_add_motion_fx(box)
@@ -7331,135 +7966,48 @@ func fx_spree_banner(title_text: String, sub_text: String, is_kill: bool) -> voi
 	tw.tween_callback(box.queue_free)
 
 
+func _eng_opening_luck() -> void:
+	if fast or auto_all or tutorial:
+		return
+	var previous_timeout := ask_timeout
+	ask_timeout = OPENING_LUCK_SECONDS
+	await ask("可更换全部起手牌，或保留手牌开始对局。", [{"label": "保留手牌", "value": true}],
+		Callable(self, "_add_opening_luck_button"), "opening_luck", {"context": "起手换牌"})
+	luck_btn = null
+	ask_timeout = previous_timeout
+
+
+func _add_opening_luck_button() -> void:
+	luck_btn = _make_prompt_button("手气卡 ×%d" % eng.opening_luck_left, true)
+	luck_btn.pressed.connect(_on_luck_pressed)
+	prompt_btns.add_child(luck_btn)
+	prompt_btns.move_child(luck_btn, 0)
+
+
 func _on_luck_pressed() -> void:
-	if not interactive or asking or turn_seat != 0 or game_over or luck_left <= 0 or eng == null or players.is_empty():
+	if not asking or ask_mode != "opening_luck" or ask_deadline_ms <= Time.get_ticks_msec() or eng == null or not is_instance_valid(luck_btn):
 		return
-	var me: Dictionary = players[0]
-	var hand: Array = me["hand"]
-	if hand.is_empty():
+	var count: int = eng.redraw_opening_hand()
+	if count <= 0:
 		return
-	cancel_targeting()
-	luck_left -= 1
-	var cnt := hand.size()
-	for c in hand.duplicate():
-		hand.erase(c)
-		eng.deck.insert(0, c)
-	eng.deck.shuffle()
-	eng.draw_cards(me, cnt)
-	log_msg("「手气卡」：你更换了 %d 张起手牌（本局剩余 %d 次）。" % [cnt, luck_left])
-	show_hint("已使用手气卡重新摸取 %d 张手牌（剩余 %d 次）" % [cnt, luck_left])
+	var left: int = eng.opening_luck_left
+	luck_btn.text = "手气卡 ×%d" % left
+	luck_btn.disabled = left == 0
+	log_msg("「手气卡」：你更换了 %d 张起手牌（本局剩余 %d 次）。" % [count, left])
+	show_hint("已更换 %d 张起手牌，剩余 %d 次。" % [count, left], ask_context)
 	refresh()
 
 
 func _on_reshuffle_draft() -> void:
-	if draft_layer == null or not draft_layer.visible:
+	if draft_layer == null or not draft_layer.visible or _draft_refresh_used or _draft_confirming:
 		return
+	_draft_refresh_used = true
+	draft_refresh_btn.disabled = true
+	draft_refresh_btn.text = "本局已换将"
 	var pool: Array = []
 	for c in Meta.enabled_pool(Characters.LIST):
-		if lord_pre_char.is_empty() or String(c["id"]) != String(lord_pre_char.get("id", "")):
+		if not _draft_candidates.has(c) and String(c["id"]) != String(lord_pre_char.get("id", "")):
 			pool.append(c)
 	pool.shuffle()
 	play_sfx("card")
 	_populate_draft_cards(pool.slice(0, mini(3, pool.size())), draft_my_identity)
-
-
-func _wire_scroll_drag(ctrl: BaseButton, sc: ScrollContainer) -> void:
-	ctrl.set_meta("drag_px", 0.0)
-	ctrl.button_down.connect(func() -> void: ctrl.set_meta("drag_px", 0.0))
-	ctrl.gui_input.connect(func(event: InputEvent) -> void:
-		var dy := 0.0
-		if event is InputEventScreenTouch and (event as InputEventScreenTouch).pressed:
-			ctrl.set_meta("drag_px", 0.0)
-		elif event is InputEventMouseButton and (event as InputEventMouseButton).pressed and (event as InputEventMouseButton).button_index == MOUSE_BUTTON_LEFT:
-			ctrl.set_meta("drag_px", 0.0)
-		elif event is InputEventMouseMotion and ((event as InputEventMouseMotion).button_mask & MOUSE_BUTTON_MASK_LEFT) != 0:
-			dy = (event as InputEventMouseMotion).relative.y
-		elif event is InputEventScreenDrag:
-			dy = (event as InputEventScreenDrag).relative.y
-		if dy != 0.0:
-			if is_instance_valid(sc):
-				sc.scroll_vertical -= int(roundf(dy))
-			ctrl.set_meta("drag_px", float(ctrl.get_meta("drag_px", 0.0)) + absf(dy)))
-
-
-func _open_free_pick() -> void:
-	if draft_layer == null or not draft_layer.visible:
-		return
-	if free_pick_overlay != null and is_instance_valid(free_pick_overlay):
-		free_pick_overlay.queue_free()
-	var ov := Control.new()
-	ov.name = "FreePickOverlay"
-	ov.set_anchors_preset(Control.PRESET_FULL_RECT)
-	add_child(ov)
-	free_pick_overlay = ov
-	var dim := ColorRect.new()
-	dim.color = Color(0.08, 0.04, 0.12, 0.72)
-	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
-	_extend_cover(dim, dim.color)
-	ov.add_child(dim)
-	var pc := PanelContainer.new()
-	pc.position = Vector2(vw * 0.5 - 760, 76)
-	pc.size = Vector2(1520, 920)
-	pc.add_theme_stylebox_override("panel", style(Color(1.0, 0.97, 0.95, 0.98), 28, C_GOLD, 4, true))
-	ov.add_child(pc)
-	var vb := VBoxContainer.new()
-	vb.add_theme_constant_override("separation", 14)
-	pc.add_child(vb)
-	var top := HBoxContainer.new()
-	var ttl := lbl("★ 自由点将（点击任意角色立即出战）", 36, C_PINK_DEEP, true)
-	ttl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	top.add_child(ttl)
-	var close_b := plain_btn("关闭", Color(1, 1, 1, 0.95), C_PINK_DEEP, 26)
-	close_b.custom_minimum_size = Vector2(140, 54)
-	close_b.pressed.connect(func() -> void:
-		if is_instance_valid(ov):
-			ov.queue_free())
-	top.add_child(close_b)
-	vb.add_child(top)
-	var sc := ScrollContainer.new()
-	sc.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	sc.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	vb.add_child(sc)
-	var grid := GridContainer.new()
-	grid.columns = 5
-	grid.add_theme_constant_override("h_separation", 18)
-	grid.add_theme_constant_override("v_separation", 18)
-	sc.add_child(grid)
-	var hp_bonus := 1 if draft_my_identity == "主公" else 0
-	for c in Characters.LIST:
-		if not lord_pre_char.is_empty() and String(c["id"]) == String(lord_pre_char.get("id", "")):
-			continue
-		var cb := Button.new()
-		cb.focus_mode = Control.FOCUS_NONE
-		cb.custom_minimum_size = Vector2(276, 360)
-		_set_btn_theme(cb, Color(1, 1, 1, 0.95), C_GOLD, C_INK, 20, 2, true, Vector2i(-1, -1), C_PINK_DEEP)
-		var cvb := VBoxContainer.new()
-		cvb.mouse_filter = MOUSE_FILTER_IGNORE
-		cvb.set_anchors_preset(Control.PRESET_FULL_RECT)
-		cvb.offset_left = 10
-		cvb.offset_right = -10
-		cvb.offset_top = 8
-		var cdisp: Dictionary = (c as Dictionary).duplicate()
-		cdisp["hp"] = int(c["hp"]) + hp_bonus
-		var ccard := Art.cg_card(cdisp, Vector2(252, 260), {"zoom": 0.62, "face_y": 0.32, "fs": 24})
-		cvb.add_child(ccard)
-		var sks: Array = []
-		for s in c["skills"]:
-			sks.append("【%s】" % String(s["name"]))
-		var slb := lbl(" ".join(PackedStringArray(sks)), 18, C_INK, true, HORIZONTAL_ALIGNMENT_CENTER)
-		slb.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		slb.custom_minimum_size = Vector2(252, 0)
-		slb.mouse_filter = MOUSE_FILTER_IGNORE
-		cvb.add_child(slb)
-		cb.add_child(cvb)
-		var cref: Dictionary = c
-		cb.set_meta("intro", IntroPop.char_spec(c))
-		_wire_scroll_drag(cb, sc)
-		cb.pressed.connect(func() -> void:
-			if float(cb.get_meta("drag_px", 0.0)) > 18.0:
-				cb.set_meta("drag_px", 0.0)
-				return
-			if is_instance_valid(ov):
-				ov.queue_free()
-			_on_decided(cref))
-		grid.add_child(cb)

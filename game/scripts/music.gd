@@ -1,161 +1,166 @@
 class_name MusicDirector
 extends Node
 
-# V0.41 场景背景音乐：支持「樱华国风（二次元×手杀风）」与「经典交响（Kevin MacLeod CC BY 4.0）」双曲风切换。
+# 两套原创配乐共用 Music 总线，沿用旧曲风的设置键。
 const AudioCfgM = preload("res://scripts/audio.gd")
 
-const TRACKS := {
-	"home": "res://assets/bgm/home_sakura.ogg",
-	"battle": "res://assets/bgm/battle_storm.ogg",
-	"tense": "res://assets/bgm/tense_climax.ogg",
-}
-const TRACKS_SAKURA := {
-	"home": "res://assets/bgm/home_sakura.ogg",
-	"battle": "res://assets/bgm/battle_storm.ogg",
-	"tense": "res://assets/bgm/tense_climax.ogg",
-}
-const TRACKS_CLASSIC := {
-	"home": "res://assets/bgm/home_carefree.ogg",
-	"battle": "res://assets/bgm/battle_volatile_reaction.ogg",
-	"tense": "res://assets/bgm/tense_hitman.ogg",
-}
 const TRACK_TITLES := {
 	"sakura": {
-		"home": "樱华序曲·星樱学园",
-		"battle": "绯樱战阵·破阵乐",
-		"tense": "宿命决战·残月",
+		"home": "樱华·午后的窗台",
+		"draft": "静静落樱",
+		"battle": "樱荫对弈",
+		"tense": "晚风未眠",
 	},
 	"classic": {
-		"home": "Carefree·晴空序曲",
-		"battle": "Volatile·激战交响",
-		"tense": "Hitman·决胜时刻",
+		"home": "月下琴房",
+		"draft": "窗边夜读",
+		"battle": "夜色棋局",
+		"tense": "暮云渐沉",
 	},
 }
-const FADE_SEC := 0.75
-const FADE_DB := -34.0
-const TENSE_MIN_SEC := 20.0
+const RESULT_FILES := {"result_win": "result_win", "result_lose": "result_lose", "result_draw": "result_lose"}
+const RESULT_TITLES := {"result_win": "晴空回信", "result_lose": "收局·余温", "result_draw": "收局·暮色"}
+const FADE_SEC := 1.35
+const RESULT_FADE_SEC := 0.68
+const QUIET_GAIN := 0.0001
+const TENSE_MIN_MS := 9000
 
 var current_scene := ""
 var _players: Array[AudioStreamPlayer] = []
 var _active_idx := 0
-var _fades: Array[Tween] = []
-var _switched_ms := -1000000
+var _transition: Tween
+var _release_timer: SceneTreeTimer
+var _tense_since_ms := 0
 
 
 static func style_key() -> String:
-	var s := String(AudioCfgM.get_v("bgm_style"))
-	return "classic" if s == "classic" else "sakura"
+	return "classic" if String(AudioCfgM.get_v("bgm_style")) == "classic" else "sakura"
 
 
 static func style_label() -> String:
-	return "🌸 樱华国风" if style_key() == "sakura" else "🎻 经典交响"
+	return "🌸 樱华轻音" if style_key() == "sakura" else "🌙 月下琴房"
 
 
 static func track_title(scene: String = "home") -> String:
-	var sk := style_key()
-	var mp: Dictionary = TRACK_TITLES.get(sk, TRACK_TITLES["sakura"])
-	return String(mp.get(scene if scene != "" and scene != "off" else "home", "樱华序曲·星樱学园"))
+	if RESULT_TITLES.has(scene):
+		return String(RESULT_TITLES[scene])
+	var titles: Dictionary = TRACK_TITLES[style_key()]
+	return String(titles.get(scene, titles["home"]))
 
 
 func cycle_style() -> String:
-	var next_s := "classic" if style_key() == "sakura" else "sakura"
-	AudioCfgM.set_v("bgm_style", next_s)
-	var sc := current_scene if current_scene != "" else "home"
-	current_scene = ""
-	_switched_ms = -1000000
-	play_scene(sc)
+	AudioCfgM.set_v("bgm_style", "classic" if style_key() == "sakura" else "sakura")
+	if not RESULT_FILES.has(current_scene):
+		var scene := current_scene if current_scene != "" else "home"
+		current_scene = ""
+		play_scene(scene)
 	return style_label()
 
 
 func _ready() -> void:
+	AudioCfgM.ensure()
 	add_to_group("music_director")
 	for i in 2:
-		var p := AudioStreamPlayer.new()
-		p.bus = "Music"
-		p.volume_db = 0.0
-		add_child(p)
-		_players.append(p)
+		var player := AudioStreamPlayer.new()
+		player.bus = "Music"
+		add_child(player)
+		_players.append(player)
 
 
 func _exit_tree() -> void:
-	for t in _fades:
-		if t is Tween and (t as Tween).is_valid():
-			(t as Tween).kill()
-	_fades.clear()
-	for p in _players:
-		if is_instance_valid(p):
-			p.stop()
-			p.stream = null
-
-
-func _notification(what: int) -> void:
-	if what == NOTIFICATION_WM_CLOSE_REQUEST or what == NOTIFICATION_PREDELETE:
-		for p in _players:
-			if is_instance_valid(p):
-				p.stop()
-				p.stream = null
+	_stop_all()
+	for player in _players:
+		if is_instance_valid(player):
+			player.stream = null
 
 
 func play_scene(scene: String) -> void:
-	if scene != "off" and not TRACKS.has(scene):
+	if scene != "off" and not RESULT_FILES.has(scene) and not TRACK_TITLES["sakura"].has(scene):
 		return
-	if scene == current_scene:
-		var cur := _players[_active_idx]
-		if scene != "off" and cur.playing:
+	# 刚进入残局时保持片刻，避免一次护甲或治疗反复触发主题切换。
+	if scene == "battle" and current_scene == "tense":
+		var remaining := TENSE_MIN_MS - (Time.get_ticks_msec() - _tense_since_ms)
+		if remaining > 0:
+			if _release_timer == null:
+				_release_timer = get_tree().create_timer(remaining / 1000.0, true, false, true)
+				_release_timer.timeout.connect(_resume_battle, CONNECT_ONE_SHOT)
 			return
+	_cancel_release()
+	if scene == current_scene:
+		return
+	current_scene = scene
 	if scene == "off":
 		_stop_all()
-		current_scene = "off"
 		return
-	if current_scene == "tense" and scene == "battle" and Time.get_ticks_msec() - _switched_ms < int(TENSE_MIN_SEC * 1000.0):
-		return
-	_switched_ms = Time.get_ticks_msec()
+	if scene == "tense":
+		_tense_since_ms = Time.get_ticks_msec()
 	if DisplayServer.get_name() == "headless":
-		current_scene = scene
 		return
+
 	var stream := _stream_for(scene)
 	if stream == null:
 		_stop_all()
-		current_scene = scene
 		return
+	_crossfade(stream, RESULT_FADE_SEC if RESULT_FILES.has(scene) else FADE_SEC)
 
-	var old := _players[_active_idx]
-	_active_idx = 1 - _active_idx
-	var next := _players[_active_idx]
-	next.stream = stream
-	next.volume_db = FADE_DB
-	next.play()
-	current_scene = scene
-	_fade(old, FADE_DB, true)
-	_fade(next, 0.0, false)
+
+func _resume_battle() -> void:
+	_release_timer = null
+	if is_inside_tree():
+		play_scene("battle")
+
+
+func _cancel_release() -> void:
+	if _release_timer != null and _release_timer.timeout.is_connected(_resume_battle):
+		_release_timer.timeout.disconnect(_resume_battle)
+	_release_timer = null
 
 
 func _stop_all() -> void:
-	for t in _fades:
-		if t is Tween and (t as Tween).is_valid():
-			(t as Tween).kill()
-	_fades.clear()
-	for p in _players:
-		p.stop()
+	_cancel_release()
+	if _transition != null and _transition.is_valid():
+		_transition.kill()
+	for player in _players:
+		if is_instance_valid(player):
+			player.stop()
 
 
-func _fade(player: AudioStreamPlayer, target_db: float, stop_after: bool) -> void:
-	_fades = _fades.filter(func(t: Tween) -> bool: return t != null and t.is_valid())
-	var tween := player.create_tween()
-	tween.tween_property(player, "volume_db", target_db, FADE_SEC).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
-	if stop_after:
-		tween.tween_callback(player.stop)
-	_fades.append(tween)
+func _set_gain(gain: float, player: AudioStreamPlayer) -> void:
+	player.volume_db = linear_to_db(maxf(gain, QUIET_GAIN))
 
 
-func _stream_for(scene: String) -> AudioStream:
-	var table: Dictionary = TRACKS_CLASSIC if style_key() == "classic" else TRACKS_SAKURA
-	var path := String(table.get(scene, TRACKS.get(scene, "")))
-	if path == "" or not ResourceLoader.exists(path):
+func _crossfade(stream: AudioStreamOggVorbis, duration: float) -> void:
+	if _transition != null and _transition.is_valid():
+		_transition.kill()
+
+	# 连续切换场景时保留更响的那一路作为淡出起点。
+	var old := _players[_active_idx]
+	var next := _players[1 - _active_idx]
+	if next.playing and (not old.playing or next.volume_db > old.volume_db):
+		var previous := old
+		old = next
+		next = previous
+	else:
+		_active_idx = 1 - _active_idx
+	next.stop()
+	next.stream = stream
+	_set_gain(QUIET_GAIN, next)
+	next.play()
+
+	_transition = create_tween().set_parallel(true).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+	_transition.tween_method(_set_gain.bind(next), QUIET_GAIN, 1.0, duration)
+	if old.playing:
+		_transition.tween_method(_set_gain.bind(old), db_to_linear(old.volume_db), QUIET_GAIN, duration)
+		_transition.chain().tween_callback(old.stop)
+
+
+func _stream_for(scene: String) -> AudioStreamOggVorbis:
+	var prefix := "sakura" if style_key() == "sakura" else "moon"
+	var stem := String(RESULT_FILES.get(scene, "%s_%s" % [prefix, scene]))
+	var path := "res://assets/bgm/%s.ogg" % stem
+	if not ResourceLoader.exists(path):
 		return null
-	var stream: AudioStream = load(path)
-	if stream is AudioStreamMP3:
-		(stream as AudioStreamMP3).loop = true
-	elif stream is AudioStreamOggVorbis:
-		(stream as AudioStreamOggVorbis).loop = true
+	var stream := load(path) as AudioStreamOggVorbis
+	if stream != null:
+		stream.loop = not RESULT_FILES.has(scene)
 	return stream

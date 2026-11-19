@@ -323,9 +323,13 @@ func _yuanqi_content(eng, p, choice: Dictionary) -> void:
 	var bc: Dictionary = await eng.pick_active_card(p, "yuanqi", choice, "「元气补给」：选择一张黑色手牌当作「补给」", Callable(self, "_worst_card"))
 	if bc.is_empty():
 		return
+	var supply := {"name": "补给", "suit": String(bc["suit"]), "point": int(bc["point"]), "nature": "", "yb": [], "virtual": true, "src_cards": [bc]}
+	await eng._present_card(p, supply)
+	if eng.game_over:
+		return
 	eng.discard_from_hand(p, bc)
 	eng.log_msg("「元气补给」：%s 把 %s 当作「补给」使用。" % [eng.pname(p), eng.card_text(bc)])
-	eng.heal(p, 1)
+	eng.heal(p, 1, p, "补给")
 
 
 # ---------- 夜宫静羽 ----------

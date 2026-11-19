@@ -229,14 +229,52 @@ static func add_corners(parent: Control, sz: Vector2, cs: float, inset: float = 
 		parent.add_child(t)
 
 
-# 竖排名牌（系列徽标 + 竖排名字 + 稀有度），返回 Panel；fs=字号
-static func name_plate(ch: Dictionary, fs: int, with_emblem: bool = true) -> Panel:
+# 缩小字形的上下留白，方便在选将区域准确安排多行文字。
+static func compact_bold_font(font_size: int) -> Font:
+	var base := bold_font()
+	var compact := FontVariation.new()
+	compact.base_font = base
+	compact.spacing_top = -maxi(0, roundi(base.get_ascent(font_size) - 1.04 * font_size))
+	compact.spacing_bottom = -maxi(0, roundi(base.get_descent(font_size) - 0.24 * font_size))
+	return compact
+
+
+static func _size_draft_label(label: Label, box: Vector2) -> void:
+	label.size = box
+	# 加入场景树后才能按最终字体计算最小尺寸。
+	label.ready.connect(func() -> void: label.set_deferred("size", box), CONNECT_ONE_SHOT)
+
+
+# 竖排名牌（系列徽标 + 竖排名字 + 稀有度）。选将卡可限制铭牌高度。
+static func name_plate(ch: Dictionary, fs: int, with_emblem: bool = true, max_height: float = 0.0) -> Panel:
 	var nm := String(ch.get("name", ""))
 	var rar := String(ch.get("rarity", "SR"))
 	var rc: Color = RARITY_COL.get(rar, RARITY_COL["SR"])
 	var w := float(fs) * 1.5
 	var em := w - 6.0 if with_emblem else 0.0
 	var h := em + nm.length() * fs * 1.08 + fs * 0.9 + 14.0
+	var name_font := bold_font()
+	var rarity_font := name_font
+	var nfs := int(round(float(fs) * 0.80)) if nm.length() >= 6 else fs
+	var rarity_size := maxi(11, int(fs * 0.5))
+	var name_height := nm.length() * fs * 1.08 + 6.0
+	var rarity_height := fs * 0.8
+	var rarity_y := h - fs * 0.9 - 6.0
+	var line_spacing := int(-fs * 0.22)
+	if max_height > 0.0:
+		rarity_font = compact_bold_font(rarity_size)
+		rarity_height = ceilf(rarity_font.get_height(rarity_size))
+		var available := maxf(max_height - em - rarity_height - 14.0, 18.0)
+		nfs = clampi(floori(available / (maxi(nm.length(), 1) * 1.30)), 14, fs)
+		name_font = compact_bold_font(nfs)
+		var glyph_height := ceilf(name_font.get_height(nfs))
+		var rows := maxi(1, floori(available / glyph_height))
+		if nm.length() > rows:
+			nm = nm.substr(0, rows - 1) + "…"
+		name_height = glyph_height * nm.length() + 2.0
+		line_spacing = 0
+		rarity_y = em + 8.0 + name_height
+		h = rarity_y + rarity_height + 4.0
 	var pl := Panel.new()
 	pl.name = "Plate"
 	pl.size = Vector2(w, h)
@@ -257,36 +295,75 @@ static func name_plate(ch: Dictionary, fs: int, with_emblem: bool = true) -> Pan
 		pl.add_child(e)
 	var l := Label.new()
 	l.name = "SeatName"
-	var nfs := int(round(float(fs) * 0.80)) if nm.length() >= 6 else fs
 	var chars := PackedStringArray()
 	for ci in nm.length():
 		chars.append(nm[ci])
 	l.text = "\n".join(chars)
-	l.add_theme_font_override("font", bold_font())
+	l.add_theme_font_override("font", name_font)
 	l.add_theme_font_size_override("font_size", nfs)
 	l.add_theme_color_override("font_color", UiPalette.INK)
-	l.add_theme_constant_override("line_spacing", int(-fs * 0.22))
+	l.add_theme_constant_override("line_spacing", line_spacing)
 	l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	l.position = Vector2(0, em + 4.0)
-	l.size = Vector2(w, nm.length() * fs * 1.08 + 6.0)
+	if max_height > 0.0:
+		_size_draft_label(l, Vector2(w, name_height))
+	else:
+		l.size = Vector2(w, name_height)
 	l.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	pl.add_child(l)
 	var r := Label.new()
 	r.name = "Rarity"
 	r.text = rar
-	r.add_theme_font_override("font", bold_font())
-	r.add_theme_font_size_override("font_size", maxi(11, int(fs * 0.5)))
+	r.add_theme_font_override("font", rarity_font)
+	r.add_theme_font_size_override("font_size", rarity_size)
 	r.add_theme_color_override("font_color", rc.darkened(0.48))
 	r.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	r.position = Vector2(0, h - fs * 0.9 - 6.0)
-	r.size = Vector2(w, fs * 0.8)
+	r.position = Vector2(0, rarity_y)
+	if max_height > 0.0:
+		_size_draft_label(r, Vector2(w, rarity_height))
+	else:
+		r.size = Vector2(w, rarity_height)
 	r.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	pl.add_child(r)
 	return pl
 
 
+static func _draft_health(hp: int, fs: int) -> Panel:
+	var health := Panel.new()
+	health.name = "DraftHealth"
+	health.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var count_size := maxi(17, int(fs * 0.78))
+	var font := compact_bold_font(count_size)
+	var text := str(hp)
+	var count_width := ceilf(font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, count_size).x)
+	var icon_size := maxi(18, int(fs * 0.88))
+	health.size = Vector2(icon_size + count_width + 24, maxf(icon_size, ceilf(font.get_height(count_size))) + 12)
+	health.add_theme_stylebox_override("panel", _sb(Color(UiPalette.MILK, 0.94), 16, UiPalette.ROSE_EDGE, 1))
+	var icon := TextureRect.new()
+	icon.texture = PETAL_TEX
+	icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	icon.position = Vector2(9, (health.size.y - icon_size) * 0.5)
+	icon.size = Vector2(icon_size, icon_size)
+	icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	health.add_child(icon)
+	var count := Label.new()
+	count.name = "HealthCount"
+	count.text = text
+	count.add_theme_font_override("font", font)
+	count.add_theme_font_size_override("font_size", count_size)
+	count.add_theme_color_override("font_color", UiPalette.INK)
+	count.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	count.position = Vector2(icon_size + 14, 0)
+	_size_draft_label(count, Vector2(count_width, health.size.y))
+	count.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	health.add_child(count)
+	return health
+
+
 # 完整 CG 卡面：立绘、稀有度色边框、竖排名牌、体力樱花和称号。
 # opt: zoom(默认 1) / face_y / name(默认 true) / hp(默认 true) / title(默认 size.y>=300) / fs(名字字号) / thumbnail(图鉴缩略图)
+# draft(选将用独立体力角标和限高名牌)
 static func cg_card(ch: Dictionary, size: Vector2, opt: Dictionary = {}) -> Control:
 	var root := Control.new()
 	root.name = "CgCard"
@@ -348,11 +425,12 @@ static func cg_card(ch: Dictionary, size: Vector2, opt: Dictionary = {}) -> Cont
 	root.add_child(inner)
 	add_corners(root, size, clampf(size.x * 0.16, 18.0, 64.0), -bw * 0.4)
 	var fs := int(opt.get("fs", clampi(int(size.x * 0.105), 16, 46)))
+	var draft := bool(opt.get("draft", false))
 	if bool(opt.get("name", true)):
-		var pl := name_plate(ch, fs, true)
+		var pl := name_plate(ch, fs, true, size.y - 2.0 * (bw + 8.0) if draft else 0.0)
 		pl.position = Vector2(bw + 6, bw + 8)
 		root.add_child(pl)
-		if bool(opt.get("hp", true)):
+		if not draft and bool(opt.get("hp", true)):
 			var hpv := VBoxContainer.new()
 			hpv.name = "HpMarks"
 			hpv.add_theme_constant_override("separation", 1)
@@ -367,6 +445,10 @@ static func cg_card(ch: Dictionary, size: Vector2, opt: Dictionary = {}) -> Cont
 				pt.mouse_filter = Control.MOUSE_FILTER_IGNORE
 				hpv.add_child(pt)
 			root.add_child(hpv)
+	if draft and bool(opt.get("hp", true)):
+		var health := _draft_health(int(ch.get("hp", 3)), fs)
+		health.position = Vector2(size.x - health.size.x - bw - 8.0, bw + 8.0)
+		root.add_child(health)
 	if bool(opt.get("title", size.y >= 300.0)) and String(ch.get("title", "")) != "":
 		var tl := Label.new()
 		tl.name = "Title"

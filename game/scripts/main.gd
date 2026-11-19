@@ -31,8 +31,7 @@ var font_reg: Font
 var font_bold: Font
 var screen_root: Control
 var bg: Control
-var veil_ref: ColorRect
-var vig_ref: TextureRect
+var bg_grade: ShaderMaterial
 var petal_far: CPUParticles2D
 var petal_near: CPUParticles2D
 var theme_night := false
@@ -75,8 +74,6 @@ func _ready() -> void:
 	# V0.30：带命令行参数（自测/截图）运行时，局外数据写到独立的测试文件，不碰玩家存档
 	if not OS.get_cmdline_user_args().is_empty():
 		Meta.reset_for_test("user://meta_test.json")
-	if OS.has_feature("android"):
-		Engine.max_fps = 30  # 安卓端封顶 30fps：降低长时对局发热与被系统杀进程的风险
 	font_reg = load("res://assets/fonts/NotoSansSC-Regular.otf")
 	font_bold = load("res://assets/fonts/NotoSansSC-Bold.otf")
 	set_anchors_preset(Control.PRESET_FULL_RECT)
@@ -91,14 +88,6 @@ func _ready() -> void:
 	bgtr.size = Vector2(1960, 1128)
 	bg = bgtr
 	bg_tex_ref = bgtr
-	var veil := ColorRect.new()
-	veil_ref = veil
-	veil.color = Color(Palette.LILAC_SOFT, 0.08)
-	veil.mouse_filter = MOUSE_FILTER_IGNORE
-	add_child(veil)
-	veil.set_anchors_preset(Control.PRESET_FULL_RECT)
-	veil.position = Vector2.ZERO
-	veil.size = Vector2(1920, 1080)
 	var grad := Gradient.new()
 	grad.offsets = PackedFloat32Array([0.55, 1.0])
 	grad.colors = PackedColorArray([Color(0.24, 0.09, 0.20, 0.0), Color(0.24, 0.09, 0.20, 0.22)])
@@ -109,16 +98,23 @@ func _ready() -> void:
 	gt2.fill_to = Vector2(0.5, 1.08)
 	gt2.width = 960
 	gt2.height = 540
-	var vig := TextureRect.new()
-	vig_ref = vig
-	vig.texture = gt2
-	vig.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-	vig.stretch_mode = TextureRect.STRETCH_SCALE
-	vig.mouse_filter = MOUSE_FILTER_IGNORE
-	add_child(vig)
-	vig.set_anchors_preset(Control.PRESET_FULL_RECT)
-	vig.position = Vector2.ZERO
-	vig.size = Vector2(1920, 1080)
+	# 和背景一起混合柔光与暗角，减少两次全屏绘制；暗角仍固定在屏幕上。
+	var shader := Shader.new()
+	shader.code = """shader_type canvas_item;
+	render_mode unshaded;
+	uniform sampler2D vignette : source_color, filter_linear, repeat_disable;
+	uniform vec4 veil_tint : source_color;
+	void fragment() {
+		vec4 base = texture(TEXTURE, UV);
+		vec4 falloff = texture(vignette, SCREEN_UV);
+		vec3 grade = mix(base.rgb, veil_tint.rgb, veil_tint.a);
+		COLOR = vec4(mix(grade, falloff.rgb, falloff.a), base.a);
+	}"""
+	bg_grade = ShaderMaterial.new()
+	bg_grade.shader = shader
+	bg_grade.set_shader_parameter("veil_tint", Color(Palette.LILAC_SOFT, 0.08))
+	bg_grade.set_shader_parameter("vignette", gt2)
+	bgtr.material = bg_grade
 	petal_far = _make_petals(30, false, 26.0, 48.0, 15.0)
 	add_child(petal_far)
 	petal_near = _make_petals(14, true, 55.0, 95.0, 9.0)
@@ -152,8 +148,8 @@ func _ready() -> void:
 func apply_theme() -> void:
 	if bg_tex_ref != null:
 		bg_tex_ref.texture = load("res://assets/bg/bg_festival_night.webp") if theme_night else load("res://assets/bg/bg_blossom_day.webp")
-	if veil_ref != null:
-		veil_ref.color = Color(Palette.NIGHT_PANEL, 0.20) if theme_night else Color(Palette.LILAC_SOFT, 0.08)
+	if bg_grade != null:
+		bg_grade.set_shader_parameter("veil_tint", Color(Palette.NIGHT_PANEL, 0.20) if theme_night else Color(Palette.LILAC_SOFT, 0.08))
 	var pm := Color(0.72, 0.78, 1.0) if theme_night else Color(1, 1, 1)
 	if petal_far != null:
 		petal_far.modulate = pm
@@ -425,6 +421,7 @@ func _maybe_shot() -> void:
 
 
 func clear_screen() -> void:
+	AudioCfg.stop_cv()
 	for ch in screen_root.get_children():
 		ch.queue_free()
 	_sync_stage_motion()
@@ -1011,11 +1008,7 @@ func show_detail(c: Dictionary) -> void:
 	left.custom_minimum_size = Vector2(560, 0)
 	left.add_theme_stylebox_override("panel", style(Palette.ROSE_SOFT if is_vow_c else Palette.LILAC_SOFT, 28, Palette.ROSE_EDGE if is_vow_c else Palette.LILAC_EDGE, 1, true))
 	var lcc := CenterContainer.new()
-	var cg_wrap := Art.cg_card(c, Vector2(520, 693), {"fs": 44})
-	var cg_inner := cg_wrap.get_node_or_null("Clip") as Control
-	if cg_inner != null:
-		_attach_l2d_breath(cg_inner, 0.0, 0.015, 2.5)
-	lcc.add_child(cg_wrap)
+	lcc.add_child(Art.cg_card(c, Vector2(520, 693), {"fs": 44}))
 	left.add_child(lcc)
 	row.add_child(left)
 
@@ -1131,10 +1124,10 @@ func show_detail(c: Dictionary) -> void:
 		else:
 			ban_msg.text = "至少需保留 8 名启用武将，无法继续禁用！")
 	act_hb.add_child(ban_b)
-	var v_cats := ["touch", "skill", "attack", "hurt", "dying", "vow"]
-	var v_names := ["摸头互动", "必杀语音", "出击语音", "受创语音", "绝境语音", "💍誓约告白"]
-	var v_idx := [0]
-	var v_lbl := lbl("🎙 点击左侧立绘触摸部位（头/脸/心口）或点按钮试听：「%s」" % BattleScreen.line_for(cid_d, "head"), 22, C_PINK_DEEP, true)
+	var v_cats := ["touch", "skill", "attack", "hurt", "dodge", "heal", "dying", "death", "vow"]
+	var v_names := ["日常互动", "技能", "出击", "受创", "闪避", "回血", "绝境", "退场", "💍誓约台词"]
+	var v_idx := [-1]
+	var v_lbl := lbl("点立绘互动，或点「语音鉴赏」试听。", 22, C_PINK_DEEP, true)
 	v_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	var voice_b: Button = mk_det_btn.call("🎙 语音鉴赏", Palette.SKY_SOFT, Palette.SKY_EDGE, C_INK, 186.0)
 	voice_b.pressed.connect(func() -> void:
@@ -1146,8 +1139,8 @@ func show_detail(c: Dictionary) -> void:
 			v_lbl.text = "🔒 💍誓约告白需好感度达到 Lv.5（500♥）解锁！当前：%s" % Meta.bond_title(cid_d)
 			return
 		if not AudioCfg.play_cv(self, cid_d, cat_k):
-			AudioCfg.play_ui(self, "skill")
-		v_lbl.text = "🎙 %s：「%s」" % [cat_n, BattleScreen.line_for(cid_d, "head" if cat_k == "touch" else cat_k)])
+			AudioCfg.play_ui(self, "click")
+		v_lbl.text = "🎙 %s「%s」" % [cat_n, BattleScreen.line_for(cid_d, cat_k)])
 	act_hb.add_child(voice_b)
 	var gift_b: Button = mk_det_btn.call("🎁 赠礼(100🪙+35♥)", C_SAKURA, C_SAKURA.darkened(0.12), C_PAPER, 236.0)
 	gift_b.pressed.connect(func() -> void:
@@ -1156,32 +1149,31 @@ func show_detail(c: Dictionary) -> void:
 			AudioCfg.play_ui(self, "click")
 			ban_msg.text = String(gr.get("msg", "欢斗豆不足"))
 			return
-		if not AudioCfg.play_cv(self, cid_d, "touch"):
+		var new_vow := bool(gr.get("vowed", false)) and bool(gr.get("level_up", false))
+		var gift_event := "vow" if new_vow else "gift"
+		if not AudioCfg.play_cv(self, cid_d, gift_event):
 			AudioCfg.play_ui(self, "heal")
 		stat_lbl.text = "⚔ 熟练度 Lv.%d · 战绩 %d 胜 / %d 局%s   |   🪙 欢斗豆：%d" % [lv_d, cw, cg, rate_s, Meta.beans()]
 		bond_lbl.text = "💕 羁绊：%s" % Meta.bond_title(cid_d)
 		bond_bar.value = float(clampi(Meta.affection(cid_d), 0, 500))
-		var g_line := BattleScreen.line_for(cid_d, "vow" if bool(gr.get("vowed", false)) else "head")
-		v_lbl.text = ("💍 【达成永恒誓约！】「%s」" % g_line) if bool(gr.get("vowed", false)) else ("🎁 【收到礼物 · 好感+35♥】「%s」" % g_line)
-		_bounce_control(cg_wrap)
-		_spawn_touch_burst(left, left.size * 0.45, ["💍", "💖", "🌸"] if bool(gr.get("vowed", false)) else ["🎁", "💖", "✨"], "+35♥"))
+		var g_line := BattleScreen.line_for(cid_d, gift_event)
+		v_lbl.text = ("💍 【达成永恒誓约！】「%s」" % g_line) if new_vow else ("🎁 【收到礼物 · 好感+35♥】「%s」" % g_line)
+		_spawn_touch_burst(left, left.size * 0.45, ["💍", "💖", "🌸"] if new_vow else ["🎁", "💖", "✨"], "+35♥"))
 	act_hb.add_child(gift_b)
 	left.gui_input.connect(func(ev: InputEvent) -> void:
 		if ev is InputEventMouseButton and (ev as InputEventMouseButton).pressed and (ev as InputEventMouseButton).button_index == MOUSE_BUTTON_LEFT:
 			var mb := ev as InputEventMouseButton
 			var ry := clampf(mb.position.y / maxf(left.size.y, 1.0), 0.0, 1.0)
-			var zone_cat := "head" if ry < 0.30 else ("face" if ry < 0.52 else ("body" if ry < 0.76 else "attack"))
+			var zone_cat := "head" if ry < 0.30 else ("face" if ry < 0.52 else ("body" if ry < 0.76 else "touch"))
 			var zone_nm := "🌸摸头杀(+2♥)" if zone_cat == "head" else ("💕轻触脸颊(+2♥)" if zone_cat == "face" else ("💓心口互动(+2♥)" if zone_cat == "body" else "✨并肩互动(+2♥)"))
-			var cv_cat := "touch" if (zone_cat == "head" or zone_cat == "face") else ("hurt" if zone_cat == "body" else "attack")
 			Meta.touch_char(cid_d, 2)
-			if not AudioCfg.play_cv(self, cid_d, cv_cat):
+			if not AudioCfg.play_cv(self, cid_d, zone_cat):
 				AudioCfg.play_ui(self, "heal")
-			_bounce_control(cg_wrap)
 			_spawn_touch_burst(left, mb.position, ["💕", "🌸", "✨"], "+2♥")
 			stat_lbl.text = "⚔ 熟练度 Lv.%d · 战绩 %d 胜 / %d 局%s   |   🪙 欢斗豆：%d" % [lv_d, cw, cg, rate_s, Meta.beans()]
 			bond_lbl.text = "💕 羁绊：%s" % Meta.bond_title(cid_d)
 			bond_bar.value = float(clampi(Meta.affection(cid_d), 0, 500))
-			v_lbl.text = "%s：「%s」" % [zone_nm, BattleScreen.line_for(cid_d, zone_cat)])
+			v_lbl.text = "%s「%s」" % [zone_nm, BattleScreen.line_for(cid_d, zone_cat)])
 	rv.add_child(v_lbl)
 	rv.add_child(ban_msg)
 	row.add_child(right)
@@ -1191,7 +1183,7 @@ func show_detail(c: Dictionary) -> void:
 
 func show_battle() -> void:
 	if music != null:
-		music.play_scene("battle")
+		music.play_scene("draft")
 	clear_screen()
 	var bs := BattleScreen.new()
 	bs.set_anchors_preset(Control.PRESET_FULL_RECT)
@@ -1202,7 +1194,7 @@ func show_battle() -> void:
 
 func show_battle_mode(m: String) -> void:
 	if music != null:
-		music.play_scene("battle")
+		music.play_scene("draft")
 	clear_screen()
 	var bs := BattleScreen.new()
 	bs.game_mode = m
@@ -1515,48 +1507,39 @@ func start_simulation() -> void:
 
 # 仅供开发自测：自动点选走完真人交互流程（选将/提问/结束出牌）
 func _run_ui_test() -> void:
+	seed(711511)
 	clear_screen()
 	ui_bs = BattleScreen.new()
 	ui_bs.set_anchors_preset(Control.PRESET_FULL_RECT)
 	ui_bs.go_home = Callable(self, "show_home")
 	screen_root.add_child(ui_bs)
+	ui_bs.rng.seed = 711511
 	ui_bs.start_match(false)
 	ui_bs.fast = true  # 测试驱动走快速节奏，只验逻辑不验演出时长
 	_ui_test_loop()
 
 
 func _ui_test_loop() -> void:
-	var ticks := 0
-	while ticks < 400:
-		await get_tree().create_timer(0.25).timeout
-		ticks += 1
-		if ui_bs == null or not is_instance_valid(ui_bs):
+	var driver = load("res://scripts/selftest.gd")
+	for frame in 40000:
+		await get_tree().process_frame
+		if not is_instance_valid(ui_bs) or ui_bs.game_over:
 			break
-		if ui_bs.game_over:
-			break
-		var pressed := false
-		if ui_bs.targeting and ui_bs.action_bar.visible and not ui_bs.confirm_btn.disabled:
-			ui_bs.confirm_btn.pressed.emit()  # V0.27：选好目标后点「确定」
-			pressed = true
-		elif ui_bs.targeting and not ui_bs.target_candidates.is_empty():
-			for panel in ui_bs.seat_panels:
-				if int(panel.get_meta("seat")) == int(ui_bs.target_candidates[0]) and ui_bs.sel_target != int(ui_bs.target_candidates[0]):
-					(panel as Button).pressed.emit()
-					pressed = true
-					break
-		if not pressed and ui_bs.draft_layer != null and ui_bs.draft_layer.visible:
-			for b in ui_bs.draft_layer.get_children():
-				if b is Button:
-					(b as Button).pressed.emit()
-					pressed = true
-					break
-		if not pressed and ui_bs.prompt_btns != null:
-			for b in ui_bs.prompt_btns.get_children():
-				if b is Button and not (b as Button).disabled:
-					(b as Button).pressed.emit()
-					pressed = true
-					break
-		if not pressed and ui_bs.interactive:
+		if driver.answer_prompt(ui_bs, false):
+			continue
+		if ui_bs.targeting:
+			if ui_bs.action_bar.visible and not ui_bs.confirm_btn.disabled:
+				ui_bs.confirm_btn.pressed.emit()
+			elif not ui_bs.target_candidates.is_empty():
+				var target_seat := int(ui_bs.target_candidates[0])
+				if target_seat == 0 and ui_bs.me_click_btn != null:
+					ui_bs.me_click_btn.pressed.emit()
+				else:
+					for panel in ui_bs.seat_panels:
+						if int(panel.get_meta("seat")) == target_seat and ui_bs.sel_target != target_seat:
+							(panel as Button).pressed.emit()
+							break
+		elif ui_bs.interactive and ui_bs.in_play_phase:
 			ui_bs.end_play_pressed.emit()
 	var state := "no_bs"
 	if ui_bs != null and is_instance_valid(ui_bs):
@@ -2016,10 +1999,6 @@ func _fit_wide() -> void:
 	var h := maxf(vs.y, 1080.0)
 	if bg != null:
 		bg.size = Vector2(w + 40.0, h + 48.0)
-	if veil_ref != null:
-		veil_ref.size = Vector2(w, h)
-	if vig_ref != null:
-		vig_ref.size = Vector2(w, h)
 	# 界面按 1080 高设计：视口更高时（4:3、平板）把内容区垂直居中，上下由背景填充
 	if screen_root != null:
 		var pad := floorf(maxf(vs.y - 1080.0, 0.0) * 0.5)
@@ -2571,40 +2550,6 @@ func _shot_v30(target: String) -> void:
 
 
 var _daily_overlay: Control = null
-
-
-func _attach_l2d_breath(ctrl: Control, phase_delay: float = 0.0, amp_scale: float = 0.018, amp_y: float = 2.5) -> void:
-	if ctrl == null or reduced_home_motion:
-		return
-	ctrl.ready.connect(func() -> void:
-		ctrl.pivot_offset = ctrl.size * 0.5
-		var y0 := ctrl.position.y
-		var tw := create_tween().bind_node(ctrl).set_loops()
-		if phase_delay > 0.0:
-			var dt := create_tween().bind_node(ctrl)
-			dt.tween_interval(phase_delay)
-			dt.tween_callback(func() -> void:
-				if is_instance_valid(ctrl):
-					var tw2 := create_tween().bind_node(ctrl).set_loops()
-					tw2.tween_property(ctrl, "scale", Vector2(1.0 + amp_scale, 1.0 + amp_scale), 1.4).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
-					tw2.parallel().tween_property(ctrl, "position:y", y0 - amp_y, 1.4).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
-					tw2.tween_property(ctrl, "scale", Vector2.ONE, 1.4).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
-					tw2.parallel().tween_property(ctrl, "position:y", y0, 1.4).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT))
-			tw.kill()
-		else:
-			tw.tween_property(ctrl, "scale", Vector2(1.0 + amp_scale, 1.0 + amp_scale), 1.4).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
-			tw.parallel().tween_property(ctrl, "position:y", y0 - amp_y, 1.4).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
-			tw.tween_property(ctrl, "scale", Vector2.ONE, 1.4).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
-			tw.parallel().tween_property(ctrl, "position:y", y0, 1.4).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT))
-
-
-func _bounce_control(ctrl: Control) -> void:
-	if ctrl == null or not is_instance_valid(ctrl) or reduced_home_motion:
-		return
-	ctrl.pivot_offset = ctrl.size * 0.5
-	ctrl.scale = Vector2(1.045, 0.96)
-	var tw := create_tween().bind_node(ctrl)
-	tw.tween_property(ctrl, "scale", Vector2.ONE, 0.30).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 
 
 func _spawn_touch_burst(parent: Control, pos: Vector2, emojis: Array, tag_txt: String = "") -> void:

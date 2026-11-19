@@ -1,178 +1,190 @@
-import asyncio, os, subprocess
-import edge_tts
+"""Render the game's Mandarin voice lines offline with a local EmotiVoice checkout."""
+import argparse
+from functools import lru_cache
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+import tempfile
 
-OUT_DIR = "/opt/quanmingxingsha/work/全明星杀_V0.31.0_交接包/game/assets/voice"
-os.makedirs(OUT_DIR, exist_ok=True)
+import numpy as np
+import torch
+from transformers import AutoConfig, AutoModel, AutoTokenizer
+from yacs import config as yaml
 
-VOICES = {
-    "hina": ("zh-CN-XiaoyiNeural", "+16Hz", "+4%", {
-        "skill": "把心愿，交给樱花吧！",
-        "attack": "花瓣啊，听我的心愿！",
-        "hurt": "呜，没关系的，还能坚持！",
-        "dying": "花签，还没许完愿呢……",
-        "touch": "诶？摸头的话会害羞啦，不过感觉暖洋洋的呢～",
-    }),
-    "rena": ("zh-CN-XiaoyiNeural", "+22Hz", "+10%", {
-        "skill": "风纪委员，立即执行！",
-        "attack": "站住！违反校规，不许动！",
-        "hurt": "好痛！我才不会退让呢！",
-        "dying": "下课铃声，明明还没停……",
-        "touch": "笨蛋！乱碰哪里呢！违反风纪要扣分的哦！",
-    }),
-    "kaori": ("zh-CN-XiaoyiNeural", "+25Hz", "+12%", {
-        "skill": "你的心跳，我全部听见啦！",
-        "attack": "听我的歌吧！麦克风全开！",
-        "hurt": "呜哇！歌声绝对不能停！",
-        "dying": "最后，再让我唱一首吧……",
-        "touch": "嘿嘿，是粉丝福利时间吗？最喜欢你的应援啦！",
-    }),
-    "chinatsu": ("zh-CN-XiaoxiaoNeural", "+18Hz", "+14%", {
-        "skill": "元气补给，能量满格！",
-        "attack": "全速冲刺！看我的起跑！",
-        "hurt": "摔一跤而已，再来一次！",
-        "dying": "终点线，明明就在前面……",
-        "touch": "哇！别突然戳我啦，刚跑完步身上还热乎乎的呢！",
-    }),
-    "shizuha": ("zh-CN-XiaoyiNeural", "+12Hz", "-10%", {
-        "skill": "呼啊，我去看星星了哦……",
-        "attack": "呜，茶都要凉了啦……",
-        "hurt": "好困，被你打醒了啦……",
-        "dying": "今夜的星星，好远啊……",
-        "touch": "嗯，再让我靠在你肩上睡五分钟嘛，暖呼呼的……",
-    }),
-    "hibiki": ("zh-CN-XiaoyiNeural", "+20Hz", "+8%", {
-        "skill": "吵死了，全都给我安静听琴！",
-        "attack": "听好了，练习曲开始！",
-        "hurt": "笨蛋，下手轻一点啦！",
-        "dying": "琴弦，要断掉了……",
-        "touch": "哼，既然你这么诚心，本小姐就破例为你独奏一曲吧！",
-    }),
-    "koume": ("zh-CN-XiaoxiaoNeural", "+14Hz", "-2%", {
-        "skill": "请让我用热茶来招待您吧。",
-        "attack": "请恕小梅失礼了，这一杯请收下！",
-        "hurt": "呜，围裙都要弄脏了……",
-        "dying": "茶，还没有泡好呢……",
-        "touch": "主人，今天也辛苦了，要尝尝小梅亲手做的樱花点心吗？",
-    }),
-    "sena": ("zh-CN-XiaoxiaoNeural", "+4Hz", "+2%", {
-        "skill": "星辰轨迹，尽在我的掌握！",
-        "attack": "按学生会章程，予以肃清！",
-        "hurt": "唔，推算偏了一分吗？",
-        "dying": "星轨，还没有走到尽头……",
-        "touch": "在学生会室做这种事……咳，下不为例，只允许你一个人哦。",
-    }),
-    "reo": ("zh-CN-XiaoxiaoNeural", "-2Hz", "+8%", {
-        "skill": "秘剑残月，一刀两断，斩！",
-        "attack": "看剑！我的竹刀绝不迟疑！",
-        "hurt": "好刀法，这点伤连热身都不算！",
-        "dying": "剑道之巅，还没有登上去……",
-        "touch": "喂！握剑的手可不是用来牵的……算了，偶尔放松一下也无妨。",
-    }),
-    "mahiru": ("zh-CN-XiaoyiNeural", "+10Hz", "-4%", {
-        "skill": "昼夜轮转，阴阳易位！",
-        "attack": "翻至阳之卷，星火燎原！",
-        "hurt": "唔，把书页都弄乱了……",
-        "dying": "合上书卷，晚安……",
-        "touch": "嘘，在图书室靠这么近，心跳声会被别人听见的……",
-    }),
-    "aya": ("zh-CN-XiaoxiaoNeural", "+6Hz", "+5%", {
-        "skill": "心眼开阖，神射无双！",
-        "attack": "一矢中的，落樱百步，破！",
-        "hurt": "弓弦未乱，还能再射！",
-        "dying": "弓弦，要断了吗……",
-        "touch": "想学射箭的话，手把手教你也可以……别一直盯着我看呀。",
-    }),
-    "nana": ("zh-CN-XiaoyiNeural", "+26Hz", "+12%", {
-        "skill": "催化剂投入，连锁反应开始咯！",
-        "attack": "尝尝特制星光试剂，砰！",
-        "hurt": "哇啊！烧杯差点碎掉啦！",
-        "dying": "实验报告，还没写完呢……",
-        "touch": "嘿嘿，想喝这瓶粉色恋爱药水吗？保证甜到心里去哦～",
-    }),
-    "rin": ("zh-CN-XiaoyiNeural", "+14Hz", "+4%", {
-        "skill": "妙算入神，一子定乾坤！",
-        "attack": "这一手，将军！棋路早已算定！",
-        "hurt": "嗯，弃子争先罢了。",
-        "dying": "终盘，还没分出胜负……",
-        "touch": "算尽了棋盘上的百步变化，却算不准你靠近时的心跳呢。",
-    }),
-    "yukine": ("zh-CN-XiaoxiaoNeural", "+8Hz", "+3%", {
-        "skill": "精算无遗，凛霜反噬！",
-        "attack": "违规预算，予以冻结！",
-        "hurt": "寒霜，会记住这次冒犯。",
-        "dying": "冰雪，终究会融化吗……",
-        "touch": "手这么暖和，再握一会儿的话，我的冰霜可要被你融化了。",
-    }),
-    "lilia": ("zh-CN-XiaoxiaoNeural", "+10Hz", "+4%", {
-        "skill": "展开吧，圣纹护盾！荣耀庇佑！",
-        "attack": "以骑士团之名，荣耀之剑，突进！",
-        "hurt": "圣盾尚在，休想越过我的防线！",
-        "dying": "骑士的誓言，永不磨灭……",
-        "touch": "向您献上骑士的忠诚……诶？摸头发可不在骑士礼仪里呀！",
-    }),
-    "sakuya": ("zh-CN-XiaoyiNeural", "+15Hz", "+0%", {
-        "skill": "拨转星盘，逆写此刻的宿命！",
-        "attack": "时针指处，即是终局。",
-        "hurt": "时间，出现了裂隙吗……",
-        "dying": "钟摆，快要停下了吗……",
-        "touch": "如果能把时间停在这一刻，就能一直和你待在钟塔下了呢。",
-    }),
-    "sana": ("zh-CN-XiaoxiaoNeural", "+2Hz", "+9%", {
-        "skill": "万羽归刃，破空连斩！",
-        "attack": "黑羽所至，一闪即斩！",
-        "hurt": "哼，这片影羽，我记下了！",
-        "dying": "绯色的樱花，落尽了吗……",
-        "touch": "我的围巾很暖和哦，想围在一起的话，再靠近一点吧。",
-    }),
-    "yuu": ("zh-CN-XiaoyiNeural", "+18Hz", "+2%", {
-        "skill": "天命流转，由我改写此签！",
-        "attack": "灵札指路，卦象说你躲不开哦～",
-        "hurt": "呀，占卜没有算到这一着……",
-        "dying": "命运的红线，到此为止了吗……",
-        "touch": "今天抽到了上上签哦，签文上写着，命中注定的人就在眼前呢。",
-    }),
-    "mafuyu": ("zh-CN-XiaoxiaoNeural", "+5Hz", "+3%", {
-        "skill": "霜封万里，万物皆寂，破！",
-        "attack": "风纪肃清，连同呼吸一并冻结！",
-        "hurt": "冷静，寒霜不会因此动摇。",
-        "dying": "冬樱，要提前凋零了吗……",
-        "touch": "明明是风纪巡查时间，被你这样温柔地碰触，怎么冷得下脸嘛。",
-    }),
+REPO = Path(__file__).resolve().parents[3]
+LINES = REPO / "game/data/voice_lines.gd"
+DESTINATION = REPO / "game/assets/voice"
+
+# Preset speaker IDs belong to EmotiVoice. Each actor keeps the same timbre across scenes.
+CAST = {
+    "hina": ("1012", "天真轻快，温柔好奇"),
+    "rena": ("1051", "语气利落，认真，有条理"),
+    "kaori": ("1088", "开朗有舞台感，带着节拍"),
+    "chinatsu": ("92", "元气十足，直率爽朗"),
+    "shizuha": ("1093", "慵懒轻柔，像半梦半醒"),
+    "hibiki": ("1066", "倔强，好胜，重音鲜明"),
+    "koume": ("1168", "安静礼貌，句尾柔软"),
+    "sena": ("1006", "笃定清晰，沉稳自信"),
+    "reo": ("1084", "果断有力，干净利落"),
+    "mahiru": ("8051", "娓娓道来，平和温暖"),
+    "aya": ("1079", "专注清亮，呼吸平稳"),
+    "nana": ("1052", "活泼好奇，情绪转折明显"),
+    "rin": ("1171", "克制，不急不慢，带一点笑意"),
+    "yukine": ("102", "冷静准确，咬字清楚"),
+    "lilia": ("1069", "自信爽朗，像在鼓励同伴"),
+    "sakuya": ("1152", "从容优雅，有节拍感"),
+    "sana": ("1166", "沉着克制，动词干净利落"),
+    "yuu": ("12787", "俏皮轻盈，像在分享秘密"),
+    "mafuyu": ("1154", "清冷可靠，尾音柔和"),
 }
 
-sem = asyncio.Semaphore(3)
+# Text prompt, duration multiplier (larger = slower), target RMS in dBFS.
+DIRECTION = {
+    "attack": ("坚定，短促有力，重读最后的动作。", 0.97, -19.0),
+    "skill": ("自信，先说清楚，再把动作说得有力量。", 1.00, -19.0),
+    "hurt": ("惊讶，突然吃痛，后半句收住声音。", 0.97, -20.4),
+    "dying": ("悲伤，虚弱而迟疑，停一拍再努力说完。", 1.10, -22.0),
+    "touch": ("开心，像和熟人闲聊，带一点笑意。", 1.02, -20.2),
+    "heal": ("先松一口气，再带着欣慰的笑意。", 1.03, -20.1),
+    "dodge": ("反应迅速，先一惊，再带一点得意。", 0.94, -20.0),
+    "death": ("遗憾，疲惫又平静，尾音轻轻落下。", 1.12, -22.6),
+    "gift": ("惊喜，露出微笑，自然地道谢。", 1.00, -20.2),
+    "head": ("开心又有点害羞，亲切放松。", 1.02, -20.4),
+    "face": ("害羞，先惊讶一下，接着带一点笑意。", 1.01, -20.4),
+    "body": ("温和，自然聊天，语气轻松。", 1.03, -20.4),
+    "vow": ("温柔，真挚，郑重地许下约定。", 1.07, -21.0),
+}
 
-async def gen_one(cid, cat, voice, pitch, rate, text):
-    ogg_path = f"{OUT_DIR}/cv_{cid}_{cat}.ogg"
-    if os.path.exists(ogg_path) and os.path.getsize(ogg_path) > 1000:
-        return
-    mp3_tmp = f"/tmp/cv_{cid}_{cat}.mp3"
-    async with sem:
-        for attempt in range(6):
+
+def spoken_text(caption):
+    # The Chinese frontend recognises clause breaks. Map display-only punctuation
+    # to a single break and avoid a synthetic hesitation before the first syllable.
+    text = re.sub(r"[～~…—]+", "，", caption).translate(str.maketrans("", "", "『』「」"))
+    return re.sub(r"[，。！？：、]{2,}", "，", text).lstrip("，")
+
+
+def level(wave, rate, target_db):
+    peak = np.abs(wave).max()
+    if not np.isfinite(wave).all() or peak < 0.001:
+        raise ValueError("Model returned invalid or silent audio")
+    active = np.flatnonzero(np.abs(wave) >= max(0.0005, peak * 0.012))
+    wave = wave[max(0, active[0] - int(rate * 0.045)): active[-1] + int(rate * 0.085) + 1].copy()
+    rms = np.sqrt(np.mean(wave ** 2))
+    wave *= min(10 ** (target_db / 20) / rms, 0.84 / peak, 3.0)
+    for part, ms in ((wave, 12), (wave[::-1], 37)):
+        length = min(int(rate * ms / 1000), len(part) // 3)
+        part[:length] *= (1.0 - np.cos(np.linspace(0, np.pi, length))) / 2
+    return wave
+
+
+class Speech:
+    def __init__(self, checkout):
+        # Upstream Config resolves data, lexicon and model paths from the current directory.
+        sys.path.insert(0, str(checkout))
+        os.chdir(checkout)
+        from config.joint.config import Config
+        from frontend_cn import g2p_cn
+        from models.prompt_tts_modified.jets import JETSGenerator
+
+        cfg = Config()
+        self.phonemes = g2p_cn
+        self.rate = cfg.sampling_rate
+        self.tokens = {token: i for i, token in enumerate(cfg.tokens)}
+        self.speakers = {speaker: i for i, speaker in enumerate(cfg.speakers)}
+        self.tokenizer = AutoTokenizer.from_pretrained(cfg.bert_path, local_files_only=True)
+        self.encoder = AutoModel.from_config(AutoConfig.from_pretrained(cfg.bert_path, local_files_only=True))
+        style = torch.load(cfg.style_encoder_ckpt, map_location="cpu", weights_only=True)["model"]
+        bert = {k.split("bert.", 1)[1]: v for k, v in style.items() if k.removeprefix("module.").startswith("bert.")}
+        # Transformers versions differ on whether the generated position index is persisted.
+        if "embeddings.position_ids" not in self.encoder.state_dict():
+            bert.pop("embeddings.position_ids", None)
+        self.encoder.load_state_dict(bert, strict=True)
+        del style, bert
+        self.encoder.eval()
+        with open(cfg.model_config_path, encoding="utf-8") as source:
+            params = yaml.load_cfg(source)
+        params.n_vocab, params.n_speaker = cfg.n_symbols, cfg.speaker_n_labels
+        self.generator = JETSGenerator(params)
+        model = Path(cfg.output_directory) / "prompt_tts_open_source_joint/ckpt/g_00140000"
+        self.generator.load_state_dict(torch.load(model, map_location="cpu", weights_only=True)["generator"])
+        self.generator.eval()
+
+    @lru_cache(maxsize=256)
+    def embed(self, text):
+        return self.encoder(**self.tokenizer([text], return_tensors="pt")).pooler_output
+
+    @torch.inference_mode()
+    def synthesize(self, cid, category, caption):
+        speaker, character = CAST[cid]
+        mood, duration, target_db = DIRECTION[category]
+        text = spoken_text(caption)
+        tokens = self.phonemes(text).split()
+        sequence = torch.tensor([[self.tokens[t] for t in tokens]], dtype=torch.long)
+        prediction = self.generator(
+            inputs_ling=sequence,
+            input_lengths=torch.tensor([sequence.shape[1]]),
+            inputs_speaker=torch.tensor([self.speakers[speaker]]),
+            inputs_style_embedding=self.embed(mood + " 声线" + character + "。"),
+            inputs_content_embedding=self.embed(text),
+            alpha=duration,
+        )
+        wave = level(prediction["wav_predictions"].squeeze().numpy(), self.rate, target_db)
+        seconds = len(wave) / self.rate
+        if not (0.30 <= seconds <= 25.0):
+            raise ValueError(f"{cid}/{category} has unexpected length {seconds:.2f}s")
+        return wave
+
+
+def save_ogg(destination, wave, rate):
+    # Atomic replacement lets an interrupted render be repeated without corrupting a clip.
+    with tempfile.NamedTemporaryFile(dir=destination.parent, delete=False, suffix=".tmp") as temp:
+        path = Path(temp.name)
+    try:
+        subprocess.run(
+            ["ffmpeg", "-v", "error", "-y", "-f", "f32le", "-ar", str(rate), "-ac", "1",
+             "-i", "pipe:0", "-c:a", "libvorbis", "-q:a", "5", "-map_metadata", "-1",
+             "-f", "ogg", str(path)],
+            input=wave.astype("<f4").tobytes(), check=True,
+        )
+        os.replace(path, destination)
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def main():
+    cli = argparse.ArgumentParser(description=__doc__)
+    cli.add_argument("--emotivoice", type=Path, required=True, help="Path to the local model checkout")
+    cli.add_argument("--output", type=Path, default=DESTINATION)
+    cli.add_argument("--character", nargs="+", choices=CAST, default=list(CAST))
+    cli.add_argument("--event", nargs="+", choices=DIRECTION, default=list(DIRECTION))
+    args = cli.parse_args()
+    output = args.output.resolve()
+    output.mkdir(parents=True, exist_ok=True)
+    lines = json.loads(LINES.read_text(encoding="utf-8").split("const LINES := ", 1)[1])
+    if set(lines) != set(CAST) or any(set(row) != set(DIRECTION) for row in lines.values()):
+        raise ValueError("The TTS cast, event directions and in-game dialogue must match")
+    torch.manual_seed(42)
+    cpus = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else (os.cpu_count() or 1)
+    torch.set_num_threads(min(4, cpus))
+    torch.set_num_interop_threads(1)
+    speech = Speech(args.emotivoice.resolve())
+    failures = []
+    for cid in args.character:
+        for category in args.event:
+            name = f"cv_{cid}_{category}"
             try:
-                comm = edge_tts.Communicate(text, voice, rate=rate, pitch=pitch)
-                await comm.save(mp3_tmp)
-                subprocess.run(
-                    ["ffmpeg", "-loglevel", "error", "-nostdin", "-y", "-i", mp3_tmp,
-                     "-af", "silenceremove=start_periods=1:start_silence=0.05:start_threshold=-45dB,volume=1.35",
-                     "-ar", "24000", "-ac", "1", "-c:a", "libvorbis", "-q:a", "2", ogg_path],
-                    check=True,
-                )
-                if os.path.exists(mp3_tmp):
-                    os.remove(mp3_tmp)
-                break
-            except Exception as e:
-                if attempt == 2:
-                    raise e
-                await asyncio.sleep(0.8)
+                wave = speech.synthesize(cid, category, lines[cid][category])
+                save_ogg(output / (name + ".ogg"), wave, speech.rate)
+                print(f"{name} {len(wave) / speech.rate:.2f}s", flush=True)
+            except (ValueError, KeyError, IndexError, RuntimeError, subprocess.SubprocessError) as error:
+                failures.append(name)
+                print(f"Failed {name}: {error}", file=sys.stderr, flush=True)
+    if failures:
+        raise SystemExit("Failed clips: " + ", ".join(failures))
 
-async def main():
-    tasks = []
-    for cid, (voice, pitch, rate, lines) in VOICES.items():
-        for cat, text in lines.items():
-            tasks.append(gen_one(cid, cat, voice, pitch, rate, text))
-    await asyncio.gather(*tasks)
-    files = [f for f in os.listdir(OUT_DIR) if f.endswith(".ogg")]
-    print("GENERATED_CV_FILES:", len(files))
 
-asyncio.run(main())
+if __name__ == "__main__":
+    main()

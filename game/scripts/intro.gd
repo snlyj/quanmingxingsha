@@ -37,7 +37,6 @@ var lp_token := 0
 var lp_pos := Vector2.ZERO
 var lp_pending := false
 var lp_fired := false
-var swallow_until_ms := 0
 var hover_token := 0
 var hover_pos := Vector2.ZERO
 var hover_rect := Rect2()
@@ -217,7 +216,6 @@ func _input(event: InputEvent) -> void:
 				lp_token += 1
 				if lp_fired:
 					lp_fired = false
-					swallow_until_ms = Time.get_ticks_msec() + 250
 					if mode == "hold":
 						hide_pop()
 					get_viewport().set_input_as_handled()
@@ -234,6 +232,13 @@ func _input(event: InputEvent) -> void:
 				hover_timer.start(HOVER_SEC)  # 单个 Timer 反复重启，不随鼠标移动创建新计时器
 
 
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_APPLICATION_FOCUS_OUT or what == NOTIFICATION_APPLICATION_PAUSED:
+		cancel_longpress()
+		if mode == "hold":
+			hide_pop()
+
+
 func _lp_start(pos: Vector2) -> void:
 	lp_token += 1
 	lp_pos = pos
@@ -248,9 +253,9 @@ func cancel_longpress() -> void:
 	lp_token += 1
 
 
-# 长按是否刚刚触发过（供点击回调兜底判断：触发后的这次松手不算点击）
+# 长按只占用触发说明的这次按压。原松手在 _input 中拦截，下一次点按可以立即开始。
 func swallowing() -> bool:
-	return lp_fired or Time.get_ticks_msec() < swallow_until_ms
+	return lp_fired
 
 
 func _lp_fire(tok: int) -> void:

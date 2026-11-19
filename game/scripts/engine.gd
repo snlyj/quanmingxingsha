@@ -7,6 +7,8 @@ extends RefCounted
 
 const AI_STALEMATE_ROUND := 25
 const AI_REBEL_LORD_BONUS := 4.5
+const HUMAN_ATTACK_IMPACT_PAUSE := 0.34
+const OPENING_LUCK_LIMIT := 2
 
 var players: Array = []
 var deck: Array = []
@@ -19,6 +21,7 @@ var winner_text := ""
 var turn_player: Dictionary = {}
 var round_no := 0
 var phase_text := ""
+var opening_luck_left := 0
 var discard_need := 0  # V0.25：弃牌阶段还需弃几张（仅界面多选用，不影响结算）
 
 
@@ -30,6 +33,20 @@ func changed() -> void:
 func pace(sec: float) -> void:
 	if ui.has("pace"):
 		await (ui["pace"] as Callable).call(sec)
+
+
+func _present_card(p: Dictionary, card: Dictionary, detail: String = "") -> void:
+	if ui.has("played"):
+		await (ui["played"] as Callable).call(card, pname(p), detail)
+
+
+func _present_skill(p: Dictionary, sid: String, important: bool = false, forced: bool = false) -> void:
+	if not fx_on or not ui.has("fx"):
+		return
+	var definition: Dictionary = skill_lib.get(sid, {})
+	fx("skill", {"seat": int(p["seat"]), "name": String(definition.get("name", sid)), "sid": sid, "big": important})
+	# 只暂停可见的技能播报，后续牌沿用统一的飞牌节奏。
+	await pace(0.32 if forced else 0.48)
 
 
 func is_ai(p: Dictionary) -> bool:
@@ -47,6 +64,10 @@ var turn_hook: Callable = Callable()  # 自测钩子：每个回合开始前与�
 func fx(kind: String, data: Dictionary) -> void:
 	if fx_on and ui.has("fx"):
 		(ui["fx"] as Callable).call(kind, data)
+
+
+func _mark_card_target(src: Dictionary, tgt: Dictionary, card_name: String, resolving: bool = false) -> void:
+	fx("target", {"src_seat": int(src["seat"]), "tgt_seat": int(tgt["seat"]), "card": card_name, "resolving": resolving})
 
 
 func set_ui(callbacks: Dictionary) -> void:
@@ -495,6 +516,9 @@ func do_judge(p: Dictionary, reason: String) -> Dictionary:
 			if bool(go):
 				rep = await pick_card(q, {"prompt": "「命札」：选择 1 张手牌代替判定牌 %s" % card_text(c)})
 		if not rep.is_empty():
+			await _present_skill(q, "mingzha", true)
+			if game_over:
+				return c
 			discard_pile.append(c)
 			discard_from_hand(q, rep)
 			(q["round_marks"] as Dictionary)["mingzha_cnt"] = used_n + 1
@@ -502,7 +526,6 @@ func do_judge(p: Dictionary, reason: String) -> Dictionary:
 			c = rep
 			swapped = true
 			draw_cards(q, 1)
-			fx("skill", {"seat": int(q["seat"]), "name": "命札", "sid": "mingzha", "big": true})
 			fx("judge", {"seat": int(p["seat"]), "card": c, "label": reason + "·改判"})
 			log_msg("🔮「命札」：%s 打出 %s 替换了 %s 的「%s」判定牌（原为 %s），并摸 1 张牌（%d/2）！" % [pname(q), card_text(c), pname(p), reason, old_t, used_n + 1])
 			changed()
@@ -569,8 +592,9 @@ func fire(timing: String, ctx: Dictionary) -> void:
 			go = await decide_skill(p, String(e["sid"]), timing, ctx, t)
 		if not go:
 			continue
-		var _def: Dictionary = skill_lib.get(String(e["sid"]), {})
-		fx("skill", {"seat": int(p["seat"]), "name": String(_def.get("name", e["sid"])), "sid": String(e["sid"])})
+		await _present_skill(p, String(e["sid"]), false, bool(t.get("forced", false)))
+		if game_over:
+			return
 		await (t["content"] as Callable).call(self, ctx, p)
 		if bool(ctx.get("cancelled", false)):
 			return
@@ -640,6 +664,7 @@ func setup_game(char_list: Array, identities: Array) -> void:
 	game_over = false
 	winner_text = ""
 	round_no = 0
+	opening_luck_left = 0
 	build_deck()
 	for i in char_list.size():
 		var cd: Dictionary = char_list[i]
@@ -718,6 +743,21 @@ func setup_game(char_list: Array, identities: Array) -> void:
 	changed()
 
 
+func redraw_opening_hand() -> int:
+	if game_over or round_no != 0 or opening_luck_left <= 0 or players.is_empty():
+		return 0
+	var p: Dictionary = players[0]
+	var hand: Array = p["hand"]
+	if hand.is_empty():
+		return 0
+	var count := hand.size()
+	opening_luck_left -= 1
+	deck.append_array(hand)
+	hand.clear()
+	deck.shuffle()
+	return draw_cards(p, count).size()
+
+
 func lord_player() -> Dictionary:
 	for p in players:
 		if String(p["identity"]) == "主公":
@@ -750,7 +790,7 @@ func gain_shield(p: Dictionary, n: int) -> void:
 		changed()
 
 
-func heal(p: Dictionary, n: int, src: Dictionary = {}) -> void:
+func heal(p: Dictionary, n: int, src: Dictionary = {}, cause: String = "") -> void:
 	if not p["alive"]:
 		return
 	var before := int(p["hp"])
@@ -761,12 +801,12 @@ func heal(p: Dictionary, n: int, src: Dictionary = {}) -> void:
 			src["stat_heal"] = int(src.get("stat_heal", 0)) + gained
 		log_msg("%s 回复 %d 点体力（%d/%d）。" % [pname(p), gained, int(p["hp"]), int(p["max_hp"])])
 		changed()
-		fx("heal", {"seat": int(p["seat"]), "num": gained})
+		fx("heal", {"seat": int(p["seat"]), "num": gained, "src_seat": int(src.get("seat", -1)), "cause": cause})
 		if not src.is_empty():
 			observe_heal(src, p)
 
 
-func damage(src: Dictionary, tgt: Dictionary, num: int, cause: String, nature: String = "", spread: bool = false, ignore_armor: bool = false) -> void:
+func damage(src: Dictionary, tgt: Dictionary, num: int, cause: String, nature: String = "", spread: bool = false, ignore_armor: bool = false, brief_attack_impact: bool = false) -> void:
 	if not tgt["alive"] or game_over or num <= 0:
 		return
 	var ctx := {"name": "damage", "player": tgt, "target": tgt, "source": src, "num": num, "cause": cause, "nature": nature, "cancelled": false}
@@ -811,7 +851,7 @@ func damage(src: Dictionary, tgt: Dictionary, num: int, cause: String, nature: S
 		tgt["shield"] = sh_now - absorbed
 		num -= absorbed
 		log_msg("🛡「护甲」：%s 的护甲抵消了 %d 点伤害（剩余护甲 %d）。" % [pname(tgt), absorbed, int(tgt["shield"])])
-		fx("shield", {"seat": int(tgt["seat"]), "delta": -absorbed, "shield": int(tgt["shield"])})
+		fx("shield", {"seat": int(tgt["seat"]), "delta": -absorbed, "shield": int(tgt["shield"]), "remaining_damage": num})
 		changed()
 		if num <= 0:
 			return
@@ -823,7 +863,7 @@ func damage(src: Dictionary, tgt: Dictionary, num: int, cause: String, nature: S
 		src["stat_damage"] = int(src.get("stat_damage", 0)) + lost
 	observe_damage(src, tgt, lost)
 	log_msg("%s 受到 %s 的 %d 点伤害（%s），体力剩余 %d。" % [pname(tgt), pname(src), num, cause, maxi(int(tgt["hp"]), 0)])
-	fx("damage", {"seat": int(tgt["seat"]), "num": num, "src_seat": int(src["seat"]) if not src.is_empty() else -1, "nature": nature, "attack_hit": cause.begins_with("突击") and not spread})
+	fx("damage", {"seat": int(tgt["seat"]), "num": num, "src_seat": int(src.get("seat", -1)), "nature": nature, "cause": cause, "spread": spread, "attack_hit": cause.begins_with("突击") and not spread})
 	if num >= 2 and not spread:
 		fx("heavy_hit", {"seat": int(src["seat"]) if not src.is_empty() else int(tgt["seat"]), "tgt_seat": int(tgt["seat"]), "num": num})
 	changed()
@@ -835,7 +875,7 @@ func damage(src: Dictionary, tgt: Dictionary, num: int, cause: String, nature: S
 		log_msg("%s 的「羁绊锁链」因属性伤害而解开。" % pname(tgt))
 		fx("chain", {"seat": int(tgt["seat"]), "on": false})
 		chain_spread = not spread
-	await pace(0.65)
+	await pace(HUMAN_ATTACK_IMPACT_PAUSE if brief_attack_impact and int(tgt["hp"]) > 0 and not chain_spread else 0.65)
 	ctx["num"] = num
 	# 烂银铠甲：受到「突击」造成的伤害时弃置自身
 	if cause.begins_with("突击"):
@@ -935,16 +975,19 @@ func respond_with(p: Dictionary, card_name: String, reason: String, responded_ca
 					c = hc
 	if not converted and is_ai(p) and difficulty == 0 and card_name == "闪避" and randf() < 0.15:
 		return false
-	if is_ai(p):
+	var automated := is_ai(p)
+	if automated:
 		await think(0.85, 1.35)
-	if ui.has("played"):
-		(ui["played"] as Callable).call(c, pname(p), reason)
-		if is_ai(p):
-			await pace(0.55)
+	if converted and convert_src == "星帷":
+		await _present_skill(p, "xingwei", true)
+		if game_over:
+			return false
+	var shown := {"name": card_name, "suit": String(c["suit"]), "point": int(c["point"]), "nature": "", "yb": [], "virtual": true, "src_cards": [c]} if converted else c
+	await _present_card(p, shown, reason)
+	if game_over:
+		return false
 	discard_from_hand(p, c)
 	if converted:
-		if convert_src == "星帷":
-			fx("skill", {"seat": int(p["seat"]), "name": "星帷", "sid": "xingwei", "big": true})
 		log_msg("%s 以「%s」将 %s 当作「闪避」打出（%s）。" % [pname(p), convert_src, card_text(c), reason])
 	else:
 		log_msg("%s 打出 %s（%s）。" % [pname(p), card_text(c), reason])
@@ -953,6 +996,9 @@ func respond_with(p: Dictionary, card_name: String, reason: String, responded_ca
 	if card_name == "闪避" and not turn_player.is_empty() and turn_player != p and has_skill(p, "lianyu"):
 		var cur_m := mark_count(p, "影羽")
 		if cur_m < 4:
+			await _present_skill(p, "lianyu", false, true)
+			if game_over:
+				return false
 			var nv := add_mark(p, "影羽", 1, 4)
 			log_msg("🪶「敛羽」：%s 回合外打出闪避，获得 1 枚「影羽」（%d/4）。" % [pname(p), nv])
 	await yinyue_trigger(p, c)
@@ -1052,8 +1098,9 @@ func jinchan_negate(victim: Dictionary, user: Dictionary, card_name: String) -> 
 	var jc: Dictionary = hand[0]
 	hand.erase(jc)
 	discard_pile.append(jc)
-	if ui.has("played"):
-		(ui["played"] as Callable).call(jc, pname(victim))
+	await _present_card(victim, jc, "响应")
+	if game_over:
+		return false
 	draw_cards(victim, 2)
 	log_msg("%s 打出「金蝉脱壳」：%s 的「%s」对其无效，%s 摸 2 张牌！" % [pname(victim), pname(user), card_name, pname(victim)])
 	fx("nullify", {"seat": int(victim["seat"]), "negated": true, "name": "金蝉脱壳"})
@@ -1124,15 +1171,17 @@ func nullify_window(trick: String, user: Dictionary, victim: Dictionary, trick_c
 		var c := actor_card
 		if actor_xw:
 			actor["xingwei_turn_used"] = true
-			fx("skill", {"seat": int(actor["seat"]), "name": "星帷", "sid": "xingwei", "big": true})
-		if ui.has("played"):
-			(ui["played"] as Callable).call(c, pname(actor))
+			await _present_skill(actor, "xingwei", true)
+			if game_over:
+				return negated
+		var effective := {"name": "看破", "suit": String(c["suit"]), "point": int(c["point"]), "nature": "", "yb": [], "virtual": true, "src_cards": [c]} if actor_xw else c
+		await _present_card(actor, effective, "响应")
+		if game_over:
+			return negated
 		discard_from_hand(actor, c)
 		if not actor_xw:
 			await yb_response_effects(actor, c, resp_target)
-			resp_target = c
-		else:
-			resp_target = {"name": "看破", "suit": String(c["suit"]), "point": int(c["point"]), "nature": "", "yb": [], "virtual": true, "src_cards": [c]}
+		resp_target = effective
 		negated = not negated
 		var kp_tag := ("以「星帷」将 %s 当作「看破」" % card_text(c)) if actor_xw else "打出「看破」"
 		if negated:
@@ -1142,10 +1191,13 @@ func nullify_window(trick: String, user: Dictionary, victim: Dictionary, trick_c
 		if not turn_player.is_empty() and turn_player != actor and has_skill(actor, "lianyu"):
 			var cur_kp := mark_count(actor, "影羽")
 			if cur_kp < 4:
+				await _present_skill(actor, "lianyu", false, true)
+				if game_over:
+					return negated
 				var nv_kp := add_mark(actor, "影羽", 1, 4)
 				log_msg("🪶「敛羽」：%s 回合外打出看破，获得 1 枚「影羽」（%d/4）。" % [pname(actor), nv_kp])
 		fx("nullify", {"seat": int(actor["seat"]), "negated": negated})
-		await pace(0.65)
+		await pace(0.32)
 	return negated
 
 
@@ -1422,11 +1474,12 @@ func use_attack(src: Dictionary, tgt: Dictionary, card: Dictionary, counts := tr
 	if bool(tgt.get("dream_guard", false)):
 		log_msg("%s 处于「星眠」保护中，不能成为「突击」的目标。" % pname(tgt))
 		return
+	var human := not is_ai(src)
+	# 仅玩家自己出牌阶段从手牌使用的突击，与牌面飞行的时长对齐。
+	var hand_attack := human and counts and not already_discarded and not bool(card.get("virtual", false)) and phase_text == "出牌阶段" and is_same(src, turn_player)
 	if not already_discarded:
 		discard_from_hand(src, card)
-	if ui.has("played"):
-		(ui["played"] as Callable).call(card, pname(src), pname(tgt))
-		await pace(0.75 if is_ai(src) else 0.35)
+	await _present_card(src, card, pname(tgt))
 	if game_over or not src["alive"]:
 		return
 	if counts:
@@ -1537,7 +1590,8 @@ func use_attack(src: Dictionary, tgt: Dictionary, card: Dictionary, counts := tr
 		if game_over or not src["alive"] or not t["alive"]:
 			continue
 		var force_hit := yb_hit or bool(card.get("force_hit", false)) or bool(ctx.get("force_hit", false))
-		await resolve_attack_hit(src, t, card, dmg, wname, nature, force_hit)
+		var brief_impact := hand_attack and targets.size() == 1 and nature == "" and not bool(yb["triggered"]) and not force_hit
+		await resolve_attack_hit(src, t, card, dmg, wname, nature, force_hit, brief_impact)
 
 
 func resolve_steel_spear(src: Dictionary, tgt: Dictionary) -> void:
@@ -1563,24 +1617,26 @@ func resolve_steel_spear(src: Dictionary, tgt: Dictionary) -> void:
 	changed()
 
 
-func resolve_attack_hit(src: Dictionary, tgt: Dictionary, card: Dictionary, dmg: int, wname: String, nature: String = "", unrespondable := false) -> void:
+func resolve_attack_hit(src: Dictionary, tgt: Dictionary, card: Dictionary, dmg: int, wname: String, nature: String = "", unrespondable := false, brief_impact: bool = false) -> void:
 	var ctx := {"name": "useCard", "player": src, "source": src, "target": tgt, "card": card, "cancelled": false}
 	var armor: Dictionary = tgt["equip"]["armor"]
 	var ignore_armor := wname == "破甲光剑" or wname == "七宝利刃"
 	# 藤蔓铠甲：普通突击无效（破甲光剑无视防具）
 	if not ignore_armor and not armor.is_empty() and String(armor["name"]) == "藤蔓铠甲" and nature == "":
 		log_msg("「藤蔓铠甲」生效：普通「突击」对 %s 无效。" % pname(tgt))
+		fx("prevented", {"seat": int(tgt["seat"]), "num": dmg, "name": "藤蔓铠甲"})
 		return
 	# 防护立场：黑色突击无效（破甲光剑无视防具）
 	if not ignore_armor and not armor.is_empty() and String(armor["name"]) == "防护立场" and is_black(card):
 		log_msg("「防护立场」生效：黑色「突击」对 %s 无效。" % pname(tgt))
+		fx("prevented", {"seat": int(tgt["seat"]), "num": dmg, "name": "防护立场"})
 		return
 	# 结界手环：判定红色视为打出闪避（破甲光剑无视防具；应变强命不可被响应，此判定亦不触发）
 	if not unrespondable and not ignore_armor and not armor.is_empty() and String(armor["name"]) == "结界手环":
 		var jc := await do_judge(tgt, "结界手环")
 		if not jc.is_empty() and is_red(jc):
 			log_msg("「结界手环」判定成功，%s 视为打出「闪避」。" % pname(tgt))
-			fx("dodge", {"seat": int(tgt["seat"])})
+			fx("dodge", {"seat": int(tgt["seat"]), "barrier": true})
 			await fire("attackDodged", ctx)
 			await weapon_after_dodge(src, tgt, card, dmg, wname, nature, ctx)
 			return
@@ -1651,7 +1707,7 @@ func resolve_attack_hit(src: Dictionary, tgt: Dictionary, card: Dictionary, dmg:
 				changed()
 				return
 	var hp_before := int(tgt["hp"])
-	await damage(src, tgt, d, "突击", nature, false, ignore_armor)
+	await damage(src, tgt, d, "突击", nature, false, ignore_armor, brief_impact and not dodged)
 	var dealt := hp_before - int(tgt["hp"])
 	if dealt > 0:
 		# 双生短刃：命中摸 1；破空长弓：命中可卸对方坐骑
@@ -1762,8 +1818,9 @@ func can_recast(c: Dictionary) -> bool:
 func recast(p: Dictionary, card: Dictionary) -> bool:
 	if not can_recast(card) or not (p["hand"] as Array).has(card):
 		return false
-	if ui.has("played"):
-		(ui["played"] as Callable).call(card, pname(p), "重铸")
+	await _present_card(p, card, "重铸")
+	if game_over:
+		return false
 	discard_from_hand(p, card)
 	log_msg("%s 重铸了 %s。" % [pname(p), card_text(card)])
 	draw_cards(p, 1)
@@ -1778,7 +1835,7 @@ func use_supply(p: Dictionary, card: Dictionary, tgt: Dictionary) -> void:
 		log_msg("%s 对 %s 使用 %s 救援。" % [pname(p), pname(tgt), card_text(card)])
 	else:
 		log_msg("%s 对 %s 使用「补给」。" % [pname(p), pname(tgt)])
-	heal(tgt, 1, p)
+	heal(tgt, 1, p, "补给")
 	if saving and mode == "identity" and String(tgt["identity"]) == "主公" and String(p["identity"]) == "忠臣" and p["alive"] and has_skill(tgt, "xingying_lord"):
 		draw_cards(p, 1)
 		log_msg("👑「星樱号令」：%s 救援主公 %s，摸 1 张牌。" % [pname(p), pname(tgt)])
@@ -1829,15 +1886,16 @@ func handle_dying(dying: Dictionary, src: Dictionary) -> void:
 		if not do_save:
 			oi += 1
 			continue
-		if ui.has("played"):
-			(ui["played"] as Callable).call(c, pname(p), "自救" if dying == p else pname(dying))
+		await _present_card(p, c, "自救" if dying == p else pname(dying))
+		if game_over:
+			return
 		if String(c["name"]) == "补给":
 			use_supply(p, c, dying)
 		else:
 			discard_from_hand(p, c)
 			log_msg("%s 对 %s 使用 %s 救援。" % [pname(p), pname(dying), card_text(c)])
-			heal(dying, 1, p)
-		await pace(0.55)
+			heal(dying, 1, p, "特饮")
+		await pace(0.28)
 	if int(dying["hp"]) <= 0 and dying["alive"]:
 		await die(dying, src)
 	elif dying["alive"]:
@@ -1926,7 +1984,7 @@ func die(p: Dictionary, killer: Dictionary) -> void:
 					choice = String(cv)
 			if choice == "heal":
 				log_msg("农民 %s 阵亡，队友 %s 选择回复 1 点体力。" % [pname(p), pname(mate)])
-				heal(mate, 1)
+				heal(mate, 1, {}, "队友阵亡奖励")
 			else:
 				log_msg("农民 %s 阵亡，队友 %s 选择摸两张牌。" % [pname(p), pname(mate)])
 				draw_cards(mate, 2)
@@ -2546,9 +2604,7 @@ func ai_try_action(p: Dictionary) -> bool:
 			var slot := equip_slot_of(String(c["name"]))
 			var cur: Dictionary = p["equip"][slot]
 			if cur.is_empty() or (slot == "weapon" and CardDefs.weapon_range_of(String(c["name"])) > CardDefs.weapon_range_of(String(cur["name"]))):
-				play_equip(p, c)
-				if is_ai(p):
-					await pace(0.75)
+				await play_equip(p, c)
 				return true
 	# 木牛流马：存粮与转运
 	var trq: Dictionary = p["equip"]["treasure"]
@@ -2570,7 +2626,7 @@ func ai_try_action(p: Dictionary) -> bool:
 		var act: Dictionary = skill_lib[sid]["active"]
 		if act.has("ai_use") and not bool((act["ai_use"] as Callable).call(self, p)):
 			continue
-		if await use_active_skill(p, sid, {}, false):
+		if await use_active_skill(p, sid):
 			return true
 	# 洞烛先机：对自己使用（卜算＋摸 2，恒有益）
 	var dz := find_in_hand(p, "洞烛先机")
@@ -2758,7 +2814,7 @@ func ai_try_action(p: Dictionary) -> bool:
 			await play_card(p, sl, mine_locked[0])
 			ai_chain_second = {}
 			return true
-		recast(p, sl)
+		await recast(p, sl)
 		return true
 	# 补给自己（V0.30：残局第 30 轮起只在 2 血及以下时吃，其余留着濒死自救，避免回复拉锯）
 	# V0.32：两人残局且本回合还能进攻时，除 1 血外不先回复，避免双方互相奶满拖到回合上限
@@ -2766,7 +2822,7 @@ func ai_try_action(p: Dictionary) -> bool:
 	if int(p["hp"]) < int(p["max_hp"]) and not skip_supply_for_attack and (round_no < 30 or int(p["hp"]) <= 2):
 		var sup := find_in_hand(p, "补给")
 		if not sup.is_empty():
-			use_supply(p, sup, p)
+			await play_card(p, sup, p)
 			return true
 	# 特饮+突击（对照 noname jiu：usable 1，每回合限一次）
 	if not bool(p["drunk"]) and not bool(p.get("drink_used", false)):
@@ -2774,7 +2830,7 @@ func ai_try_action(p: Dictionary) -> bool:
 		var drk := find_in_hand(p, "特饮")
 		var tgt0 := ai_pick_target(p, true)
 		if not atk0.is_empty() and not drk.is_empty() and not tgt0.is_empty():
-			use_drink(p, drk)
+			await play_card(p, drk, p)
 			return true
 	# 突击
 	if not bool(p["used_attack"]) or has_unlimited_attack(p):
@@ -2946,6 +3002,13 @@ func run_ddz_doubling() -> void:
 
 
 func run_game() -> void:
+	# 换牌窗在发完初始手牌后，斗地主叫分、加倍以及任何回合之前。
+	if not game_over and round_no == 0 and mode != "puzzle" and ui.has("opening_luck") and not players.is_empty():
+		opening_luck_left = OPENING_LUCK_LIMIT
+		await (ui["opening_luck"] as Callable).call()
+		opening_luck_left = 0
+	if game_over:
+		return
 	if mode == "doudizhu" and ddz_landlord_seat < 0:
 		await run_ddz_bidding()
 		await run_ddz_doubling()
@@ -3097,7 +3160,7 @@ func remove_card_anywhere(t: Dictionary, c: Dictionary) -> void:
 				t["hp"] = int(t["hp"]) + 1
 				t["stat_heal"] = int(t.get("stat_heal", 0)) + 1
 				log_msg("「银狮铠甲」离场：%s 回复 1 点体力。" % pname(t))
-				fx("heal", {"seat": int(t["seat"]), "num": 1})
+				fx("heal", {"seat": int(t["seat"]), "num": 1, "src_seat": int(t["seat"]), "cause": "银狮铠甲"})
 				changed()
 			return
 	if (t["judge"] as Array).has(c):
@@ -3105,10 +3168,11 @@ func remove_card_anywhere(t: Dictionary, c: Dictionary) -> void:
 
 
 func play_equip(p: Dictionary, card: Dictionary) -> void:
-	if ui.has("played"):
-		(ui["played"] as Callable).call(card, pname(p))
 	var slot := equip_slot_of(String(card["name"]))
 	if slot == "":
+		return
+	await _present_card(p, card)
+	if game_over:
 		return
 	(p["hand"] as Array).erase(card)
 	var old: Dictionary = p["equip"][slot]
@@ -3360,10 +3424,12 @@ func effect_nanman(p: Dictionary, card: Dictionary, vname: String) -> void:
 		var pweap5: Dictionary = p["equip"]["weapon"]
 		if not tarmor5.is_empty() and String(tarmor5["name"]) == "藤蔓铠甲" and (pweap5.is_empty() or String(pweap5["name"]) != "破甲光剑"):
 			log_msg("「藤蔓铠甲」：%s 免疫「全场乱斗」。" % pname(t))
+			fx("prevented", {"seat": int(t["seat"]), "num": 1, "name": "藤蔓铠甲"})
 			continue
 		if await nullify_window(nm, p, t, card):
 			log_msg("「全场乱斗」对 %s 被看破。" % pname(t))
 			continue
+		_mark_card_target(p, t, nm, true)
 		var ok := await respond_with(t, "突击", "响应全场乱斗")
 		if not ok:
 			await damage(p, t, 1, "全场乱斗")
@@ -3384,19 +3450,23 @@ func effect_wanjian(p: Dictionary, card: Dictionary, vname: String) -> void:
 		var pweap6: Dictionary = p["equip"]["weapon"]
 		if not tarmor6.is_empty() and String(tarmor6["name"]) == "藤蔓铠甲" and (pweap6.is_empty() or String(pweap6["name"]) != "破甲光剑"):
 			log_msg("「藤蔓铠甲」：%s 免疫「弹幕齐射」。" % pname(t))
+			fx("prevented", {"seat": int(t["seat"]), "num": 1, "name": "藤蔓铠甲"})
 			continue
 		if await nullify_window(nm, p, t, card):
 			log_msg("「弹幕齐射」对 %s 被看破。" % pname(t))
 			continue
+		_mark_card_target(p, t, nm, true)
 		# V0.24 修复：结界手环（八卦阵）对任何需要打出「闪避」的场合生效（对照 noname bagua_skill：chooseToRespondBegin），旧版只在被「突击」时判定
 		if not tarmor6.is_empty() and String(tarmor6["name"]) == "结界手环":
 			var bjc := await do_judge(t, "结界手环")
 			if not bjc.is_empty() and is_red(bjc):
 				log_msg("「结界手环」判定成功，%s 视为打出「闪避」。" % pname(t))
-				fx("dodge", {"seat": int(t["seat"])})
+				fx("dodge", {"seat": int(t["seat"]), "barrier": true})
 				continue
 		var ok2 := await respond_with(t, "闪避", "响应弹幕齐射", card)
-		if not ok2:
+		if ok2:
+			fx("dodge", {"seat": int(t["seat"])})
+		else:
 			await damage(p, t, 1, "弹幕齐射")
 
 
@@ -3414,7 +3484,8 @@ func effect_taoyuan(p: Dictionary, card: Dictionary, vname: String) -> void:
 			if await nullify_window(nm, p, t, card):
 				log_msg("「全员休整」对 %s 被看破。" % pname(t))
 				continue
-			heal(t, 1, p)
+			_mark_card_target(p, t, nm, true)
+			heal(t, 1, p, nm)
 
 
 func effect_wugu(p: Dictionary, card: Dictionary, vname: String) -> void:
@@ -3435,6 +3506,7 @@ func effect_wugu(p: Dictionary, card: Dictionary, vname: String) -> void:
 		if await nullify_window(nm, p, t, card):
 			log_msg("「物资发放」对 %s 被看破。" % pname(t))
 			continue
+		_mark_card_target(p, t, nm, true)
 		# V0.24 修复：对照 noname wugu——每名角色从亮出的牌中「自选」一张；旧版一律拿第一张，真人无从选择
 		var got: Dictionary = shown[0]
 		if shown.size() > 1:
@@ -3608,13 +3680,15 @@ func play_card(p: Dictionary, card: Dictionary, tgt: Dictionary, forced_entry: D
 	if kind == "锦囊牌" or kind == "延时锦囊":
 		fx("trick", {"seat": int(p["seat"]), "name": nm})
 	var is_equip := kind == "武器" or kind == "防具" or kind == "饰品" or kind == "宝物"
-	if ui.has("played") and nm != "突击" and not is_equip:
-		(ui["played"] as Callable).call(card, pname(p), pname(tgt) if not tgt.is_empty() and tgt != p else "")
-		await pace(0.75 if is_ai(p) else 0.35)
-	if not tgt.is_empty() and tgt != p and nm != "突击":
-		fx("target", {"src_seat": int(p["seat"]), "tgt_seat": int(tgt["seat"])})
+	var shown_target := p if nm in ["补给", "特饮", "落雷", "浮雷"] else tgt
+	if nm != "突击" and not is_equip:
+		await _present_card(p, card, pname(shown_target) if not shown_target.is_empty() and shown_target != p else "")
+		if game_over:
+			return
+	if not shown_target.is_empty() and shown_target != p and nm != "突击" and not is_equip:
+		_mark_card_target(p, shown_target, nm)
 	if is_equip:
-		play_equip(p, card)
+		await play_equip(p, card)
 		return
 	if not tgt.is_empty() and tgt != p and nm in ["突然检查", "悄悄借走", "单挑", "火焰试炼", "借力打力", "羁绊锁链", "弃甲曳兵", "逐近弃远", "出其不意"]:
 		observe_hostile(p, tgt)
@@ -3712,7 +3786,7 @@ func play_card(p: Dictionary, card: Dictionary, tgt: Dictionary, forced_entry: D
 						var th2: Array = tgt["hand"]
 						shown = th2[randi() % th2.size()]
 				log_msg("%s「出其不意」：展示了 %s 的手牌 %s。" % [pname(p), pname(tgt), card_text(shown)])
-				fx("target", {"src_seat": int(p["seat"]), "tgt_seat": int(tgt["seat"])})
+				_mark_card_target(p, tgt, nm, true)
 				if String(shown["suit"]) != String(card["suit"]):
 					log_msg("花色不同（%s ≠ %s），「出其不意」命中！" % [String(shown["suit"]), String(card["suit"])])
 					await damage(p, tgt, 1, "出其不意")
@@ -3806,8 +3880,9 @@ func play_card(p: Dictionary, card: Dictionary, tgt: Dictionary, forced_entry: D
 			if reveal.is_empty():
 				log_msg("「火焰试炼」：%s 没有手牌可展示，作罢。" % pname(tgt))
 			else:
-				if ui.has("played"):
-					(ui["played"] as Callable).call(reveal, pname(tgt))
+				await _present_card(tgt, reveal, "展示")
+				if game_over:
+					return
 				log_msg("%s 在「火焰试炼」中展示了 %s。" % [pname(tgt), card_text(reveal)])
 				var suit := String(reveal["suit"])
 				var matches: Array = []
@@ -3853,6 +3928,7 @@ func play_card(p: Dictionary, card: Dictionary, tgt: Dictionary, forced_entry: D
 					if v2 is Dictionary:
 						t2 = v2
 			if not t2.is_empty():
+				_mark_card_target(p, t2, nm, true)
 				toggle_chain(t2)
 		"全场乱斗":
 			discard_from_hand(p, card)
@@ -3876,6 +3952,8 @@ func play_card(p: Dictionary, card: Dictionary, tgt: Dictionary, forced_entry: D
 				if await nullify_window(nm, p, t, card):
 					log_msg("「水淹七军」对 %s 被看破。" % pname(t))
 					continue
+				if t != tgt:
+					_mark_card_target(p, t, nm, true)
 				await shuiyan_resolve(p, t)
 		"逐近弃远":
 			var zj_extra := await yb_trick_extra(p, card, tgt)
@@ -3884,6 +3962,7 @@ func play_card(p: Dictionary, card: Dictionary, tgt: Dictionary, forced_entry: D
 				if await nullify_window(nm, p, zj_extra, card):
 					log_msg("「逐近弃远」对追加目标 %s 被看破。" % pname(zj_extra))
 				else:
+					_mark_card_target(p, zj_extra, nm, true)
 					zhujin_resolve(p, zj_extra)
 		"声东击西":
 			if alive_players().size() <= 2:
@@ -4285,7 +4364,9 @@ func use_active_skill(p: Dictionary, sid: String, choice: Dictionary = {}, annou
 	if bool(def.get("limited", false)):
 		p["limited_used_" + String(sid)] = true
 	if announce:
-		fx("skill", {"seat": int(p["seat"]), "name": String(def.get("name", sid)), "sid": sid, "big": true})
+		await _present_skill(p, sid, true)
+		if game_over:
+			return false
 	await (def["active"]["content"] as Callable).call(self, p, choice)
 	if announce:
 		changed()

@@ -396,6 +396,7 @@ func _run_reg_test() -> bool:
 	await _reg_v43()
 	await _reg_v44()
 	await _reg_battle_fx()
+	await _reg_opening_luck()
 	_reg_lines.append("REGTEST_DONE tests=%d fails=%d" % [_reg_n, _reg_fails])
 	print(_reg_lines[_reg_lines.size() - 1])
 	var wrote_report := _write("ask_regtest.txt", _reg_lines)
@@ -919,7 +920,7 @@ func _reg_ui_crash() -> void:
 					break
 			done = true
 		else:
-			_auto_answer(bs, false)
+			answer_prompt(bs, false)
 	if not done:
 		_ok(false, "U1 未能进入真人出牌阶段（tries=%d over=%s）" % [tries, str(bs.game_over)])
 	# U2 突然检查/悄悄借走选区：目标有宝物（木牛流马/太公阴符/地契）时旧版 zone_label 缺 treasure 键 → 脚本错误、出牌流程中断卡死
@@ -944,7 +945,7 @@ func _reg_ui_crash() -> void:
 			if b2.interactive and b2.turn_seat == 0 and b2.in_play_phase:
 				reached = true
 				break
-			_auto_answer(b2, false)
+			answer_prompt(b2, false)
 		if not reached:
 			_ok(false, "U3[%s] 未能进入真人出牌阶段" % md)
 			await _close_battle(b2)
@@ -970,7 +971,7 @@ func _reg_ui_crash() -> void:
 		await get_tree().process_frame
 		if b3.in_play_phase and b3.turn_seat == 0:
 			break
-		_auto_answer(b3, false)
+		answer_prompt(b3, false)
 	var wr: WeakRef = weakref(b3.eng)
 	b3.go_home.call()
 	for i in 360:
@@ -1014,7 +1015,7 @@ static func _live_buttons(parent: Node) -> Array:
 
 
 # 处理选将/提问等阻塞界面；random=true 时随机作答，否则选第一项
-func _auto_answer(bs, random: bool) -> bool:
+static func answer_prompt(bs, random: bool) -> bool:
 	if bs.draft_layer != null and bs.draft_layer.visible:
 		var ds := _live_buttons(bs.draft_layer)
 		if not ds.is_empty():
@@ -1124,7 +1125,7 @@ func _run_ui_play(games: int) -> bool:
 					if not auto_on and (not bs.asking or bs.ask_seq != aseq) and not errs.has("respond_tap_resolved"):
 						errs.append("respond_tap_resolved")
 					continue
-			if _auto_answer(bs, true):
+			if answer_prompt(bs, true):
 				clicks["prompt"] += 1
 				continue
 			# V0.26 长按看说明：随机长按一张手牌或一名角色，必须弹出说明卡、松手后关闭，且不得出牌/选中
@@ -1295,7 +1296,7 @@ func _reach_my_play(bs) -> bool:
 			return false
 		if bs.interactive and bs.turn_seat == 0 and bs.in_play_phase and not bs.asking:
 			return true
-		_auto_answer(bs, false)
+		answer_prompt(bs, false)
 	return false
 
 
@@ -1306,7 +1307,7 @@ func _wait_interactive(bs, frames: int = 400) -> void:
 			return
 		if bs.interactive and not bs.asking:
 			return
-		_auto_answer(bs, false)
+		answer_prompt(bs, false)
 
 
 func _reg_ui_v25() -> void:
@@ -1604,9 +1605,13 @@ func _reg_hand_browse() -> void:
 			var tail: Control = bs._find_wrap(cards[count - 1])
 			_ok(bounds.encloses(tail.get_global_rect()) and bs.hand_next_btn.disabled, "手牌浏览：%d 张翻到底仍能看清最后一张牌" % count)
 	bs._set_hand_scroll(0.0)
-	var start: Vector2 = bs._find_wrap(cards[0]).get_global_rect().get_center()
+	var first: Control = bs._find_wrap(cards[0])
+	var press_cue := first.get_node("PressFeedback") as Control
+	var start := first.get_global_rect().get_center()
 	_push_mouse(start, true)
+	_ok(press_cue.visible and bs.selected_card.is_empty(), "手牌手势：按下立即亮边，松手前不选中")
 	_push_motion(start + Vector2(-112, -5), true)
+	_ok(not press_cue.visible, "手牌手势：横滑接管时清除点按提示")
 	_push_mouse(start + Vector2(-112, -5), false)
 	await _frames(1)
 	_ok(bs.hand_scroll_offset > 80.0 and bs.drag_wrap == null and bs.selected_card.is_empty() and me["hand"].size() == 25, "手牌浏览：横滑不选中、不拖出、不消耗手牌")
@@ -1737,14 +1742,13 @@ func _reg_v26() -> void:
 	_ok(bool(r1["opened"]) and String(sp1.get("title", "")) == "突击" and String(sp1.get("body", "")).find("应变") >= 0, "L1 长按手牌弹出说明卡（含应变词条）")
 	_ok(not bool(r1["open_after"]), "L1 松手后说明卡关闭")
 	_ok(bs._hand_has(sha) and bs.selected_card.is_empty() and not bs.targeting, "L2 长按不会选中或打出这张牌")
-	# L3 普通点按仍然有效（真实输入路径：按下立刻松开 = 选中）
-	await _real_wait(0.3)
+	# L3 说明关闭后的下一次真实点按无需等 250 ms。
 	_push_mouse(cpos, true)
 	await get_tree().process_frame
 	_push_mouse(cpos, false)
 	await get_tree().process_frame
 	await get_tree().process_frame
-	_ok(is_same(bs.selected_card, sha) and not ip.is_open(), "L3 短按仍是选中（长按与点击区分）")
+	_ok(is_same(bs.selected_card, sha) and not ip.is_open(), "L3 长按后立即短按可以选中")
 	bs._on_cancel_pressed()
 	await get_tree().process_frame
 	# L4 拖动不会触发长按（按下后移动超过阈值，0.6 秒内不弹说明）
@@ -1807,20 +1811,14 @@ func _reg_v26() -> void:
 	else:
 		_ok(false, "L8 找不到技能按钮")
 	# L9 处理区的牌（点击穿透层）也能长按
+	bs._pz_clear()
 	var pzn: Control = bs._pz_add({"name": "火焰试炼", "suit": "红桃", "point": 2, "nature": "", "yb": []}, "测试", Vector2(900, 400))
-	await get_tree().process_frame
 	if pzn != null:
-		pzn.position = Vector2(bs.vw * 0.5 - 60, 380)
-		var tw0: Variant = pzn.get_meta("tw") if pzn.has_meta("tw") else null
-		if tw0 is Tween and (tw0 as Tween).is_valid():
-			(tw0 as Tween).kill()
-		pzn.position = Vector2(bs.vw * 0.5 - 60, 380)
-		pzn.scale = Vector2.ONE
-		pzn.modulate.a = 1.0
-		await get_tree().process_frame
-		# 处理区的牌在对局推进中随时会被收走，这里直接对命中测试断言（点击穿透层的牌也能被长按命中）
-		var hit9: Control = ip.find_target(pzn.get_global_rect().get_center())
-		_ok(hit9 == pzn and String(IntroPop.spec_of(hit9).get("title", "")) == "火焰试炼", "L9 长按处理区的牌（点击穿透层）能命中并给出说明")
+		bs._pz_finish_motion()
+		var face_rect := (pzn.get_node("Face") as Control).get_global_rect()
+		var clip_rect: Rect2 = bs.pz_clip.get_global_rect()
+		var hit9: Control = ip.find_target(face_rect.get_center())
+		_ok(clip_rect.encloses(face_rect) and hit9 == pzn and String(IntroPop.spec_of(hit9).get("title", "")) == "火焰试炼", "L9 长按处理区的牌（点击穿透层）能命中并给出说明")
 	else:
 		_ok(false, "L9 处理区节点未生成")
 	# L10 提问窗口里亮明的牌：选项按钮可长按；暗牌（标签不含牌名）不挂说明
@@ -1934,12 +1932,17 @@ func _reg_v27() -> void:
 		_ok(bs._hand_has(sha) and is_same(bs.selected_card, sha) and bs.targeting and (me["hand"] as Array).size() == hn and bs.eng.log_lines.size() == logn, "S1 点「突击」只上浮选中、高亮合法目标，未结算")
 		_ok(bs._is_lifted(bs._find_wrap(sha)), "S1 选中的牌处于上浮状态")
 		var ts := int(cands[0]["seat"])
-		if bs.sel_target != ts:
-			if bs.sel_target >= 0:
-				_tap_seat(bs, bs.sel_target)
-			_ok(bs.confirm_btn.disabled and bs.prompt_label.text.find("请选择 1 名目标") >= 0, "S1 未选目标时「确定」不可点，提示「请选择 1 名目标」：%s" % bs.prompt_label.text)
-			_tap_seat(bs, ts)
+		if bs.sel_target >= 0:
+			_tap_seat(bs, bs.sel_target)
+		_ok(bs.confirm_btn.disabled and bs.prompt_label.text.find("请选择 1 名目标") >= 0, "S1 未选目标时「确定」不可点，提示「请选择 1 名目标」：%s" % bs.prompt_label.text)
+		var seat: Control = bs.seat_panel_of(ts)
+		var seat_cue := seat.get_node("PressFeedback") as Control
+		var seat_point := seat.get_global_rect().get_center()
+		_push_mouse(seat_point, true)
+		_ok(seat_cue.visible and bs.sel_target == -1, "S1 按住座位立即亮边，松手前不选择目标")
+		_push_mouse(seat_point, false)
 		await _frames(2)
+		_ok(not seat_cue.visible, "S1 松手清除座位点按提示")
 		_ok(bs._hand_has(sha) and bs.sel_target == ts and int(bs.players[ts]["hp"]) == int(bs.players[ts]["hp"]) and bs.eng.log_lines.size() == logn and bs.interactive, "S1 点合法目标头像只是选中目标，不出牌")
 		_ok(not bs.confirm_btn.disabled and bs.prompt_label.text.find("对 %s 使用「突击」" % bs._tgt_name(ts)) >= 0, "S1 选好目标后「确定」亮起，提示「对 X 使用「突击」」：%s" % bs.prompt_label.text)
 		# S2 取消 / 点空白桌面 / 再点同一张牌 → 恢复原状
@@ -1961,8 +1964,17 @@ func _reg_v27() -> void:
 		_tap_card(bs, sha)
 		if bs.sel_target != ts:
 			_tap_seat(bs, ts)
+		await _frames(1)
 		var cb: Button = bs.confirm_btn
-		cb.pressed.emit()
+		var confirm_cue := cb.get_node("PressFeedback") as Control
+		var confirm_point := cb.get_global_rect().get_center()
+		_push_mouse(confirm_point, true)
+		_ok(confirm_cue.visible and bs._hand_has(sha), "S1 按住出牌键立即反馈，松手前不消耗牌")
+		bs.notification(NOTIFICATION_APPLICATION_FOCUS_OUT)
+		_push_mouse(confirm_point, false)
+		_ok(not confirm_cue.visible and bs._hand_has(sha), "S1 确认键按住时切后台清除提示并取消本次提交")
+		_push_mouse(confirm_point, true)
+		_push_mouse(confirm_point, false)
 		_ok(is_instance_valid(cb), "S1 「确定」按钮未在自身信号里被释放")
 		await _wait_interactive(bs)
 		var used := false
@@ -2033,7 +2045,7 @@ func _reg_v27() -> void:
 				asked = true
 				break
 			if bs.asking:
-				_auto_answer(bs, false)
+				answer_prompt(bs, false)
 			if bs.interactive and not bs._hand_has(lk):
 				break
 		_ok(not asked and not bs._hand_has(lk) and bool(bs.players[a].get("chained", false)) != ca0 and bool(bs.players[b].get("chained", false)) != cb0, "S5 确定后两名目标都被连上，第二目标不再追问")
@@ -2048,8 +2060,11 @@ func _reg_v27() -> void:
 	var box := {}
 	var runner := func() -> void:
 		box["r"] = await bs._eng_ask_respond(me, "闪避", "测试")
+	bs._show_play_notice("对手对你使用「突击」")
 	runner.call()
-	_ok(bs.ask_deadline_ms == 0 and bs.ask_confirm_btn != null and bs.ask_confirm_btn.text == "打出闪避" and bs.ask_confirm_btn.disabled and bs.prompt_context_label.text == "测试", "S6 响应动作和事件分开显示，选项展示后才启动倒计时")
+	_ok(bs.ask_deadline_ms == 0 and bs.ask_confirm_btn != null and bs.ask_confirm_btn.text == "打出闪避" and
+		bs.ask_confirm_btn.disabled and bs.prompt_context_label.text == "测试" and not bs.play_callout_panel.visible,
+		"S6 响应区接管出牌带来的提示，选项展示后才启动倒计时")
 	await _frames(2)
 	_tap_card(bs, d1)
 	await _frames(1)
@@ -2090,6 +2105,7 @@ func _reg_v27() -> void:
 		if x is Button and (x as Button).text == "不响应":
 			nob = x
 	var found_nob := nob != null
+	_ok(found_nob and not bs.action_bar.visible and bs.ask_confirm_btn.get_global_rect() == bs.confirm_btn.get_global_rect() and nob.get_global_rect() == bs.cancel_btn.get_global_rect(), "S6 响应确认和跳过沿用出牌确认及取消的触控区域")
 	_tap_card(bs, d1)
 	var sel_before: bool = bs.ask_sel_has
 	if found_nob:
@@ -2185,7 +2201,7 @@ func _reg_v27() -> void:
 				asked9 = true
 			if bs.interactive and bool((me["turn_used"] as Dictionary).get("yingyuan", false)):
 				break
-			_auto_answer(bs, false)
+			answer_prompt(bs, false)
 		_ok(bool((me["turn_used"] as Dictionary).get("yingyuan", false)) and not bs._hand_has(cost) and not asked9, "S9 「确定」后才发动「樱愿」，弃置所选的牌、对所选目标结算，不再重复询问")
 	# S10 合璧长枪：点按钮进入选目标，点目标不出牌，确定才拼牌突击
 	await _reach_my_play(bs)
@@ -2667,8 +2683,8 @@ func _reg_v30() -> void:
 	AudioT.set_v("voice_vol", old_vol)
 	AudioT.set_v("music_on", old_music_on)
 	_ok(AudioT.sfx_stream("hit") != null and AudioT.voice_stream("attack") == null, "V30-C9 音效文件可加载；语音未打包（返回空）")
-	_ok(DirAccess.dir_exists_absolute("res://assets/bgm") and ResourceLoader.exists("res://assets/bgm/home_carefree.ogg") and ResourceLoader.exists("res://assets/bgm/battle_volatile_reaction.ogg") and ResourceLoader.exists("res://assets/bgm/tense_hitman.ogg"), "V30-C9 三首 OGG BGM 已打包进游戏资源")
-	_ok(HelpText.bbcode().find("Kevin MacLeod") >= 0 and HelpText.bbcode().find("creativecommons.org/licenses/by/4.0") >= 0, "V30-C9 新手说明含 CC BY 4.0 音乐署名")
+	_ok(ResourceLoader.exists("res://assets/bgm/sakura_home.ogg") and ResourceLoader.exists("res://assets/bgm/sakura_battle.ogg") and ResourceLoader.exists("res://assets/bgm/sakura_tense.ogg"), "V30-C9 本版配乐可从游戏资源载入")
+	_ok(HelpText.bbcode().contains("原创配乐") and HelpText.bbcode().contains("月下琴房"), "V30-C9 新手说明包含本版配乐说明")
 	if main_ref.music != null:
 		main_ref.music.play_scene("battle")
 		await _frames(2)
@@ -2753,7 +2769,7 @@ func _reg_v30() -> void:
 	MetaT.reset_for_test("user://meta_test.json")
 
 
-# ---------------- V0.33：看破反甲单目标锦囊 / 第二弹新角色与限定技 / 连破高伤播报 / 记牌器与自由点将 ----------------
+# ---------------- V0.33：看破反甲单目标锦囊 / 第二弹新角色与限定技 / 连破高伤播报 / 记牌器 ----------------
 func _reg_v33() -> void:
 	# V33-1 看破【空巢·反甲】响应单目标锦囊（突然检查）时，可从弃牌堆获得该锦囊实体牌
 	var e = _clean_eng("duel", ["先手", "后手"])
@@ -3702,20 +3718,26 @@ func _reg_v41() -> void:
 			sfx_miss.append(k)
 	_ok(Audio41.SFX_FILES.size() >= 24 and sfx_miss.is_empty(), "V41-1 全部 %d 种手杀×二次元立体声音效齐全" % Audio41.SFX_FILES.size())
 
-	# V41-2: 樱华国风与经典交响 6 首 BGM 齐全且支持双曲风切换
-	var bgm_ok := ResourceLoader.exists("res://assets/bgm/home_sakura.ogg") and ResourceLoader.exists("res://assets/bgm/battle_storm.ogg") and ResourceLoader.exists("res://assets/bgm/tense_climax.ogg") and ResourceLoader.exists("res://assets/bgm/home_carefree.ogg")
+	# V41-2: 两套原创配乐、选将循环和收局短曲沿用原曲风设置。
+	var bgm_ok := main_ref.music != null
 	var old_style := String(Audio41.get_v("bgm_style"))
 	Audio41.set_v("bgm_style", "sakura", false)
 	var t_sak := Music41.track_title("home")
 	var t_cls := ""
 	if main_ref.music != null:
+		for style_key in ["sakura", "classic"]:
+			Audio41.set_v("bgm_style", style_key, false)
+			for scene in ["home", "draft", "battle", "tense", "result_win", "result_lose", "result_draw"]:
+				var stream: AudioStreamOggVorbis = main_ref.music._stream_for(scene)
+				bgm_ok = bgm_ok and stream != null and stream.loop != String(scene).begins_with("result_")
+		Audio41.set_v("bgm_style", "sakura", false)
 		main_ref.music.cycle_style()
 		t_cls = Music41.track_title("home")
 		main_ref.music.cycle_style()
 	Audio41.set_v("bgm_style", old_style, false)
-	_ok(bgm_ok and t_sak.find("樱华") >= 0 and t_cls.find("Carefree") >= 0, "V41-2 樱华国风与经典交响双套 BGM 及一键切换生效")
+	_ok(bgm_ok and t_sak.contains("樱华") and t_cls == "月下琴房", "V41-2 双曲风循环配乐、一次性结算曲及切换设置可用")
 
-	# V41-3: 全部 19 名角色战斗与互动台词（CHAR_LINES）100% 覆盖
+	# V41-3: 战斗及互动台词覆盖全部角色
 	var line_miss: Array = []
 	for c in Characters.LIST:
 		var cid := String(c["id"])
@@ -3745,14 +3767,16 @@ func _reg_v42() -> void:
 	const Meta42 = preload("res://scripts/meta.gd")
 	const BS42 = preload("res://scripts/battle.gd")
 
-	# V42-1: 全部 19 名角色 × 5 类 = 95 条二次元少女 CV 语音文件可加载
+	# V42-1: 每类互动和战斗事件都应有独立、可解码的语音及对应字幕。
+	var cv_events := ["attack", "skill", "hurt", "dying", "touch", "heal", "dodge", "death", "gift", "head", "face", "body", "vow"]
 	var cv_miss: Array = []
 	for c in Characters.LIST:
 		var cid := String(c["id"])
-		for cat in ["skill", "attack", "hurt", "dying", "touch"]:
-			if Audio42.cv_stream(cid, cat) == null:
+		for cat in cv_events:
+			var clip := Audio42.cv_stream(cid, cat) as AudioStreamOggVorbis
+			if clip == null or clip.get_length() < 0.3 or clip.loop or Audio42.cv_text(cid, cat).is_empty():
 				cv_miss.append(cid + ":" + cat)
-	_ok(cv_miss.is_empty(), "V42-1 全 %d 名角色 95 条二次元 CV 语音（.ogg）齐全可加载" % Characters.LIST.size())
+	_ok(cv_miss.is_empty(), "V42-1 %d 条角色语音有独立单次播放文件及字幕，缺失 %s" % [Characters.LIST.size() * cv_events.size(), cv_miss])
 
 	# V42-2: 全部 19 名角色多部位触摸互动与誓约台词（head/face/body/vow）齐全
 	var touch_miss: Array = []
@@ -3873,30 +3897,44 @@ func _reg_v43() -> void:
 	_ok(bs43.unusable_reason(e43.players[0], jl43) != "", "V43-2c 武器持有者攻击范围内无有效目标时借力打力给出提示不空放")
 	e43.players[0]["dream_guard"] = false
 
-	# V43-3: 自由点将滑动防误触 + 出牌播报条 & 回合横幅可见性
-	bs43.turn_seat = 1
-	bs43.show_turn_banner(String(e43.players[1]["char_name"]))
-	_ok(bs43.turn_banner_panel != null and bs43.turn_banner.text.find("的回合") >= 0, "V43-3a 回合切换弹出带底座的高对比回合播报条")
+	# V43-3: 行动阶段、播报及选将规则
+	e43.turn_player = e43.players[1]
+	e43.phase_text = "出牌阶段"
+	bs43._eng_changed()
+	bs43.refresh()
+	_ok(bs43.phase_label.text.contains(String(e43.players[1]["char_name"])) and
+		bs43.phase_label.text.contains("出牌阶段") and bs43.glow_frames[1].visible and
+		bs43.seat_panel_of(1).get_node("TurnBadge").visible and
+		not bs43.seat_panel_of(1).has_node("PhaseTag"), "V43-3a AI 回合在顶部显示阶段并描边座位")
 	bs43._eng_played({"name": "突击", "suit": "黑桃", "point": 7}, bs43.pname(e43.players[1]), bs43.pname(e43.players[0]))
-	_ok(bs43.play_callout_panel != null and bs43.play_callout_panel.visible and bs43.play_callout_label.text.find("突击") >= 0, "V43-3b AI 出牌后桌面播报条清晰展示谁对谁使用了什么牌")
-	bs43.draft_layer.visible = true
-	bs43._open_free_pick()
-	await _frames(2)
-	var fp_scroll: ScrollContainer = null
-	var fp_btn: Button = null
-	if bs43.free_pick_overlay != null:
-		for n in bs43.free_pick_overlay.find_children("*", "ScrollContainer", true, false):
-			fp_scroll = n as ScrollContainer
-		for b in bs43.free_pick_overlay.find_children("*", "Button", true, false):
-			if (b as Button).custom_minimum_size.y >= 300:
-				fp_btn = b as Button
-				break
-	if fp_btn != null and fp_scroll != null:
-		var drag_ev := InputEventScreenDrag.new()
-		drag_ev.relative = Vector2(0, -120)
-		fp_btn.gui_input.emit(drag_ev)
-		await _frames(1)
-		_ok(fp_scroll.scroll_vertical > 0 and float(fp_btn.get_meta("drag_px", 0.0)) > 18.0, "V43-3c 自由点将触控拖拽卡牌可顺畅上下滚动并拦截误点选")
+	bs43.refresh()
+	var latest_play: Control = bs43.pz_live.back() if not bs43.pz_live.is_empty() else null
+	_ok(bs43.play_callout_panel.visible and bs43.play_callout_label.text ==
+		"2号位 %s 使用「突击」" % String(e43.players[1]["char_name"]) and
+		bs43.play_result_label.text == "目标  你" and bs43.seat_panel_of(0).get_node("DesignatedTargetBadge").visible and
+		latest_play != null and not latest_play.get_node("Cap").visible and not latest_play.get_node("CapBg").visible,
+		"V43-3b AI 出牌后由中央播报说明动作，牌面保持可见")
+	var first_batch := Characters.LIST.slice(0, 3)
+	bs43.lord_pre_char = Characters.LIST[3]
+	var draft_result := {}
+	var begin_draft := func() -> void:
+		draft_result["chosen"] = await bs43.ask_pick_character(first_batch, "反贼")
+	begin_draft.call()
+	_ok(_live_buttons(bs43.draft_layer).size() == 3 and _live_buttons(bs43.diff_layer).size() == 4 and
+		not bs43.has_method("_open_free_pick"), "选将只显示候选角色、难度和换将入口")
+	bs43.draft_refresh_btn.pressed.emit()
+	var refreshed: Array = bs43._draft_candidates.duplicate()
+	bs43.draft_refresh_btn.pressed.emit()
+	_ok(bs43.draft_refresh_btn.disabled and bs43._draft_candidates == refreshed and refreshed.size() == 3 and
+		refreshed.all(func(character: Dictionary) -> bool: return not first_batch.has(character) and character != bs43.lord_pre_char),
+		"每局只能刷新一次候选，换入角色与首批及预设主公不同")
+	(bs43.draft_layer.get_child(0) as Button).pressed.emit()
+	await get_tree().create_timer(0.30).timeout
+	_ok(draft_result.get("chosen", {}) == refreshed[0] and not bs43.draft_layer.visible,
+		"刷新后可以从新候选中选定角色")
+	begin_draft.call()
+	_ok(not bs43.draft_refresh_btn.disabled and bs43._draft_candidates == first_batch, "新对局恢复一次刷新资格")
+	bs43.decided.emit(null)
 	await _close_battle(bs43)
 
 	# V43-4: 卡牌图鉴 55 种触控滑动响应
@@ -3945,8 +3983,39 @@ func _reg_battle_fx() -> void:
 	events.clear()
 	await e.use_attack(source, target, _give(e, source, "突击"), false)
 	_ok(events.size() == 2 and events[1][0] == "damage" and bool(events[1][1].get("attack_hit", false)), "表现事件：突击真实扣血时才触发命中")
+	_ok(int(events[1][1]["src_seat"]) == 0 and int(events[1][1]["seat"]) == 1 and
+		String(events[1][1]["cause"]) == "突击", "表现事件：真实伤害携带来源、受伤座位及牌名")
+	var playback_order: Array[String] = []
+	e.set_ui({"played": func(_card, _actor, _detail) -> void:
+		playback_order.append("离手")
+		await get_tree().process_frame
+		playback_order.append("落位"),
+		"fx": func(kind: String, _data: Dictionary) -> void:
+			if kind == "equip":
+				playback_order.append("装备")})
+	await e.play_equip(source, _give(e, source, "星光长剑"))
+	_ok(playback_order == ["离手", "落位", "装备"], "装备等牌滑入处理区后再结算")
+	var skill_engine = _clean_eng("duel", ["先手", "后手"], 4)
+	var ai: Dictionary = skill_engine.players[1]
+	skill_engine.turn_player = ai
+	ai["skills"] = ["shenshe"]
+	_give(skill_engine, ai, "看破", "梅花", 4)
+	var skill_order: Array[String] = []
+	skill_engine.set_ui({"fx": func(kind: String, data: Dictionary) -> void:
+		if kind == "skill":
+			skill_order.append("%s %d" % [String(data["name"]), int(data["seat"])]),
+		"pace": func(seconds: float) -> void:
+			if is_equal_approx(seconds, 0.48):
+				await get_tree().process_frame
+				skill_order.append("技能播报停留"),
+		"played": func(card: Dictionary, _actor: String, _detail: String) -> void:
+			skill_order.append(String(card["name"]))})
+	var acted: bool = await skill_engine.ai_try_action(ai)
+	_ok(acted and skill_order == ["神射 1", "技能播报停留", "突击"], "AI 的神射先标明实际座位和技能，再显示转化突击")
 
 	var battle := BattleScreen.new()
+	battle.match_players = 2
+	battle.game_mode = "duel"
 	battle.set_anchors_preset(Control.PRESET_FULL_RECT)
 	add_child(battle)
 	battle.build_table()
@@ -3954,23 +4023,101 @@ func _reg_battle_fx() -> void:
 	target["char"] = Characters.by_id("mafuyu")
 	battle.players = e.players
 	battle.set_reduced_motion(false, false)
+	battle._eng_played(_mk("突击"), battle.pname(source), battle.pname(target))
+	var trace := battle.target_traces.get_node_or_null("TargetTrace")
 	battle._eng_fx("attack", {"src_seat": 0, "tgt_seat": 1, "nature": ""})
-	_ok(battle.fx_root.has_node("TargetTrace") and not battle.fx_root.has_node("AttackImpact"), "进攻轨迹不提前播放命中特效")
-	battle._eng_fx("damage", {"seat": 1, "num": 1, "attack_hit": true})
+	_ok(trace != null and trace.get_meta("src_seat") == 0 and trace.get_meta("tgt_seat") == 1 and
+		battle.target_traces.get_child_count() == 1 and not battle.fx_root.has_node("AttackImpact"),
+		"确认出牌立即连到实际目标，同一攻势只画一条线且不提前表现命中")
+	battle._eng_fx("damage", {"src_seat": 0, "seat": 1, "num": 1, "attack_hit": true, "cause": "突击"})
 	_ok(battle.fx_root.has_node("AttackImpact"), "命中事件播放实际受击表现")
 	var tap := InputEventMouseButton.new()
 	tap.button_index = MOUSE_BUTTON_LEFT
 	tap.pressed = true
 	battle._on_table_bg_input(tap)
-	_ok(not battle.fx_root.has_node("TargetTrace") and not battle.fx_root.has_node("AttackImpact"), "点击空白桌面可跳过本次动态效果")
-	battle._eng_fx("attack", {"src_seat": 0, "tgt_seat": 1, "nature": ""})
+	_ok(trace != null and trace.progress == 1.0 and trace.tail_progress == 1.0 and trace.arrival == 1.0 and
+		not battle.fx_root.has_node("AttackImpact"), "点击空白桌面可跳过光尾与命中特效，仍保留完整指示线")
+	_ok(battle.play_callout_panel.visible and battle.play_callout_label.text == "你 ·「突击」" and
+		battle.play_result_label.text == "伤害  %s −1 体力" % battle._event_seat_name(1),
+		"跳过动效后仍可看清实际伤害的来源和受伤角色")
 	battle.set_reduced_motion(true, false)
-	battle._eng_fx("attack", {"src_seat": 0, "tgt_seat": 1, "nature": ""})
+	battle._eng_played(_mk("突然检查"), battle.pname(target), battle.pname(source))
+	var reverse := battle.target_traces.get_node_or_null("TargetTrace")
 	battle._eng_fx("damage", {"seat": 1, "num": 1, "attack_hit": true})
 	battle._eng_fx("dying", {"seat": 1})
-	_ok(not battle.fx_root.has_node("TargetTrace") and not battle.fx_root.has_node("AttackImpact") and battle.fx_root.has_node("DyingNotice"), "减少动态效果后停掉现有轨迹并保留濒死提示")
+	var dying_notice := battle.fx_root.get_node_or_null("DyingNotice") as Control
+	var dying_portrait := battle.seat_panel_of(1)
+	_ok(reverse != null and reverse != trace and reverse.progress == 1.0 and
+		reverse.get_meta("src_seat") == 1 and reverse.get_meta("tgt_seat") == 0 and
+		battle.target_traces.get_child_count() == 1 and not battle.fx_root.has_node("AttackImpact") and
+		dying_notice != null and dying_portrait.get_global_rect().encloses(dying_notice.get_global_rect()),
+		"减少动态效果时后续锦囊直接显示新方向，濒死提示留在角色座位内")
+	battle._pz_clear()
 	var notice := battle._pz_add(_mk("补给"), "救援", Vector2.ZERO)
 	_ok(notice != null and notice.visible and notice.position.is_equal_approx(battle._pz_slot(0, 1)), "减少动态效果后处理区牌直接到位，保留牌面信息")
+	battle._eng_fx("skill", {"seat": 1, "name": "神射", "sid": "shenshe", "big": true})
+	battle._eng_played(_mk("突击"), battle.pname(target), battle.pname(source))
+	_ok(battle.skill_notice_panel.visible and battle.skill_notice_actor.text == "2号位 %s" % String(target["char_name"]) and
+		battle.skill_notice_title.text == "发动「神射」" and battle.play_callout_label.text.contains("使用「突击」") and
+		not battle.skill_notice_panel.get_rect().intersects(battle.play_area), "跟牌播报与技能标题、发动者同时可读，分别避开牌面")
+	await _close_battle(battle)
+
+
+func _reg_opening_luck() -> void:
+	var battle := BattleScreen.new()
+	battle.set_anchors_preset(Control.PRESET_FULL_RECT)
+	battle.game_mode = "doudizhu"
+	battle.match_players = 3
+	add_child(battle)
+	battle.build_table()
+	var eng := EngineS.new()
+	eng.mode = battle.game_mode
+	var chars := make_chars(3)
+	for i in chars.size():
+		var character: Dictionary = Characters.LIST[i]
+		chars[i]["char"] = character
+		chars[i]["name"] = character["name"]
+	eng.setup_game(chars, ["农民", "农民", "农民"])
+	battle.eng = eng
+	battle.players = eng.players
+	var state := {"choices": 0, "turns": 0, "played": 0}
+	eng.set_ui({
+		"is_human": Callable(battle, "_eng_is_human"),
+		"opening_luck": Callable(battle, "_eng_opening_luck"),
+		"pick_option": func(_player: Dictionary, options: Array, _prompt: String) -> Variant:
+			state["choices"] += 1
+			return options[0]["value"],
+		"played": func(_card: Dictionary, _owner: String, _detail: String = "") -> void: state["played"] += 1,
+	})
+	eng.turn_hook = func(e, player: Dictionary) -> void:
+		if not player.is_empty():
+			state["turns"] += 1
+			e.game_over = true
+	_ok(eng.redraw_opening_hand() == 0, "起手换牌：发牌后仅能在打开窗口时使用")
+	var before := census(eng)
+	var opponent_hand: Array = eng.players[1]["hand"].duplicate()
+	var hand_count: int = eng.players[0]["hand"].size()
+	var previous_speed := Engine.time_scale
+	Engine.time_scale = 2.0
+	eng.run_game()
+	await _frames(3)
+	var deadline := battle.ask_deadline_ms
+	var remaining := deadline - Time.get_ticks_msec()
+	_ok(battle.asking and battle.ask_mode == "opening_luck" and battle.luck_btn != null and remaining > 19500 and remaining <= 20000 and
+		eng.ddz_landlord_seat == -1 and state["choices"] == 0 and state["turns"] == 0 and state["played"] == 0,
+		"起手换牌：倍速下仍有真实 20 秒，期间无人叫分、行动或出牌")
+	battle._on_luck_pressed()
+	battle._on_luck_pressed()
+	battle._on_luck_pressed()
+	_ok(battle.ask_deadline_ms == deadline and eng.opening_luck_left == 0 and battle.luck_btn.disabled and
+		census(eng) == before and eng.players[0]["hand"].size() == hand_count and eng.players[1]["hand"] == opponent_hand,
+		"起手换牌：最多换两次，不重置倒计时，不变更牌数和对方手牌")
+	battle.ask_deadline_ms = Time.get_ticks_msec()
+	await _frames(3)
+	Engine.time_scale = previous_speed
+	_ok(not battle.asking and battle.luck_btn == null and battle.ask_timeout == 15.0 and eng.redraw_opening_hand() == 0 and
+		eng.round_no == 1 and state["choices"] > 0 and state["turns"] == 1 and state["played"] == 0,
+		"起手换牌：超时保留手牌并进入正常叫分，之后无法换牌")
 	await _close_battle(battle)
 
 
@@ -3996,14 +4143,18 @@ func _reg_v44() -> void:
 	# V44-2: 战斗牌桌全量 CV 触发链路（attack/damage/skill/dying/death）与设置试听按钮
 	main_ref.clear_screen()
 	var bs44 = BS44.new()
+	bs44.match_players = 2
+	bs44.game_mode = "duel"
 	bs44.set_anchors_preset(Control.PRESET_FULL_RECT)
 	bs44.go_home = Callable(main_ref, "show_home")
 	main_ref.screen_root.add_child(bs44)
 	bs44.build_table()
-	bs44.players = [
-		{"seat": 0, "char": Characters.by_id("sena"), "char_name": "白石星奈", "alive": true, "hp": 4, "max_hp": 4, "hand": [], "equip": {"weapon": {}, "armor": {}, "minus": {}, "plus": {}, "treasure": {}}, "judge": [], "marks": {}},
-		{"seat": 1, "char": Characters.by_id("mafuyu"), "char_name": "千早真冬", "alive": true, "hp": 3, "max_hp": 3, "hand": [], "equip": {"weapon": {}, "armor": {}, "minus": {}, "plus": {}, "treasure": {}}, "judge": [], "marks": {}},
-	]
+	var voice_engine = _clean_eng("duel", ["先手", "后手"])
+	bs44.players = voice_engine.players
+	for i in bs44.players.size():
+		var character := Characters.by_id(["sena", "mafuyu"][i])
+		bs44.players[i]["char"] = character
+		bs44.players[i]["char_name"] = character["name"]
 	bs44.cv_played_count = 0
 	bs44._eng_fx("attack", {"src_seat": 0, "tgt_seat": 1, "nature": ""})
 	bs44._eng_fx("damage", {"seat": 0, "num": 1, "nature": ""})
@@ -4019,7 +4170,7 @@ func _reg_v44() -> void:
 	_ok(has_cv_test, "V44-2b 对局设置面板包含角色语音试听按钮")
 	await _close_battle(bs44)
 
-	# V44-3: 主页每日委托浮层与详情页伪Live2D呼吸组件正常构建
+	# V44-3: 主页每日委托浮层与角色详情页正常构建
 	main_ref.show_home()
 	await _frames(2)
 	var home_lines := 0
@@ -4054,7 +4205,7 @@ func _reg_v44() -> void:
 		main_ref._daily_overlay = null
 	main_ref.show_detail(Characters.by_id("sena"))
 	await _frames(2)
-	_ok(main_ref.screen_root.get_child_count() > 0, "V44-3b 角色详情页伪Live2D呼吸与触碰反馈加载正常")
+	_ok(main_ref.screen_root.get_child_count() > 0, "V44-3b 角色详情页加载正常")
 
 	# V44.1: 按键细节优化回归验证（无撞车、全状态样式、木牛不压战报、猜身份样式、触控尺寸）
 	main_ref.show_battle()
@@ -4077,7 +4228,6 @@ func _reg_v44() -> void:
 	bs45.in_play_phase = true
 	bs45.turn_seat = 0
 	bs45.round_no = 1
-	bs45.luck_left = 2
 	bs45.refresh()
 	bs45._update_action_bar()
 	await _frames(2)
@@ -4092,19 +4242,28 @@ func _reg_v44() -> void:
 	bs45._style_concede_btn(false)
 	bs45._set_tools_open(false)
 	# 2) 木牛流马右侧技能不撞进战报栏
-	var log_x: float = bs45.log_panel.get_global_rect().position.x
+	var log_x: float = bs45.history_btn.get_global_rect().position.x
 	var muniu_ok := true
 	for sb45 in bs45.skill_btns.get_children():
 		if (sb45 as Control).get_global_rect().end.x >= log_x:
 			muniu_ok = false
-	_ok(muniu_ok, "V44.1-1b 木牛流马与技能按钮不再撞进战报面板")
-	# 3) 5 按钮 action_bar 不撞入右侧被动技与左侧角色框
+	_ok(muniu_ok, "V44.1-1b 木牛流马与技能按钮避开战报入口")
+	# 3) 固定操作位置避开左右两侧信息，确认和取消随选牌出现。
 	var end_r: Rect2 = bs45.end_play_btn.get_global_rect()
 	var pass_ok := true
 	for pb45 in bs45.skill_passives.get_children():
 		if end_r.intersects((pb45 as Control).get_global_rect()):
 			pass_ok = false
-	_ok(pass_ok and bs45.confirm_btn.get_global_rect().position.x > bs45.me_panel_ref.get_global_rect().end.x, "V44.1-1c 5按钮操作栏不撞左侧人物面板与右侧被动技能")
+	_ok(pass_ok and bs45.confirm_btn.visible and bs45.cancel_btn.visible and bs45.confirm_btn.get_global_rect().position.x > bs45.me_panel_ref.get_global_rect().end.x, "V44.1-1c 选牌操作栏避开左侧人物面板与右侧被动技能")
+	bs45.selected_card = {}
+	bs45._update_action_bar()
+	_ok(not bs45.confirm_btn.visible and not bs45.cancel_btn.visible and bs45.luck_btn == null and bs45.end_play_btn.is_visible_in_tree() and bs45.end_play_btn.get_global_rect() == end_r, "V44.1-1c 出牌阶段不显示手气卡，结束出牌留在原位")
+	bs45.interactive = false
+	bs45._update_action_bar()
+	_ok(not bs45.action_bar.visible and bs45.end_play_btn.disabled, "V44.1-1c 结算时隐藏出牌操作")
+	bs45.interactive = true
+	bs45.selected_card = rc45
+	bs45._update_action_bar()
 	# 4) 猜身份弹窗样式完整、座位热区放大
 	var gp_styled := true
 	for gb45 in bs45.guess_popup.find_children("*", "Button", true, false):
@@ -4128,7 +4287,11 @@ func _reg_v44() -> void:
 	bs45.info_overlay.hide()
 	bs45.log_msg("本回合开始")
 	bs45.log_msg("最新事件")
-	_ok(bs45.log_label.text == "最新事件", "HUD 常驻战报仅更新最近一条事件")
+	var history_collapsed: bool = not bs45.info_overlay.visible and bs45.history_btn.text == "战报"
+	bs45.history_btn.pressed.emit()
+	_ok(history_collapsed and bs45.info_overlay.visible and bs45.info_text.text.contains("本回合开始\n最新事件"),
+		"HUD 战报平时收起，点入口可回看事件")
+	bs45.info_overlay.hide()
 	bs45.targeting = true
 	bs45.target_candidates = [0, 1]
 	bs45.sel_target = 1

@@ -1,366 +1,260 @@
-# V0.41 高保真立体声二次元×三国杀移动版音效与配乐合成器（44.1kHz Stereo）
-import numpy as np, wave, subprocess, os
+"""Render the original card-table sound effects from oscillators and filtered noise.
 
-SR = 44100
-ROOT = "/opt/quanmingxingsha/work/全明星杀_V0.31.0_交接包"
-OUT_SFX = f"{ROOT}/game/assets/sfx"
-OUT_BGM = f"{ROOT}/game/assets/bgm"
-os.makedirs(OUT_SFX, exist_ok=True)
-os.makedirs(OUT_BGM, exist_ok=True)
-rng = np.random.default_rng(41)
+Run with Python 3, numpy, scipy and ffmpeg. No recordings or external samples
+are used. Peak levels reserve room for several cues, voices and music together.
+"""
+import argparse
+from pathlib import Path
+import subprocess
 
-def t_arr(d):
-    return np.arange(int(SR * d), dtype=np.float64) / SR
+import numpy as np
+from scipy.signal import butter, sosfilt
 
-def adsr(n, a=0.006, d=0.06, s=0.45, r=0.18):
-    y = np.zeros(n, dtype=np.float64)
-    na = max(1, min(n - 1, int(SR * a)))
-    nd = max(1, min(n - na, int(SR * d)))
-    y[:na] = np.linspace(0.0, 1.0, na)
-    y[na:na + nd] = np.linspace(1.0, s, nd)
-    rem = n - (na + nd)
-    if rem > 0:
-        y[na + nd:] = s * np.exp(-np.arange(rem) / max(1.0, SR * r * 0.35))
-    return y
+RATE = 44100
+ROOT = Path(__file__).resolve().parents[3]
+RNG = np.random.default_rng(90417)
 
-def lp1(x, cutoff_hz):
-    rc = 1.0 / (2.0 * np.pi * max(cutoff_hz, 20.0))
-    dt = 1.0 / SR
-    alpha = dt / (rc + dt)
-    klen = min(len(x), max(8, int(4.0 / max(alpha, 1e-4))))
-    ker = alpha * ((1.0 - alpha) ** np.arange(klen))
-    return np.convolve(x, ker, mode="full")[:len(x)]
 
-def hp1(x, cutoff_hz):
-    return x - lp1(x, cutoff_hz)
+def timeline(seconds):
+    return np.arange(round(seconds * RATE)) / RATE
 
-def reverb_stereo(mono, delay_ms=26.0, decay=0.28):
-    n = len(mono)
-    pad = int(SR * 0.22)
-    L = np.zeros(n + pad, dtype=np.float64)
-    R = np.zeros(n + pad, dtype=np.float64)
-    L[:n] += mono
-    R[:n] += mono
-    for tap_i, (ms_l, ms_r, g) in enumerate([
-        (delay_ms, delay_ms * 1.18, decay),
-        (delay_ms * 1.9, delay_ms * 2.15, decay * 0.58),
-        (delay_ms * 3.1, delay_ms * 3.45, decay * 0.32),
-    ]):
-        dl = int(SR * ms_l / 1000.0)
-        dr = int(SR * ms_r / 1000.0)
-        if dl + n <= len(L):
-            L[dl:dl + n] += mono * g
-        if dr + n <= len(R):
-            R[dr:dr + n] += mono * g * (1.0 if tap_i % 2 == 0 else -0.9)
-    return np.stack([L, R], axis=1)
 
-def pluck_koto(freq, dur, bright=1.0):
-    x = t_arr(dur)
-    n = len(x)
-    # 东方古筝/樱花琴泛音列 + 拨弦瞬态
-    harms = [1.0, 0.58 * bright, 0.34 * bright, 0.19 * bright, 0.11 * bright, 0.06 * bright]
-    sig = np.zeros(n)
-    for idx, amp in enumerate(harms):
-        h = idx + 1
-        detune = 1.0 + (idx * 0.0004)
-        decay_h = max(0.06, dur / (1.0 + 0.55 * idx))
-        sig += amp * np.sin(2.0 * np.pi * freq * h * detune * x) * np.exp(-x / (decay_h * 0.38))
-    # 拨片瞬态噪声
-    transient_n = min(n, int(SR * 0.014))
-    sig[:transient_n] += lp1(rng.standard_normal(transient_n), 3200.0) * np.linspace(0.45, 0.0, transient_n)
-    return sig * adsr(n, a=0.003, d=0.05, s=0.65, r=dur * 0.75)
+def noise(seconds, low, high):
+    samples = RNG.standard_normal(round(seconds * RATE))
+    filt = butter(2, (low, high), fs=RATE, btype="bandpass", output="sos")
+    return sosfilt(filt, samples)
 
-def crystal_bell(freq, dur):
-    x = t_arr(dur)
-    n = len(x)
-    # 二次元风铃/水晶泛音（含非整数泛音营造晶莹感）
-    ratios = [(1.0, 1.0), (2.0, 0.45), (2.756, 0.25), (4.0, 0.16), (5.404, 0.09)]
-    sig = sum(a * np.sin(2.0 * np.pi * freq * r * x) * np.exp(-x / (dur * (0.45 / r**0.5))) for r, a in ratios)
-    return sig * adsr(n, a=0.002, d=0.04, s=0.5, r=dur * 0.8)
 
-def mix_mono(*parts):
-    n = max(int(SR * off) + len(p) for off, p in parts)
-    y = np.zeros(n, dtype=np.float64)
-    for off, p in parts:
-        o = int(SR * off)
-        y[o:o + len(p)] += p
-    return y
+def fade_edges(sound, attack=0.003, release=0.018):
+    start = round(RATE * attack)
+    stop = min(round(RATE * release), len(sound) - start)
+    shape = (1,) * (sound.ndim - 1)
+    sound[:start] *= np.sin(np.linspace(0, np.pi / 2, start)).reshape((start, *shape)) ** 2
+    sound[-stop:] *= np.cos(np.linspace(0, np.pi / 2, stop)).reshape((stop, *shape)) ** 2
+    return sound
 
-def save_ogg(out_dir, name, data, gain=0.82, stereo_reverb=True, q="4"):
-    if data.ndim == 1:
-        st = reverb_stereo(data) if stereo_reverb else np.stack([data, data], axis=1)
-    else:
-        st = data
-    peak = np.max(np.abs(st)) + 1e-9
-    st = np.clip(st / peak * gain, -0.99, 0.99)
-    pcm = (st * 32767.0).astype(np.int16)
-    wp = f"/tmp/{name}.wav"
-    with wave.open(wp, "wb") as w:
-        w.setnchannels(2)
-        w.setsampwidth(2)
-        w.setframerate(SR)
-        w.writeframes(pcm.tobytes())
+
+def noise_tap(seconds, low, high, decay, attack=0.003):
+    t = timeline(seconds)
+    return fade_edges(noise(seconds, low, high) * np.exp(-t / decay), attack)
+
+
+def gust(seconds, low, high, peak):
+    t = timeline(seconds)
+    center = t / seconds
+    envelope = np.where(center < peak, center / peak, (1 - center) / (1 - peak))
+    smoothed = np.sin(np.pi * envelope / 2) ** 2
+    return noise(seconds, low, high) * smoothed
+
+
+def pitched_drop(seconds, start, end, sweep_time, decay):
+    t = timeline(seconds)
+    # Integral of the frequency curve avoids the unnatural sweep of f(t)*t.
+    phase = end * t + (start - end) * sweep_time * (1 - np.exp(-t / sweep_time))
+    return fade_edges(np.sin(2 * np.pi * phase) * np.exp(-t / decay))
+
+
+def resonance(seconds, base, color):
+    t = timeline(seconds)
+    signal = np.zeros_like(t)
+    for ratio, strength, decay in color:
+        freq = base * ratio
+        signal += strength * np.sin(2 * np.pi * freq * t) * np.exp(-t / decay)
+    return fade_edges(signal, 0.002, 0.035)
+
+
+def layers(*sounds):
+    """Mix (start time, waveform, amplitude, stereo pan) components."""
+    result = np.zeros((max(round(offset * RATE) + len(sound) for offset, sound, _, _ in sounds), 2))
+    for offset, sound, volume, pan in sounds:
+        start = round(offset * RATE)
+        # Small pans leave the main sound equally intelligible in a mono mix.
+        result[start:start + len(sound)] += sound[:, None] * volume * np.sqrt([1 - pan, 1 + pan])
+    return result
+
+
+WOOD = [(1.0, 1.0, 0.044), (2.17, 0.19, 0.022), (3.05, 0.09, 0.011)]
+STEEL = [(1.0, 0.90, 0.092), (1.73, 0.52, 0.052), (2.48, 0.31, 0.041), (3.66, 0.09, 0.020)]
+GLASS = [(1.0, 0.80, 0.10), (2.09, 0.34, 0.063), (3.12, 0.12, 0.035)]
+FELT = [(1.0, 1.0, 0.16), (2.0, 0.27, 0.095), (3.01, 0.08, 0.046), (4.02, 0.03, 0.031)]
+
+
+def wood(base, seconds=0.11):
+    return resonance(seconds, base, WOOD)
+
+
+def steel(base, seconds=0.21):
+    return resonance(seconds, base, STEEL)
+
+
+def glass(base, seconds=0.25):
+    return resonance(seconds, base, GLASS)
+
+
+def felt(base, seconds=0.29):
+    return resonance(seconds, base, FELT)
+
+
+def phrase(notes, step, length=0.29):
+    return layers(*[
+        (i * step, felt(f, length), gain, 0.16 * (-1) ** i)
+        for i, (f, gain) in enumerate(notes)
+    ])
+
+
+def body_hit(heavy=False):
+    return layers(
+        (0.0, pitched_drop(0.18 if heavy else 0.13, 215 if heavy else 252, 111 if heavy else 143, 0.018, 0.047), 0.87, 0.0),
+        (0.0, noise_tap(0.067, 160, 1650, 0.016), 0.78 if heavy else 0.61, 0.0),
+        (0.001, noise_tap(0.035, 850, 3150, 0.007), 0.34, -0.11),
+        (0.014, wood(262 if heavy else 350, 0.095), 0.33, 0.09),
+    )
+
+
+def plated_contact():
+    return layers(
+        (0.0, steel(705, 0.23), 0.90, 0.0),
+        (0.001, noise_tap(0.067, 900, 3650, 0.009), 0.47, -0.09),
+        (0.013, wood(338, 0.09), 0.22, 0.11),
+    )
+
+
+def brittle_fragments():
+    return layers(
+        (0.032, glass(1138, 0.165), 0.37, 0.24),
+        (0.054, noise_tap(0.095, 1710, 4980, 0.022), 0.49, -0.21),
+        (0.085, glass(1520, 0.13), 0.32, -0.31),
+        (0.119, glass(1875, 0.10), 0.21, 0.28),
+        (0.147, wood(725, 0.10), 0.12, -0.19),
+    )
+
+
+def combine(stereo_a, stereo_b, second_gain):
+    size = max(len(stereo_a), len(stereo_b))
+    mixed = np.zeros((size, 2))
+    mixed[:len(stereo_a)] += stereo_a
+    mixed[:len(stereo_b)] += stereo_b * second_gain
+    return mixed
+
+
+def cues():
+    files = {}
+    files["click"] = (layers((0, wood(760, 0.075), 0.81, 0), (0.003, noise_tap(0.053, 650, 2350, 0.009), 0.27, 0)), 0.19)
+    files["select"] = (layers((0, gust(0.061, 480, 2630, 0.42), 0.60, 0.12), (0.025, wood(618, 0.084), 0.60, 0)), 0.21)
+    files["card_slide"] = (layers(
+        (0.0, gust(0.16, 400, 2400, 0.3), 0.72, -0.17),
+        (0.035, gust(0.16, 650, 3100, 0.49), 0.45, 0.16),
+    ), 0.25)
+    files["card"] = (layers(
+        (0.0, noise_tap(0.07, 465, 2530, 0.012), 0.54, 0.0),
+        (0.0, wood(465, 0.088), 0.84, 0.0),
+    ), 0.30)
+    files["draw"] = (layers(
+        (0.0, gust(0.096, 390, 2350, 0.54), 0.67, -0.16),
+        (0.048, gust(0.12, 455, 2780, 0.44), 0.52, 0.13),
+        (0.09, wood(706, 0.11), 0.21, 0.03),
+    ), 0.25)
+    files["play"] = (layers((0.0, wood(523), 0.65, -0.13), (0.042, felt(783.99), 0.91, 0.13)), 0.38)
+    files["slash"] = (layers(
+        (0.0, gust(0.175, 360, 3180, 0.64), 0.87, -0.14),
+        (0.046, gust(0.108, 1450, 5000, 0.59), 0.39, 0.14),
+        (0.054, pitched_drop(0.091, 1950, 678, 0.022, 0.020), 0.14, 0.11),
+    ), 0.44)
+    files["hit"] = (body_hit(), 0.64)
+    files["hit_heavy"] = (body_hit(heavy=True), 0.71)
+    files["shield"] = (layers((0.0, glass(630), 0.68, 0.0), (0.056, glass(946), 0.65, 0.16)), 0.40)
+    files["shield_block"] = (plated_contact(), 0.62)
+    files["shield_crack"] = (combine(plated_contact(), brittle_fragments(), 0.9), 0.54)
+    files["shield_break"] = (combine(plated_contact(), brittle_fragments(), 1.6), 0.67)
+    files["dodge"] = (layers(
+        (0.0, gust(0.09, 500, 2560, 0.57), 0.63, -0.20),
+        (0.053, gust(0.105, 1000, 4200, 0.35), 0.53, 0.24),
+        (0.078, glass(965, 0.17), 0.24, 0.20),
+    ), 0.46)
+    files["fire_hit"] = (layers(
+        (0.0, pitched_drop(0.19, 218, 120, 0.031, 0.068), 0.65, 0.0),
+        (0.0, gust(0.20, 190, 1720, 0.24), 0.95, 0.0),
+        (0.038, noise_tap(0.135, 1150, 3810, 0.031), 0.27, -0.21),
+        (0.084, noise_tap(0.079, 980, 3340, 0.018), 0.37, 0.19),
+        (0.117, noise_tap(0.093, 1050, 4080, 0.021), 0.25, -0.17),
+    ), 0.68)
+    files["ice_hit"] = (layers(
+        (0.0, wood(294), 0.56, 0.0),
+        (0.002, noise_tap(0.060, 1000, 4510, 0.014), 0.90, 0.0),
+        (0.020, glass(996, 0.23), 0.63, -0.14),
+        (0.063, glass(1537, 0.20), 0.42, 0.23),
+        (0.105, glass(1836, 0.14), 0.22, -0.23),
+    ), 0.65)
+    files["thunder_hit"] = (layers(
+        (0.0, noise_tap(0.074, 870, 5010, 0.018, 0.001), 0.79, 0.0),
+        (0.007, pitched_drop(0.18, 860, 161, 0.025, 0.039), 0.49, 0.14),
+        (0.024, pitched_drop(0.24, 290, 120, 0.022, 0.066), 0.76, -0.12),
+        (0.054, noise_tap(0.23, 120, 610, 0.088), 0.49, 0.12),
+    ), 0.68)
+    files["heal"] = (phrase([(391.99, 0.71), (523.25, 0.80), (659.25, 0.76)], 0.064, 0.37), 0.48)
+    files["revive"] = (phrase([(392, 0.61), (523.25, 0.87), (659.25, 0.67), (783.99, 0.62)], 0.076, 0.39), 0.53)
+    files["equip"] = (layers(
+        (0.0, noise_tap(0.074, 925, 3900, 0.012), 0.50, -0.12),
+        (0.012, steel(738, 0.145), 0.63, 0.0),
+        (0.062, wood(358), 0.42, 0.17),
+    ), 0.46)
+    files["trick"] = (layers(
+        (0.0, gust(0.12, 420, 2310, 0.36), 0.60, -0.2),
+        (0.052, felt(522, 0.18), 0.64, 0.17),
+        (0.102, felt(702, 0.17), 0.51, 0.0),
+    ), 0.40)
+    files["nullify"] = (layers(
+        (0.0, glass(1084, 0.175), 0.73, 0.20),
+        (0.049, pitched_drop(0.20, 1892, 570, 0.031, 0.040), 0.53, -0.2),
+        (0.041, gust(0.14, 640, 2500, 0.4), 0.28, 0.0),
+    ), 0.49)
+    files["judge"] = (phrase([(463, 0.7), (587.33, 0.73), (783.99, 0.58)], 0.082, 0.26), 0.39)
+    files["chain"] = (layers(
+        (0.0, steel(415, 0.12), 0.59, -0.11),
+        (0.038, steel(661, 0.12), 0.55, 0.18),
+        (0.088, steel(533, 0.115), 0.42, 0.0),
+    ), 0.42)
+    files["skill"] = (layers(
+        (0.0, gust(0.18, 470, 2410, 0.63), 0.45, 0.0),
+        (0.035, felt(493.88, 0.29), 0.72, -0.2),
+        (0.093, glass(740, 0.30), 0.61, 0.15),
+        (0.15, felt(987.77, 0.30), 0.47, 0.06),
+    ), 0.48)
+    files["turn"] = (phrase([(392, 0.63), (587.33, 0.85)], 0.095, 0.34), 0.40)
+    files["dying"] = (layers(
+        (0.0, pitched_drop(0.155, 170, 96, 0.023, 0.033), 0.78, 0.0),
+        (0.16, pitched_drop(0.14, 158, 100, 0.019, 0.027), 0.62, 0.0),
+        (0.046, felt(277.18, 0.30), 0.22, 0.08),
+    ), 0.48)
+    files["death"] = (phrase([(392, 0.67), (329.63, 0.67), (261.63, 0.83)], 0.146, 0.55), 0.46)
+    files["spree"] = (phrase([(440, 0.70), (587.33, 0.81), (739.99, 0.85), (880, 0.67)], 0.069, 0.40), 0.53)
+    files["win"] = (phrase([(391.99, 0.58), (523.25, 0.75), (659.25, 0.71), (783.99, 0.82), (1046.5, 0.43)], 0.136, 0.62), 0.54)
+    files["lose"] = (phrase([(440, 0.71), (392, 0.62), (349.23, 0.61), (261.63, 0.81)], 0.155, 0.61), 0.43)
+    return files
+
+
+def export(name, sound, peak, output):
+    # Retain relative levels across sound families; use a short master fade.
+    sound = fade_edges(sound, attack=0.001, release=0.022)
+    sound = sound / np.max(np.abs(sound)) * (peak * 0.60)
+    pcm = (sound * 32767).astype("<i2")
     subprocess.run(
-        ["ffmpeg", "-loglevel", "error", "-nostdin", "-y", "-i", wp, "-c:a", "libvorbis", "-q:a", q, f"{out_dir}/{name}.ogg"],
-        check=True,
+        ["ffmpeg", "-nostdin", "-v", "error", "-y", "-f", "s16le", "-ar", str(RATE),
+         "-ac", "2", "-i", "pipe:0", "-c:a", "libvorbis", "-q:a", "5", str(output / f"{name}.ogg")],
+        input=pcm.tobytes(), check=True,
     )
-    os.remove(wp)
 
-# 1. click: 二次元清脆水晶按键音
-c_part = mix_mono((0.0, crystal_bell(1568.0, 0.055) * 0.7), (0.012, crystal_bell(2349.0, 0.075)))
-save_ogg(OUT_SFX, "click", c_part, 0.58)
 
-# 2. card: 纸牌轻盈点选摩擦声 + 微弱泛音
-x = t_arr(0.11)
-card_swish = hp1(lp1(rng.standard_normal(len(x)), 3400.0), 600.0) * np.hanning(len(x))
-card_tone = crystal_bell(1046.5, 0.09) * 0.25
-save_ogg(OUT_SFX, "card", mix_mono((0.0, card_swish), (0.01, card_tone)), 0.55)
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--output", type=Path, default=ROOT / "game/assets/sfx")
+    opts = parser.parse_args()
+    opts.output.mkdir(parents=True, exist_ok=True)
+    library = cues()
+    for name, (sound, peak) in library.items():
+        export(name, sound, peak, opts.output)
+    print(f"Rendered {len(library)} original sound effects in {opts.output}")
 
-# 3. draw: 手杀标志性「唰」摸牌飞入声
-x = t_arr(0.14)
-draw_n = hp1(lp1(rng.standard_normal(len(x)), 4600.0), 800.0) * np.sin(np.pi * x / 0.14) ** 1.3
-draw_chime = pluck_koto(1318.5, 0.12, 0.8) * 0.22
-save_ogg(OUT_SFX, "draw", mix_mono((0.0, draw_n), (0.02, draw_chime)), 0.52)
 
-# 4. play: 手杀甩牌破空 + 古筝双泛音
-x = t_arr(0.16)
-snap = hp1(lp1(rng.standard_normal(len(x)), 3800.0), 500.0) * np.exp(-x * 22.0) * 0.65
-p_mel = mix_mono((0.0, snap), (0.0, pluck_koto(659.25, 0.24)), (0.045, pluck_koto(987.77, 0.28)))
-save_ogg(OUT_SFX, "play", p_mel, 0.65)
-
-# 5. slash: 刀剑出鞘破空斩击（金属铮鸣 + 空气挥砍）
-x = t_arr(0.28)
-whoosh = hp1(lp1(rng.standard_normal(len(x)), 4200.0), 700.0) * np.sin(np.pi * np.clip(x / 0.22, 0, 1)) * 0.8
-blade_f = 2400.0 * np.exp(-x * 5.5) + 680.0
-blade = (np.sin(2 * np.pi * blade_f * x) + 0.5 * np.sin(2 * np.pi * 2637.0 * x) * np.exp(-x * 16.0)) * np.exp(-x * 10.0)
-save_ogg(OUT_SFX, "slash", mix_mono((0.0, blade * 0.75), (0.02, whoosh)), 0.78)
-
-# 6. hit: 手杀物理重击受创（低频战鼓重锤 + 护甲震击 + 剑气）
-x = t_arr(0.34)
-sub_thump = np.sin(2 * np.pi * (165.0 * np.exp(-x * 11.0) + 42.0) * x) * np.exp(-x * 7.5) * 1.2
-impact_noise = lp1(rng.standard_normal(len(x)), 1600.0) * np.exp(-x * 18.0) * 0.85
-metal_ring = crystal_bell(440.0, 0.22) * 0.3
-save_ogg(OUT_SFX, "hit", mix_mono((0.0, sub_thump), (0.0, impact_noise), (0.01, metal_ring)), 0.90)
-
-# 7. fire_hit: 烈焰爆燃伤害（低频轰燃 + 高频火焰噼啪）
-x = t_arr(0.45)
-roar = lp1(rng.standard_normal(len(x)), 650.0) * np.sin(np.pi * np.clip(x / 0.38, 0, 1)) * 1.1
-crackle = hp1(rng.standard_normal(len(x)), 2600.0) * (rng.random(len(x)) > 0.92).astype(float) * np.exp(-x * 4.5) * 0.9
-f_thump = np.sin(2 * np.pi * (130.0 * np.exp(-x * 8.0) + 38.0) * x) * np.exp(-x * 8.0)
-save_ogg(OUT_SFX, "fire_hit", mix_mono((0.0, f_thump), (0.0, roar), (0.02, crackle)), 0.90)
-
-# 8. thunder_hit: 雷霆劈落伤害（高频电弧炸裂 + 滚雷低频轰鸣）
-x = t_arr(0.48)
-crack = hp1(rng.standard_normal(len(x)), 1800.0) * np.exp(-x * 16.0) * 1.1
-zap = np.sin(2 * np.pi * (1800.0 * np.exp(-x * 14.0) + 120.0) * x) * np.exp(-x * 9.0) * 0.75
-rumble = lp1(rng.standard_normal(len(x)), 240.0) * np.exp(-x * 3.8) * 1.2
-save_ogg(OUT_SFX, "thunder_hit", mix_mono((0.0, crack), (0.0, zap), (0.03, rumble)), 0.92)
-
-# 9. dodge: 轻盈疾风闪避 + 樱花风铃
-x = t_arr(0.26)
-wind = hp1(lp1(rng.standard_normal(len(x)), 3200.0), 500.0) * np.hanning(len(x)) * 0.7
-d_chime = mix_mono((0.0, wind), (0.03, crystal_bell(1318.5, 0.16) * 0.45), (0.09, crystal_bell(1760.0, 0.18) * 0.45))
-save_ogg(OUT_SFX, "dodge", d_chime, 0.65)
-
-# 10. heal: 圣光治愈竖琴大七和弦琶音
-heal_notes = [523.25, 659.25, 783.99, 987.77, 1046.5, 1318.5]
-heal_m = mix_mono(*[(i * 0.055, pluck_koto(f, 0.42, 0.9) * 0.65 + crystal_bell(f * 2, 0.42) * 0.25) for i, f in enumerate(heal_notes)])
-save_ogg(OUT_SFX, "heal", heal_m, 0.68)
-
-# 11. equip: 穿戴武器防具金属锁扣 + 剑鸣
-x = t_arr(0.18)
-clink1 = crystal_bell(1480.0, 0.18) + hp1(rng.standard_normal(len(x)), 2800.0) * np.exp(-x * 30.0) * 0.4
-clink2 = crystal_bell(2217.5, 0.22) + pluck_koto(880.0, 0.22, 1.2) * 0.5
-save_ogg(OUT_SFX, "equip", mix_mono((0.0, clink1), (0.065, clink2)), 0.68)
-
-# 12. trick: 锦囊妙计展开（竹简刷开 + 古筝五声扫弦）
-x = t_arr(0.15)
-scroll = lp1(rng.standard_normal(len(x)), 2200.0) * np.hanning(len(x)) * 0.45
-t_notes = [587.33, 659.25, 880.0, 1174.66]
-trick_m = mix_mono((0.0, scroll), *[(0.02 + i * 0.032, pluck_koto(f, 0.28, 1.1) * 0.65) for i, f in enumerate(t_notes)])
-save_ogg(OUT_SFX, "trick", trick_m, 0.66)
-
-# 13. nullify: 看破/无懈可击（清冽冰晶屏障反制声）
-nul_m = mix_mono(
-    (0.0, crystal_bell(1975.5, 0.18)),
-    (0.04, crystal_bell(2637.0, 0.26)),
-    (0.08, pluck_koto(1318.5, 0.32, 1.3) * 0.7),
-)
-save_ogg(OUT_SFX, "nullify", nul_m, 0.72)
-
-# 14. judge: 天命判定悬念飞旋 + 定音鼓点
-j_m = mix_mono(
-    (0.0, pluck_koto(659.25, 0.14)),
-    (0.08, pluck_koto(880.0, 0.14)),
-    (0.16, pluck_koto(1318.5, 0.30) + crystal_bell(1318.5, 0.30) * 0.5),
-)
-save_ogg(OUT_SFX, "judge", j_m, 0.66)
-
-# 15. chain: 铁索连环金属链条交错声
-ch_parts = []
-for i, f in enumerate([1100.0, 1420.0, 960.0, 1680.0]):
-    x = t_arr(0.09)
-    ring = (np.sin(2 * np.pi * f * x) + 0.6 * np.sin(2 * np.pi * (f * 1.41) * x)) * np.exp(-x * 26.0)
-    nz = hp1(rng.standard_normal(len(x)), 2400.0) * np.exp(-x * 32.0) * 0.45
-    ch_parts.append((i * 0.055, ring + nz))
-save_ogg(OUT_SFX, "chain", mix_mono(*ch_parts), 0.68)
-
-# 16. skill: 二次元必杀技觉醒（能量上行 + 华丽五声琶音绽放）
-x = t_arr(0.18)
-sweep = np.sin(2 * np.pi * (440.0 + 1800.0 * (x / 0.18) ** 2) * x) * np.hanning(len(x)) * 0.35
-sk_notes = [659.25, 783.99, 987.77, 1318.5, 1567.98, 1975.5]
-sk_m = mix_mono((0.0, sweep), *[(0.03 + i * 0.032, crystal_bell(f, 0.32) * 0.55 + pluck_koto(f, 0.32) * 0.45) for i, f in enumerate(sk_notes)])
-save_ogg(OUT_SFX, "skill", sk_m, 0.70)
-
-# 17. turn: 自己回合开始（古风清越玉磬 + 樱花风铃）
-turn_m = mix_mono(
-    (0.0, pluck_koto(587.33, 0.45) * 0.7),
-    (0.05, pluck_koto(880.0, 0.50) * 0.8),
-    (0.11, crystal_bell(1760.0, 0.55) * 0.55),
-)
-save_ogg(OUT_SFX, "turn", turn_m, 0.64)
-
-# 18. dying: 濒死双连急促心跳 + 警报低音弦
-x = t_arr(0.20)
-hb1 = np.sin(2 * np.pi * (72.0 * np.exp(-x * 5.0) + 36.0) * x) * np.exp(-x * 11.0)
-hb2 = np.sin(2 * np.pi * (64.0 * np.exp(-x * 5.0) + 34.0) * x) * np.exp(-x * 12.0) * 0.85
-warn = pluck_koto(220.0, 0.45, 0.5) * 0.35
-save_ogg(OUT_SFX, "dying", mix_mono((0.0, hb1), (0.19, hb2), (0.02, warn)), 0.86)
-
-# 19. death: 阵亡落幕古钟下行
-death_m = mix_mono(
-    (0.0, pluck_koto(392.0, 0.45, 0.6)),
-    (0.14, pluck_koto(329.63, 0.48, 0.6)),
-    (0.28, pluck_koto(246.94, 0.75, 0.5) + crystal_bell(246.94, 0.75) * 0.4),
-)
-save_ogg(OUT_SFX, "death", death_m, 0.72)
-
-# 20. revive: 濒死获救破晓竖琴琶音
-rev_m = mix_mono(*[(i * 0.06, pluck_koto(f, 0.45) + crystal_bell(f * 2, 0.45) * 0.35) for i, f in enumerate([523.25, 659.25, 783.99, 1046.5, 1567.98])])
-save_ogg(OUT_SFX, "revive", rev_m, 0.72)
-
-# 21. shield: 护甲凝聚/圣盾共鸣
-sh_m = mix_mono((0.0, crystal_bell(880.0, 0.25)), (0.04, crystal_bell(1318.5, 0.35)), (0.08, pluck_koto(1760.0, 0.35) * 0.5))
-save_ogg(OUT_SFX, "shield", sh_m, 0.65)
-
-# 22. spree: 手杀连破/一血/无双战鼓号角齐鸣
-x = t_arr(0.25)
-drum = np.sin(2 * np.pi * (140.0 * np.exp(-x * 9.0) + 45.0) * x) * np.exp(-x * 7.0)
-sp_m = mix_mono(
-    (0.0, drum),
-    (0.12, drum * 0.9),
-    (0.0, pluck_koto(587.33, 0.35, 1.3)),
-    (0.08, pluck_koto(880.0, 0.42, 1.3)),
-    (0.16, pluck_koto(1174.66, 0.65, 1.4) + crystal_bell(1760.0, 0.65) * 0.5),
-)
-save_ogg(OUT_SFX, "spree", sp_m, 0.85)
-
-# 23. win: 胜利凯旋华丽管弦古筝交响 Fanfare
-win_seq = [
-    (0.00, 523.25, 0.28),
-    (0.13, 659.25, 0.28),
-    (0.26, 783.99, 0.28),
-    (0.39, 1046.50, 0.42),
-    (0.56, 880.00, 0.24),
-    (0.70, 1046.50, 0.30),
-    (0.86, 1318.51, 1.15),
-]
-win_parts = []
-for off, f, d in win_seq:
-    win_parts.append((off, pluck_koto(f, d, 1.2) * 0.8 + crystal_bell(f, d) * 0.4 + pluck_koto(f * 0.5, d, 0.7) * 0.45))
-save_ogg(OUT_SFX, "win", mix_mono(*win_parts), 0.80)
-
-# 24. lose: 惜败婉转弦乐下行叹息
-lose_seq = [
-    (0.00, 493.88, 0.45),
-    (0.24, 440.00, 0.45),
-    (0.48, 392.00, 0.48),
-    (0.74, 329.63, 1.10),
-]
-lose_parts = [(off, pluck_koto(f, d, 0.6) * 0.75 + pluck_koto(f * 0.5, d, 0.4) * 0.5) for off, f, d in lose_seq]
-save_ogg(OUT_SFX, "lose", mix_mono(*lose_parts), 0.68)
-
-print("SFX_GENERATED:", len([f for f in os.listdir(OUT_SFX) if f.endswith(".ogg")]))
-
-# ---------------- 生成 3 首原创「二次元樱华国风 × 三国杀移动版」无缝循环 BGM ----------------
-def warm_pad(freq, dur):
-    x = t_arr(dur)
-    s = (
-        0.55 * np.sin(2 * np.pi * freq * x)
-        + 0.30 * np.sin(2 * np.pi * freq * 1.5 * x)
-        + 0.20 * np.sin(2 * np.pi * freq * 2.002 * x)
-    )
-    return s * np.sin(np.pi * np.clip(x / dur, 0, 1)) ** 0.7
-
-def taiko_hit(dur=0.22, pitch=95.0):
-    x = t_arr(dur)
-    body = np.sin(2 * np.pi * (pitch * np.exp(-x * 12.0) + 42.0) * x) * np.exp(-x * 9.5)
-    skin = lp1(rng.standard_normal(len(x)), 900.0) * np.exp(-x * 26.0) * 0.35
-    return body + skin
-
-# BGM 1: home_sakura.ogg 《樱华序曲 · 星樱学园》（五声宫调 + 樱花琴琶音 + 柔美弦乐 Pad）
-beat = 0.45  # ~133 BPM 八分音符
-# D大调/五声：D4=293.66, E4=329.63, F#4=369.99, A4=440.0, B4=493.88, D5=587.33, E5=659.25, F#5=739.99, A5=880.0
-melody_home = [
-    659.25, 587.33, 493.88, 440.00, 493.88, 587.33, 659.25, 739.99,
-    880.00, 739.99, 659.25, 587.33, 493.88, 440.00, 587.33, 587.33,
-    659.25, 739.99, 880.00, 739.99, 659.25, 587.33, 493.88, 440.00,
-    369.99, 440.00, 493.88, 659.25, 587.33, 493.88, 440.00, 440.00,
-]
-chords_home = [293.66, 246.94, 196.00, 220.00, 293.66, 246.94, 196.00, 220.00]
-home_parts = []
-for idx, f in enumerate(melody_home):
-    t0 = idx * beat
-    home_parts.append((t0, pluck_koto(f, beat * 1.8, 0.95) * 0.55))
-    if idx % 2 == 0:
-        home_parts.append((t0, pluck_koto(f * 0.5, beat * 2.2, 0.6) * 0.28))
-    if idx % 4 == 0:
-        home_parts.append((t0 + beat * 0.5, crystal_bell(f * 2.0, beat * 1.6) * 0.16))
-for ci, cf in enumerate(chords_home):
-    home_parts.append((ci * beat * 4.0, warm_pad(cf, beat * 4.2) * 0.34))
-save_ogg(OUT_BGM, "home_sakura", mix_mono(*home_parts), 0.62, stereo_reverb=True, q="4")
-
-# BGM 2: battle_storm.ogg 《绯樱战阵 · 破阵乐》（手杀经典疾速战鼓 + 琵琶/古筝轮指）
-b_beat = 0.24  # 疾速十六分/八分律动
-# E小调古风战曲：E4=329.63, G4=392.00, A4=440.00, B4=493.88, D5=587.33, E5=659.25, G5=783.99, A5=880.00
-riff_battle = [
-    659.25, 659.25, 783.99, 659.25, 587.33, 493.88, 440.00, 493.88,
-    659.25, 783.99, 880.00, 783.99, 659.25, 587.33, 493.88, 493.88,
-    587.33, 659.25, 783.99, 659.25, 587.33, 493.88, 440.00, 392.00,
-    440.00, 493.88, 587.33, 493.88, 440.00, 392.00, 329.63, 329.63,
-] * 2
-bat_parts = []
-for idx, f in enumerate(riff_battle):
-    t0 = idx * b_beat
-    bat_parts.append((t0, pluck_koto(f, b_beat * 1.6, 1.25) * 0.58))
-    # 战鼓律动（强拍重鼓、弱拍轻击）
-    if idx % 4 == 0:
-        bat_parts.append((t0, taiko_hit(0.20, 92.0) * 0.65))
-        bat_parts.append((t0, warm_pad(164.81 if (idx // 8) % 2 == 0 else 146.83, b_beat * 4.0) * 0.32))
-    elif idx % 4 == 2:
-        bat_parts.append((t0, taiko_hit(0.14, 135.0) * 0.38))
-    elif idx % 8 == 7:
-        bat_parts.append((t0, taiko_hit(0.12, 150.0) * 0.35))
-save_ogg(OUT_BGM, "battle_storm", mix_mono(*bat_parts), 0.66, stereo_reverb=True, q="4")
-
-# BGM 3: tense_climax.ogg 《宿命决战 · 残月》（手杀残局/濒死急促三连音战鼓 + 高压弦乐）
-t_beat = 0.20
-riff_tense = [
-    659.25, 698.46, 659.25, 587.33, 659.25, 880.00, 783.99, 698.46,
-    659.25, 587.33, 493.88, 523.25, 493.88, 440.00, 392.00, 493.88,
-    659.25, 698.46, 783.99, 880.00, 987.77, 880.00, 783.99, 698.46,
-    659.25, 587.33, 493.88, 440.00, 392.00, 329.63, 493.88, 329.63,
-] * 2
-ten_parts = []
-for idx, f in enumerate(riff_tense):
-    t0 = idx * t_beat
-    ten_parts.append((t0, pluck_koto(f, t_beat * 1.5, 1.35) * 0.56))
-    if idx % 2 == 0:
-        ten_parts.append((t0, taiko_hit(0.16, 86.0) * 0.68))
-    elif idx % 4 == 3:
-        ten_parts.append((t0, taiko_hit(0.11, 145.0) * 0.45))
-    if idx % 8 == 0:
-        ten_parts.append((t0, warm_pad(164.81, t_beat * 8.0) * 0.36 + crystal_bell(f, t_beat * 8.0) * 0.22))
-save_ogg(OUT_BGM, "tense_climax", mix_mono(*ten_parts), 0.68, stereo_reverb=True, q="4")
-
-print("BGM_GENERATED:", sorted([f for f in os.listdir(OUT_BGM) if f.endswith(".ogg")]))
+if __name__ == "__main__":
+    main()
